@@ -1,5 +1,7 @@
 # SpecAudit
 
+![CI](https://github.com/Steven-S-Francis/SpecAudit/actions/workflows/ci.yml/badge.svg)
+
 SpecAudit is an AI-powered OpenAPI contract auditor that analyzes your API specification for security vulnerabilities, REST convention violations, schema issues, and naming inconsistencies. It streams structured audit reports with severity-tagged findings directly in your browser.
 
 ## Tech Stack
