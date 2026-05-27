@@ -14,9 +14,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.x'
-      - run: dotnet restore
-      - run: dotnet build backend/backend.csproj --no-restore
-      - run: dotnet test --no-build --verbosity normal
+      - name: Restore
+        run: dotnet restore SpecAudit.slnx
+      - name: Build
+        run: dotnet build SpecAudit.slnx --no-restore
+      - name: Test
+        run: dotnet test SpecAudit.slnx --no-build --verbosity normal
 
   frontend:
     runs-on: ubuntu-latest
