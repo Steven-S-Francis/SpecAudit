@@ -1,6 +1,12 @@
+@"
 bin/
 obj/
 node_modules/
 .env
 .env.local
 **/*.user.json
+err.txt
+logs.txt
+vite_err.txt
+vite_logs.txt
+"@ | Set-Content -Encoding UTF8 .gitignore
