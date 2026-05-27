@@ -25,3 +25,5 @@ if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(ai
     throw new InvalidOperationException("Ai:BaseUrl and Ai:ModelId must be configured in appsettings.json.");
 
 app.Run("http://+:5000");
+
+public partial class Program { }
