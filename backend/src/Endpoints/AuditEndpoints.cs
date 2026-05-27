@@ -17,19 +17,23 @@ public static class AuditEndpoints
             HttpContext httpContext,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(request.Spec))
+            var spec = request.Spec.Trim();
+
+            if (string.IsNullOrWhiteSpace(spec))
                 return Results.BadRequest(new { error = "Spec payload cannot be empty." });
 
-            if (request.Spec.Length > auditService.MaxInputLength)
+            if (spec.Length > auditService.MaxInputLength)
                 return Results.StatusCode(413);
 
             httpContext.Response.ContentType = "text/event-stream";
             httpContext.Response.Headers.CacheControl = "no-cache";
             httpContext.Response.Headers.Connection = "keep-alive";
 
+            var sanitizedRequest = new AuditRequest(spec, request.SpecFormat);
+
             try
             {
-                await foreach (var chunk in auditService.AuditAsync(request, ct))
+                await foreach (var chunk in auditService.AuditAsync(sanitizedRequest, ct))
                 {
                     var encoded = JsonSerializer.Serialize(chunk);
                     await httpContext.Response.WriteAsync($"data: {encoded}\n\n", ct);
@@ -41,8 +45,10 @@ public static class AuditEndpoints
             }
             catch (Exception ex)
             {
-                var sentinel = JsonSerializer.Serialize(
-                    $"[SPECAUDIT_ERROR] {ex.Message}");
+                var message = ex.Message.Contains("429")
+                    ? "Rate limit reached. Please wait a moment and try again, or switch to a provider with higher limits."
+                    : ex.Message;
+                var sentinel = JsonSerializer.Serialize($"[SPECAUDIT_ERROR] {message}");
                 await httpContext.Response.WriteAsync($"data: {sentinel}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);
             }
