@@ -44,18 +44,20 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
         </div>
 
         <div className="flex gap-2">
-          <button
+          <Button
+            variant="ghost"
+            className={format === 'yaml' ? 'border-indigo-500 text-indigo-300' : ''}
             onClick={() => setFormat(format === 'yaml' ? undefined : 'yaml')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${format === 'yaml' ? 'border-indigo-500 text-indigo-300' : 'border-slate-600 hover:border-slate-400 text-slate-300'}`}
           >
             YAML
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="ghost"
+            className={format === 'json' ? 'border-indigo-500 text-indigo-300' : ''}
             onClick={() => setFormat(format === 'json' ? undefined : 'json')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${format === 'json' ? 'border-indigo-500 text-indigo-300' : 'border-slate-600 hover:border-slate-400 text-slate-300'}`}
           >
             JSON
-          </button>
+          </Button>
         </div>
       </div>
 

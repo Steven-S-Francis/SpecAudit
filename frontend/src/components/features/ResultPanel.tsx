@@ -12,6 +12,8 @@ interface Props {
 
 type HeadingProps = ComponentPropsWithoutRef<'h3'> & ExtraProps;
 type CodeProps = ComponentPropsWithoutRef<'code'> & ExtraProps;
+type HrProps = ComponentPropsWithoutRef<'hr'> & ExtraProps;
+type StrongProps = ComponentPropsWithoutRef<'strong'> & ExtraProps;
 type ParaProps = ComponentPropsWithoutRef<'p'> & ExtraProps;
 
 const SEVERITY_STYLES: Record<SeverityLevel, {
@@ -78,10 +80,10 @@ export function ResultPanel({ content, isStreaming }: Props) {
               ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300"><code>{children}</code></pre>
               : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs">{children}</code>;
           },
-          hr() {
+          hr({ ...props }: HrProps) {
             return <hr className="border-slate-700 my-4" />;
           },
-          strong({ children }) {
+          strong({ children, ...props }: StrongProps) {
             return <strong className="text-slate-100 font-semibold">{children}</strong>;
           },
           p({ children }: ParaProps) {

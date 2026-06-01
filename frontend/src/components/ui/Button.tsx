@@ -4,6 +4,7 @@ type Props = PropsWithChildren<{
   variant: 'primary' | 'danger' | 'ghost';
   disabled?: boolean;
   onClick?: () => void;
+  className?: string;
 }>;
 
 const variantStyles: Record<Props['variant'], string> = {
@@ -12,12 +13,12 @@ const variantStyles: Record<Props['variant'], string> = {
   ghost: 'border border-slate-600 hover:border-slate-400 text-slate-300',
 };
 
-export function Button({ variant, disabled, onClick, children }: Props) {
+export function Button({ variant, disabled, onClick, children, className = '' }: Props) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${variantStyles[variant]}`}
+      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${variantStyles[variant]} ${className}`}
     >
       {children}
     </button>
