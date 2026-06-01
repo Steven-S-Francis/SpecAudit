@@ -110,6 +110,19 @@
 - `backend/Program.cs` — CORS conditional on `IsDevelopment()` (same-origin in production, no CORS needed)
 - `README.md` — live demo link, Railway/Docker Compose deployment section
 
+### `032ea6a` — test: commit uncommitted tests, pipeline artifacts, and review fixes
+- **New frontend tests (36):** `frontend/src/api/__tests__/auditClient.test.ts` (6), `frontend/src/components/features/__tests__/InputPanel.test.tsx` (15), `frontend/src/components/features/__tests__/ResultPanel.test.tsx` (8), `frontend/src/hooks/__tests__/useAudit.test.tsx` (7)
+- **New backend tests (3):** `EndpointValidationTests.cs` — trimmed spec accepted, config returns provider name, config does not return API key
+- **Test infrastructure:** `jsdom`, `@testing-library/react`, `@testing-library/jest-dom` deps in `package.json`; `jsdom` env + `setupFiles` in `vite.config.ts`; `frontend/src/test-setup.ts`
+- **Pipeline artifacts:** `.pipeline/test-results.md` (59/59 pass), `.pipeline/review.md`
+- **Agent files:** `.opencode/agents/review.md`, `.opencode/agents/test.md`, `.opencode/opencode.json` (new); `opencode.json`, `reviewer.md`, `tester.md` (deleted)
+- **Review fixes:**
+  - `Button.tsx` — added `className` prop for conditional styling
+  - `InputPanel.tsx` — format toggle now uses `<Button variant="ghost">` instead of plain `<button>`
+  - `ResultPanel.tsx` — added typed signatures (`HrProps`, `StrongProps`) for React 19 compliance
+
+### `e19dc51` — fix: correct pipeline path in review agent prompt (`./pipeline/` → `.pipeline/`)
+
 ---
 
 ## Tester Focus Areas
