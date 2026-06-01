@@ -17,8 +17,11 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 app.UseCors("FrontendPolicy");
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.MapAuditEndpoints();
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+app.MapFallbackToFile("index.html");
 
 var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
 if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId))

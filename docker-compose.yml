@@ -1,17 +1,11 @@
 services:
-  backend:
-    build: ./backend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "5000:5000"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Ai__ApiKey=${AI_API_KEY}
-    restart: unless-stopped
-
-  frontend:
-    build: ./frontend
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
     restart: unless-stopped
