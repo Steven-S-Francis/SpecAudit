@@ -2,6 +2,8 @@
 
 ![CI](https://github.com/Steven-S-Francis/SpecAudit/actions/workflows/ci.yml/badge.svg)
 
+> **Live demo:** [specaudit-production-18ee.up.railway.app](https://specaudit-production-18ee.up.railway.app)
+
 SpecAudit is an AI-powered OpenAPI contract auditor that analyzes your API specification for security vulnerabilities, REST convention violations, schema issues, and naming inconsistencies. It streams structured audit reports with severity-tagged findings directly in your browser.
 
 ## Tech Stack
@@ -62,6 +64,26 @@ SpecAudit supports any OpenAI-compatible provider. Change the provider by editin
 > **Note:** `ProviderName` in `appsettings.json` is for display only and does not affect runtime behavior.
 
 After changing the provider, run `dotnet user-secrets set "Ai:ApiKey" "your-key-here"` with the corresponding key.
+
+## Deployment
+
+### Railway (one-click)
+
+1. Push this repo to GitHub
+2. [Create a new project](https://railway.app/new) → **Deploy from GitHub repo**
+3. Select the repository — Railway auto-detects the root `Dockerfile`
+4. Go to **Variables** and add:
+   ```
+   AI_API_KEY = your-groq-key
+   ```
+5. Deploy completes automatically
+
+### Docker Compose (any provider)
+
+```bash
+export AI_API_KEY=your-key-here
+docker-compose up --build
+```
 
 ## Running Tests
 

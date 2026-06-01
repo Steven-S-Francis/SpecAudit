@@ -16,7 +16,11 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
-app.UseCors("FrontendPolicy");
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("FrontendPolicy");
+}
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapAuditEndpoints();
