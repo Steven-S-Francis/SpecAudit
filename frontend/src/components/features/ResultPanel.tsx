@@ -48,6 +48,7 @@ export function ResultPanel({ content, isStreaming }: Props) {
     <div
       ref={containerRef}
       className="relative w-full mt-6 max-h-[60vh] overflow-y-auto rounded-lg"
+      style={{ padding: '5px' }}
     >
       {showSkeleton ? (
         <>

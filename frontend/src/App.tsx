@@ -15,6 +15,8 @@ function App() {
   const { theme, toggle } = useTheme();
   const [providerName, setProviderName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
+  const displayContent = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
 
   const handleCopy = useCallback(async () => {
     try {
@@ -175,7 +177,7 @@ function App() {
           )}
 
           <ResultPanel
-            content={state.result}
+            content={displayContent}
             isStreaming={state.status === 'streaming'}
           />
         </div>
