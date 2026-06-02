@@ -16,7 +16,7 @@
 | Ship agent (pipeline orchestrator) | `.opencode/agents/ship.md` |
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
 | Export as PDF | *(re-implemented with pdfmake, replacing html2pdf.js)* |
-| Integration tests (real OpenAPI fixtures) | *(pending commit)* |
+| Integration tests (real OpenAPI fixtures) | `517968b` |
 
 ---
 
