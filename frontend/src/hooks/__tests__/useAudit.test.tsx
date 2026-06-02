@@ -144,4 +144,80 @@ describe('useAudit', () => {
       error: null,
     });
   });
+
+  it('retries and succeeds after RateLimitError', async () => {
+    vi.useFakeTimers();
+
+    const mockStream = vi.fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Rate limit reached. Please wait...'), { name: 'RateLimitError' })
+      )
+      .mockResolvedValueOnce(undefined);
+
+    (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
+
+    const { result } = renderHook(() => useAudit());
+
+    // Start audit
+    act(() => { result.current.audit({ spec: 'test' }); });
+
+    // Flush microtasks so the auditStream rejection is processed by the catch block
+    await act(async () => {});
+    // Now the catch block has run: retryCount++, setState('loading'), setTimeout(1000)
+
+    // Should be in loading state (retry was triggered, now waiting for backoff)
+    expect(result.current.state.status).toBe('loading');
+
+    // Fire the 1s backoff timer synchronously; the callback calls audit(payload)
+    act(() => { vi.advanceTimersByTime(1100); });
+
+    // The recursive audit() call runs and auditStream resolves successfully
+    // Flush microtasks so the resolved promise and setState('complete') are processed
+    await act(async () => {});
+
+    // Second attempt should succeed
+    expect(result.current.state.status).toBe('complete');
+
+    vi.useRealTimers();
+  });
+
+  it('shows error after RateLimitError retries are exhausted', async () => {
+    vi.useFakeTimers();
+
+    const rateLimitErr = Object.assign(
+      new Error('Rate limit reached. Please wait...'),
+      { name: 'RateLimitError' }
+    );
+    const mockStream = vi.fn()
+      .mockRejectedValueOnce(rateLimitErr) // attempt 1 — original call
+      .mockRejectedValueOnce(rateLimitErr) // attempt 2 — retry 1
+      .mockRejectedValueOnce(rateLimitErr) // attempt 3 — retry 2
+      .mockRejectedValueOnce(rateLimitErr); // attempt 4 — blocked by maxRetries guard
+
+    (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
+
+    const { result } = renderHook(() => useAudit());
+
+    act(() => { result.current.audit({ spec: 'test' }); });
+
+    // Cycle 1: flush rejection → retryCount=1 → setTimeout(1000)
+    await act(async () => {});
+    expect(result.current.state.status).toBe('loading');
+    act(() => { vi.advanceTimersByTime(1100); });
+    // Cycle 2: flush rejection → retryCount=2 → setTimeout(2000)
+    await act(async () => {});
+    act(() => { vi.advanceTimersByTime(2100); });
+    // Cycle 3: flush rejection → retryCount=3 → maxRetries exhausted → error
+    await act(async () => {});
+    act(() => { vi.advanceTimersByTime(4100); });
+    await act(async () => {});
+
+    // After 3 retries exhausted, should show error
+    expect(result.current.state.status).toBe('error');
+
+    // auditStream called 4 times (original + 3 retries; 4th retry blocked by maxRetries guard)
+    expect(mockStream).toHaveBeenCalledTimes(4);
+
+    vi.useRealTimers();
+  });
 });

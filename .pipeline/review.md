@@ -1,52 +1,39 @@
-# Pipeline Review
+﻿# Pipeline Review
 **Date:** 2026-06-02
 
 ## Scope
-Dark mode toggle (light theme) feature: useTheme hook, ThemeToggle component, @custom-variant light in CSS, and light: variant classes across 6 components (App, Button, Card, InputPanel, ResultPanel, ThemeToggle). Includes 8 new tests (useTheme: 4, ThemeToggle: 3, App: +1).
+Rate-limit retry with exponential backoff (1s, 2s, 4s, max 3 retries) for the SpecAudit frontend. Two files modified: frontend/src/api/auditClient.ts (rate-limit sentinel detection) and frontend/src/hooks/useAudit.ts (retry logic). Four new tests across two test files.
 
 ## Assessment
 
-### Spec Compliance: FULLY COMPLIANT
-- frontend/src/index.css — matches spec: @custom-variant light (&:where(.light, .light *)); placed after @import "tailwindcss"
-- frontend/src/hooks/useTheme.ts — matches spec verbatim: useTheme hook with lazy useState, try/catch localStorage, classList.toggle on <html>, useCallback toggle
-- frontend/src/components/ui/ThemeToggle.tsx — matches spec verbatim: sun/moon SVG, aria-label, light: classes on button
-- frontend/src/App.tsx — all light: variants present as per spec table
-- frontend/src/components/ui/Button.tsx — ghost variant has light:border-slate-300 light:hover:border-slate-400 light:text-slate-600 per spec
-- frontend/src/components/ui/Card.tsx — light:bg-white light:border-slate-200 per spec
-- frontend/src/components/features/InputPanel.tsx — textarea has light:bg-white light:border-slate-300 light:text-slate-800; char counter has light:text-slate-500
-- frontend/src/components/features/ResultPanel.tsx — all 14 light: variants from spec present: outer div, h3, code block, inline code, hr, strong, p, skeleton (3x), cursor, CRITICAL/WARNING/INFO wrappers and labels
+- **Spec Compliance: NEEDS WORK** — auditClient.ts matches the spec exactly (sets err.name = 'RateLimitError' on rate-limit sentinels). However, useAudit.ts deviates from the spec: the spec showed unconditional retryCount.current = 0 at the top of audit() (which would cause infinite retries), but the implementation uses an isRetry parameter to guard the reset. This is actually a fix to a spec bug, but it means the spec no longer reflects the implementation. The isRetry parameter was never described in the spec. The pipeline artifacts (test-results.md) also claim a "Known Bug: Infinite Retry Loop" that does not exist in the actual code -- the isRetry guard correctly prevents it.
 
-### Test Quality: MEANINGFUL
-- useTheme (4 tests): Defaults to dark, toggle flips dark<->light, persists to localStorage, applies/removes .light class on <html> — tests real behavior
-- ThemeToggle (3 tests): Sun icon in dark mode (circle SVG), moon icon in light mode (crescent path), click triggers callback — meaningful
-- App (1 new test): Verifies toggle button by aria-label is present in header — basic integration smoke
-- All 8 tests are deterministic, use renderHook/render + act/fireEvent, cover key behaviors
+- **Build: FAILS** -- npm run build (which runs tsc -b && vite build) fails with:
+  src/hooks/useAudit.ts(29,9): error TS18047: 'abortRef.current' is possibly 'null'.
+  When isRetry is true, the if (!isRetry) block is skipped, so abortRef.current is never reassigned. TypeScript correctly flags abortRef.current.signal as potentially null. The test-results.md incorrectly claims ZERO ERRORS. Fix: Add a non-null assertion (abortRef.current!.signal) or a runtime guard.
 
-### Security: NO ISSUES
-- localStorage.getItem and setItem both wrapped in try/catch — graceful degradation
-- No user data interpolated into innerHTML or dangerous attributes
-- No API keys or sensitive data touched by this feature
+- **Test Quality: GOOD** -- All 4 new tests are meaningful:
+  1. RateLimitError name detection (positive)
+  2. Non-rate-limit error name (negative)
+  3. Retry after RateLimitError -> success
+  4. Retry exhaustion -> error state
+  All 67 frontend tests pass (10/10 files), all 11 backend tests pass. The retry-exhaustion test has a misleading comment ("attempt 4 -- should not be reached" although it is reached), but the test logic is correct. Tests use vi.useFakeTimers() plus manual act() advancement, which is functional but somewhat fragile.
 
-### Performance: NO CONCERNS
-- Class toggle on document.documentElement is O(1) DOM mutation
-- SVG icons are inline, tiny (20x20), no network requests
-- No re-render cascades beyond the theme state change
+- **Security: PASS** -- No concerns. Rate-limit detection is purely client-side string matching; no new network or data exposure.
 
-### Correctness: FULLY CORRECT
-- .light class toggle: classList.toggle('light', theme === 'light') — adds when light, removes when dark
-- CSS variant &:where(.light, .light *) matches all descendants of any element with .light class
-- Dark mode is the default (first visit / localStorage unavailable)
-- aria-label dynamically reads "Switch to light mode" / "Switch to dark mode" based on current theme
-- Sun icon (circle+rays) shown in dark mode; moon icon (crescent) shown in light mode
-- localStorage key is specaudit-theme — matches spec
-- Minor: strong in ResultPanel has light:text-slate-900 (not in spec table but a necessary fix — original text-slate-100 would be invisible on white background)
+- **Performance: PASS** -- At most 3 retries with exponential backoff. Minimal overhead.
 
-## Build Verification
-| Check | Result |
-|-------|--------|
-| npm run build | Zero errors |
-| npm run test -- --run | 63/63 passed |
-| dotnet test SpecAudit.slnx | 11/11 passed |
+- **Correctness: PASS (with notes)** -- The isRetry parameter correctly prevents retryCount reset during recursive retries. The recursive call audit(payload, true) is fire-and-forget (not awaited), which means calling code cannot await the retry result. This is acceptable for a UI hook (React re-renders pick up state changes) but should be documented. The useCallback with [] deps is safe (only captures refs and setState, which are stable). No infinite retry bug exists in the actual code.
+
+## Recommendations
+
+1. Fix TypeScript error on line 29 of useAudit.ts: change abortRef.current.signal to abortRef.current!.signal.
+2. Update spec to document the isRetry parameter approach instead of the unconditional retryCount.current = 0 reset.
+3. Update test-results.md to remove the false "Known Bug: Infinite Retry Loop" claim -- the bug only exists in the spec, not the implementation.
+4. Fix misleading comment in useAudit.test.tsx line 195: "attempt 4 -- should not be reached" should say "attempt 4 -- triggers error path (retryCount 3 >= maxRetries 3)".
 
 ## Verdict
-**VERDICT: SHIP** — All 8 new tests pass, all 63 frontend tests pass, all 11 backend tests pass, zero TypeScript errors. The implementation is fully spec-compliant, tests are meaningful, and there are no security, performance, or correctness issues.
+
+**VERDICT: BLOCK**
+
+The npm run build command fails with a TypeScript strict-null error. The code cannot be compiled or shipped in its current state. The fix is a single-character change (abortRef.current!.signal). After the fix is applied, verify that npm run build, npm run test -- --run, and dotnet test SpecAudit.slnx all pass before shipping.

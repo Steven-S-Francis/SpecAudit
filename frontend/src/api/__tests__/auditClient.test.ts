@@ -99,6 +99,42 @@ describe('auditStream', () => {
     expect(onChunk).toHaveBeenNthCalledWith(1, 'chunk1');
   });
 
+  it('throws with name RateLimitError for rate limit sentinel', async () => {
+    const sseBody = 'data: "[SPECAUDIT_ERROR] Rate limit reached. Please wait..."\n\n';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      createMockResponse(true, 200, sseBody)
+    );
+    const onChunk = vi.fn();
+    const signal = new AbortController().signal;
+
+    let thrown: Error | null = null;
+    try {
+      await auditStream({ spec: 'test' }, onChunk, signal);
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown!.name).toBe('RateLimitError');
+  });
+
+  it('throws with name Error for non-rate-limit sentinel', async () => {
+    const sseBody = 'data: "[SPECAUDIT_ERROR] Invalid API key"\n\n';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      createMockResponse(true, 200, sseBody)
+    );
+    const onChunk = vi.fn();
+    const signal = new AbortController().signal;
+
+    let thrown: Error | null = null;
+    try {
+      await auditStream({ spec: 'test' }, onChunk, signal);
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown!.name).toBe('Error');
+  });
+
   it('throws an error when the response body is null', async () => {
     const response = {
       ok: true,

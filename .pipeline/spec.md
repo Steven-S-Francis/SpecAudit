@@ -1,214 +1,306 @@
-# SpecAudit: Dark Mode Toggle (Light Theme)
+# SpecAudit: Rate-Limit Retry with Exponential Backoff
 
 ## Feature Summary
 
-Add a sun/moon toggle button in the header that switches the app between the existing dark theme and a new light theme. Preference persists in `localStorage`.
+When the AI provider returns a rate-limit error (HTTP 429), the frontend automatically retries the audit request up to 3 times with exponential backoff (1s, 2s, 4s) before showing an error. No user action required.
 
 ## Architecture
 
-| Layer | File | What |
-|-------|------|------|
-| CSS variant | `frontend/src/index.css` | Add `@custom-variant light` |
-| Theme hook | `frontend/src/hooks/useTheme.ts` | State, toggle, localStorage, `<html>` class |
-| Toggle UI | `frontend/src/components/ui/ThemeToggle.tsx` | Sun/moon SVG button |
-| Theme wiring | `frontend/src/App.tsx` | Use hook, add toggle in header, `light:` classes |
-| Components | 4 modified files | Add `light:` variants for light mode colors |
+| Layer | File | Change |
+|-------|------|--------|
+| **SSE client** | `frontend/src/api/auditClient.ts` | Detect rate-limit sentinel, throw `RateLimitError` |
+| **Hook** | `frontend/src/hooks/useAudit.ts` | Catch `RateLimitError`, retry with backoff |
 
-## Files to Create
+No backend changes — the backend already detects 429 from the AI provider and sends `[SPECAUDIT_ERROR] Rate limit reached...` inside the SSE stream.
 
-### 1. `frontend/src/hooks/useTheme.ts`
+## No new files — only modify existing files
 
-```tsx
-import { useCallback, useEffect, useState } from 'react';
+### 1. `frontend/src/api/auditClient.ts`
 
-type Theme = 'dark' | 'light';
+In the SSE parsing loop where `[SPECAUDIT_ERROR]` is detected, distinguish rate-limit errors from other errors:
 
-export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    try {
-      const stored = localStorage.getItem('specaudit-theme');
-      if (stored === 'light' || stored === 'dark') return stored;
-    } catch {
-      // localStorage unavailable (SSR, privacy mode)
-    }
-    return 'dark';
-  });
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('light', theme === 'light');
-    try {
-      localStorage.setItem('specaudit-theme', theme);
-    } catch {
-      // localStorage unavailable
-    }
-  }, [theme]);
-
-  const toggle = useCallback(() => {
-    setTheme(t => t === 'dark' ? 'light' : 'dark');
-  }, []);
-
-  return { theme, toggle };
+**Current code (lines 42-44):**
+```ts
+if (chunk.startsWith('[SPECAUDIT_ERROR]')) {
+  throw new Error(chunk.replace('[SPECAUDIT_ERROR]', '').trim());
 }
 ```
 
-### 2. `frontend/src/components/ui/ThemeToggle.tsx`
-
-```tsx
-interface Props {
-  theme: 'dark' | 'light';
-  onToggle: () => void;
-}
-
-export function ThemeToggle({ theme, onToggle }: Props) {
-  return (
-    <button
-      onClick={onToggle}
-      className="text-slate-400 hover:text-slate-200 transition-colors light:text-slate-500 light:hover:text-slate-700"
-      aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-    >
-      {theme === 'dark' ? (
-        /* Sun icon - shown in dark mode, clicking switches to light */
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="5" />
-          <line x1="12" y1="1" x2="12" y2="3" />
-          <line x1="12" y1="21" x2="12" y2="23" />
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-          <line x1="1" y1="12" x2="3" y2="12" />
-          <line x1="21" y1="12" x2="23" y2="12" />
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-        </svg>
-      ) : (
-        /* Moon icon - shown in light mode, clicking switches to dark */
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg>
-      )}
-    </button>
-  );
+**New code:**
+```ts
+if (chunk.startsWith('[SPECAUDIT_ERROR]')) {
+  const message = chunk.replace('[SPECAUDIT_ERROR]', '').trim();
+  const isRateLimit = /rate limit/i.test(message);
+  const err = new Error(message);
+  err.name = isRateLimit ? 'RateLimitError' : 'Error';
+  throw err;
 }
 ```
 
-## Files to Modify
+The `err.name` property is the only change — the hook uses it to decide whether to retry.
 
-### 3. `frontend/src/index.css`
+### 2. `frontend/src/hooks/useAudit.ts`
 
-Add the `@custom-variant` directive after the Tailwind import:
-```css
-@import "tailwindcss";
+Add retry logic inside the hook. Three changes:
 
-@custom-variant light (&:where(.light, .light *));
+**a) Add refs after `abortRef`:**
+
+```ts
+const retryCount = useRef(0);
+const maxRetries = 3;
 ```
 
-### 4. `frontend/src/App.tsx`
+**b) Reset retry count at the start of `audit()` — add after `abortRef.current?.abort()`:**
 
-Changes:
-- Import `useTheme` from `./hooks/useTheme`
-- Import `ThemeToggle` from `./components/ui/ThemeToggle`
-- Call `const { theme, toggle } = useTheme();` inside `App` body
-- Add `<ThemeToggle>` in the header's right side (next to provider badge)
-- Add `light:` variant classes to key elements:
-
-| Current class | Add `light:` variant |
-|---|---|
-| `min-h-screen bg-slate-950 text-slate-200 p-6 lg:p-10` | `light:bg-white light:text-slate-800` |
-| `text-slate-100` (h1) | `light:text-slate-900` |
-| `text-slate-400` (subtitle) | `light:text-slate-500` |
-| `text-slate-500 bg-slate-900 border border-slate-800` (badge) | `light:text-slate-600 light:bg-slate-100 light:border-slate-300` |
-| `text-slate-300` (h2 heading) | `light:text-slate-700` |
-| `border-red-800 bg-red-950/20` (error card) | `light:border-red-200 light:bg-red-50` |
-| `text-red-400` (error text) | `light:text-red-600` |
-
-### 5. `frontend/src/components/ui/Button.tsx`
-
-Add `light:` variant to the `ghost` variant style:
-```
-'ghost': 'border border-slate-600 hover:border-slate-400 text-slate-300 light:border-slate-300 light:hover:border-slate-400 light:text-slate-600'
+```ts
+retryCount.current = 0;
 ```
 
-### 6. `frontend/src/components/ui/Card.tsx`
+**c) Modify the catch block to detect `RateLimitError` and retry:**
 
-Add `light:` variant classes to the wrapper:
+**Current catch block (lines 28-38):**
+```ts
+} catch (err) {
+  if ((err as Error).name === 'AbortError') {
+    setState(s => ({ ...s, status: 'idle' }));
+  } else {
+    setState(s => ({
+      ...s,
+      status: 'error',
+      error: (err as Error).message,
+    }));
+  }
+}
 ```
-bg-slate-900 border border-slate-800 rounded-xl p-6
-  ↓
-bg-slate-900 border border-slate-800 rounded-xl p-6 light:bg-white light:border-slate-200
+
+**New catch block:**
+```ts
+} catch (err) {
+  if ((err as Error).name === 'AbortError') {
+    setState(s => ({ ...s, status: 'idle' }));
+    retryCount.current = 0;
+  } else if (
+    (err as Error).name === 'RateLimitError' &&
+    retryCount.current < maxRetries
+  ) {
+    retryCount.current++;
+    setState({ status: 'loading', result: '', error: null });
+    const delay = 1000 * Math.pow(2, retryCount.current - 1);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    audit(payload); // retry — payload is captured from outer scope
+  } else {
+    retryCount.current = 0;
+    setState(s => ({
+      ...s,
+      status: 'error',
+      error: (err as Error).message,
+    }));
+  }
+}
 ```
 
-### 7. `frontend/src/components/features/InputPanel.tsx`
+## State transitions during retry
 
-Add `light:` variant classes:
+| State | What user sees |
+|-------|---------------|
+| `loading` | Skeleton (initial attempt or retrying after rate limit) |
+| `streaming` | Results appear (successful retry) |
+| `error` | Error card (after 3 retries or non-rate-limit error) |
+| `idle` | Aborted (user clicked Stop during retry delay) |
 
-| Current | Add |
-|---------|-----|
-| `bg-slate-950 border border-slate-700 rounded-lg p-4 text-slate-200` (textarea) | `light:bg-white light:border-slate-300 light:text-slate-800` |
-| `text-slate-400` (char counter) | `light:text-slate-500` |
+## Edge cases
 
-### 8. `frontend/src/components/features/ResultPanel.tsx`
-
-Add `light:` variant classes:
-
-| Current | Add |
-|---------|-----|
-| `text-slate-200` (outer div) | `light:text-slate-800` |
-| `text-slate-100` (h3 default) | `light:text-slate-900` |
-| `bg-slate-900 border border-slate-700 text-slate-300` (code block) | `light:bg-slate-100 light:border-slate-300 light:text-slate-600` |
-| `bg-slate-800 text-amber-300` (inline code) | `light:bg-slate-200 light:text-amber-700` |
-| `border-slate-700` (hr) | `light:border-slate-300` |
-| `text-slate-400` (paragraph) | `light:text-slate-500` |
-| `bg-slate-800 animate-pulse` (skeleton) | `light:bg-slate-200` |
-| `bg-slate-400 animate-pulse` (blinking cursor) | `light:bg-slate-500` |
-| `bg-red-950/40` (CRITICAL wrapper) | `light:bg-red-50` |
-| `text-red-300` (CRITICAL label) | `light:text-red-600` |
-| `bg-amber-950/40` (WARNING wrapper) | `light:bg-amber-50` |
-| `text-amber-300` (WARNING label) | `light:text-amber-600` |
-| `bg-blue-950/40` (INFO wrapper) | `light:bg-blue-50` |
-| `text-blue-300` (INFO label) | `light:text-blue-600` |
+| Case | Behavior |
+|------|----------|
+| User clicks Stop during retry delay | `abortRef.current?.abort()` at top of `audit()` → old ref is aborted → nothing happens; new `audit()` starts fresh |
+| Rate limit on first attempt, success on retry | User sees loading → error is silent → loading again → streaming completes |
+| Rate limit 3 times in a row | Error card shown: "Rate limit reached. Please wait a moment and try again..." |
+| Non-rate-limit error (invalid API key) | Immediately shows error — no retry |
+| User submits new spec during retry delay | `abortRef.current?.abort()` cancels old pending retry, fresh `audit()` starts |
+| Component unmounts during retry delay | `setState` on unmounted component warning (pre-existing pattern — acceptable) |
 
 ## Tests
 
-### 9. `frontend/src/hooks/__tests__/useTheme.test.tsx` (new)
+### 3. `frontend/src/api/__tests__/auditClient.test.ts` — add 1 test
 
-4 tests:
+Add after the existing "throws an error when SSE data contains an error sentinel" test:
 
-| Test | What it verifies |
-|------|-----------------|
-| `defaults to dark theme` | theme is 'dark' on first render |
-| `toggle switches to light and back` | toggle() flips, toggle() again flips back |
-| `persists to localStorage` | After toggle, localStorage.getItem('specaudit-theme') === 'light' |
-| `applies light class to html element` | document.documentElement has .light when theme='light' |
-
-Use `renderHook` from `@testing-library/react`.
-
-Mock `localStorage`:
 ```ts
-beforeEach(() => {
-  localStorage.clear();
+it('throws with name RateLimitError for rate limit sentinel', async () => {
+  const sseBody = 'data: "[SPECAUDIT_ERROR] Rate limit reached. Please wait..."\n\n';
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    createMockResponse(true, 200, sseBody)
+  );
+  const onChunk = vi.fn();
+  const signal = new AbortController().signal;
+
+  let thrown: Error | null = null;
+  try {
+    await auditStream({ spec: 'test' }, onChunk, signal);
+  } catch (err) {
+    thrown = err as Error;
+  }
+  expect(thrown).not.toBeNull();
+  expect(thrown!.name).toBe('RateLimitError');
 });
 ```
 
-### 10. `frontend/src/components/ui/__tests__/ThemeToggle.test.tsx` (new)
+### 4. `frontend/src/hooks/__tests__/useAudit.test.tsx` — add 2 tests
 
-3 tests:
+Add after the existing "abort cancels the ongoing audit and sets idle" test:
 
-| Test | What it verifies |
-|------|-----------------|
-| `renders sun icon in dark mode` | SVG with circle element present |
-| `renders moon icon in light mode` | SVG with path d="M21..." present |
-| `calls onToggle on click` | fireEvent.click triggers the callback |
+**Test 1 — retries on RateLimitError:**
+```ts
+it('retries audit when RateLimitError occurs', async () => {
+  const auditStream = vi.fn();
+  vi.mock('../../api/auditClient', () => ({ auditStream }));
 
-### 11. Update `frontend/src/components/features/__tests__/App.test.tsx`
+  // First call throws RateLimitError, second call succeeds
+  auditStream
+    .mockRejectedValueOnce(Object.assign(new Error('Rate limit reached'), { name: 'RateLimitError' }))
+    .mockResolvedValueOnce(undefined);
 
-Add 1 test: `renders theme toggle button in header` — verify the toggle button (by aria-label) is present.
+  const { result } = renderHook(() => useAudit());
+
+  await act(async () => {
+    result.current.audit({ spec: 'test' });
+  });
+
+  // Should have been called twice (first attempt + retry)
+  expect(auditStream).toHaveBeenCalledTimes(2);
+});
+
+// Wait — this test won't work because of the setTimeout delay and recursive audit call
+```
+
+Actually, testing the retry with async timers is tricky. Let me use `vi.useFakeTimers()`:
+
+```ts
+it('retries audit when RateLimitError occurs', async () => {
+  vi.useFakeTimers();
+  const mockAuditStream = vi.fn();
+  mockAuditStream
+    .mockRejectedValueOnce(Object.assign(new Error('Rate limit'), { name: 'RateLimitError' }))
+    .mockResolvedValueOnce(undefined);
+
+  // We need to mock the module before importing useAudit
+  // So we mock at the top of the file using vi.mock
+  // Actually, auditStream is already mocked at the top level in the existing tests
+
+  const { result } = renderHook(() => useAudit());
+
+  act(() => {
+    result.current.audit({ spec: 'test' });
+  });
+
+  // First call happened, now we're in the retry delay
+  // Fast-forward past the 1s backoff
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+
+  // The retry should have been attempted
+  // Check status
+  await waitFor(() => {
+    expect(result.current.state.status).not.toBe('error');
+  });
+
+  vi.useRealTimers();
+});
+```
+
+Hmm, the existing tests use a mock of `auditStream` at the module level. Let me look at the current test to understand the pattern.
+
+Looking at the existing test structure:
+
+```tsx
+import { auditStream } from '../../api/auditClient';
+// ...
+
+vi.mock('../../api/auditClient', () => ({
+  auditStream: vi.fn(),
+}));
+```
+
+And in each test:
+```tsx
+(auditStream as ReturnType<typeof vi.fn>).mockImplementation(...)
+```
+
+So `auditStream` is already mocked at the module level. I can build on this pattern. But the test needs to handle:
+1. `auditStream` throwing `RateLimitError`
+2. The `setTimeout` delay during retry
+3. `audit` being called recursively
+
+This is complex to test with fake timers. Let me simplify:
+
+**Test 1 — retries on RateLimitError:**
+Use `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`. Mock `auditStream` to throw on first call, succeed on second. Verify state transitions through loading → error (retry) → streaming → complete.
+
+**Test 2 — stops after max retries:**
+Mock `auditStream` to always throw `RateLimitError`. Advance timers through 3 backoff periods. Verify final state is 'error'.
+
+**Updated test plan:**
+
+```tsx
+it('retries audit after RateLimitError and succeeds', async () => {
+  vi.useFakeTimers();
+  const mockStream = vi.fn()
+    .mockRejectedValueOnce(Object.assign(new Error('Rate limit'), { name: 'RateLimitError' }))
+    .mockResolvedValueOnce(undefined);
+
+  (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
+
+  const { result } = renderHook(() => useAudit());
+
+  act(() => { result.current.audit({ spec: 'test' }); });
+
+  // Wait for first call to fail and enter retry delay
+  await vi.advanceTimersByTimeAsync(100); // allow initial call to fail
+  expect(result.current.state.status).toBe('loading'); // reset to loading during retry
+
+  // Fast-forward past the 1s backoff
+  await vi.advanceTimersByTimeAsync(1000);
+
+  // Should complete successfully now
+  await waitFor(() => {
+    expect(result.current.state.status).toBe('complete');
+  });
+
+  vi.useRealTimers();
+});
+```
+
+**Test 2 — retries exhausted:**
+```tsx
+it('shows error after rate limit retries are exhausted', async () => {
+  vi.useFakeTimers();
+  const rateLimitErr = Object.assign(new Error('Rate limit'), { name: 'RateLimitError' });
+  const mockStream = vi.fn()
+    .mockRejectedValueOnce(rateLimitErr) // attempt 1
+    .mockRejectedValueOnce(rateLimitErr) // attempt 2
+    .mockRejectedValueOnce(rateLimitErr); // attempt 3
+
+  (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
+
+  const { result } = renderHook(() => useAudit());
+
+  act(() => { result.current.audit({ spec: 'test' }); });
+
+  // Fast-forward through 1s + 2s + 4s backoffs + last attempt
+  await vi.advanceTimersByTimeAsync(10000);
+  await waitFor(() => {
+    expect(result.current.state.status).toBe('error');
+  });
+
+  vi.useRealTimers();
+});
+```
 
 ## Completion Criteria
 
 - [ ] `npm run build` — zero TypeScript errors
-- [ ] `npm run test -- --run` — all existing + new tests pass (expect 55 → 63 total)
+- [ ] `npm run test -- --run` — all existing + new tests pass (expect 63 → 66 total)
 - [ ] `dotnet test SpecAudit.slnx` — backend tests still pass
-- [ ] Click sun icon → page switches to light (white bg, dark text)
-- [ ] Click moon icon → page switches back to dark
-- [ ] Refresh page → preference persists from localStorage
-- [ ] Audit results render correctly in both themes
-- [ ] All severity badges (CRITICAL/WARNING/INFO) visible in light mode
+- [ ] Simulate rate limit: backend returns `[SPECAUDIT_ERROR] Rate limit reached...` → frontend retries silently → audit completes
+- [ ] After 3 rate limits → error card appears

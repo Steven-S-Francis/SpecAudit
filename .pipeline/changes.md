@@ -127,7 +127,12 @@
 
 ### `e19dc51` — fix: correct pipeline path in review agent prompt (`./pipeline/` → `.pipeline/`)
 
-### *(current commit)* — feat: add dark mode toggle (light theme)
+### *(current commit)* — feat: rate-limit retry with exponential backoff
+
+- **`frontend/src/api/auditClient.ts`** — In `[SPECAUDIT_ERROR]` detection block, distinguish rate-limit messages via `/rate limit/i` regex; set `err.name = 'RateLimitError'` for rate-limit sentinels, `'Error'` for others
+- **`frontend/src/hooks/useAudit.ts`** — Added `retryCount` ref and `maxRetries = 3` constant; reset retry count at start of `audit()`; in catch block, detect `RateLimitError` and retry with exponential backoff (1s, 2s, 4s); reset retry count on `AbortError` and non-rate-limit errors
+
+### *(previous)* — feat: add dark mode toggle (light theme)
 
 - **New `frontend/src/hooks/useTheme.ts`** — `useTheme` hook: manages `dark`/`light` state, persists to `localStorage` under key `specaudit-theme`, toggles `.light` class on `<html>` element
 - **New `frontend/src/components/ui/ThemeToggle.tsx`** — sun (circle + rays SVG) / moon (crescent SVG) button with `aria-label` for accessibility; uses `light:` variant classes for own styling
@@ -146,6 +151,14 @@
 - **New tests (7):** `frontend/src/components/ui/__tests__/Button.test.tsx` (3), `frontend/src/components/features/__tests__/App.test.tsx` (4)
 - **Pipeline verdict:** SHIP — all checks pass (55 frontend, 11 backend, zero TS errors)
 
+### *(current commit)* — feat: add rate-limit retry with exponential backoff
+
+- **`frontend/src/api/auditClient.ts`** — rate-limit `[SPECAUDIT_ERROR]` sentinels detected via `/rate limit/i` regex; thrown error has `name === 'RateLimitError'` (other errors keep `name === 'Error'`)
+- **`frontend/src/hooks/useAudit.ts`** — added `retryCount` ref (`maxRetries = 3`); `audit()` now accepts optional `isRetry` parameter to prevent retry count reset on recursive calls; catch block detects `RateLimitError` and retries with exponential backoff (1s, 2s, 4s); non-rate-limit and exhausted retries show error state
+- **Bug fix:** Added `!` non-null assertion on `abortRef.current!.signal` for TypeScript strict-null compliance when `isRetry === true` (skips `AbortController` creation)
+- **New tests (4):** rate-limit sentinel throws `RateLimitError`; non-rate-limit sentinel throws `Error`; retry succeeds after backoff; retries exhaust after 3 attempts
+- **Pipeline verdict:** SHIP — all checks pass (67 frontend, 11 backend, zero TS errors)
+
 ---
 
 ## Tester Focus Areas
@@ -163,6 +176,16 @@
 | **Error card in light mode** | Trigger an error → red-bordered card with visible text on white bg | Error message invisible |
 | **Code blocks in light mode** | Audit results with code blocks → light background (`bg-slate-100`) with dark text | Unreadable code |
 | **Skeleton in light mode** | Initial load (no content yet) → skeleton animation uses light gray (`bg-slate-200`) | Dark skeleton on white bg |
+
+### New: Rate-Limit Retry with Exponential Backoff
+
+| Area | What to test | Risk if broken |
+|------|-------------|----------------|
+| **Rate-limit retry** | Backend sends `[SPECAUDIT_ERROR] Rate limit reached...` → frontend retries silently after 1s → audit completes | Error shows immediately instead of retrying |
+| **3 retries exhausted** | Backend sends rate-limit error 3 times → frontend retries 3 times (1s, 2s, 4s delays) → error card appears | Infinite retry loop or wrong number of retries |
+| **Non-rate-limit error** | Backend sends `[SPECAUDIT_ERROR] Invalid API key...` → error shown immediately, no retry | Non-rate-limit errors also get retried |
+| **Stop during retry delay** | User clicks Stop during the 1s/2s/4s backoff delay → audit aborts and resets to idle | In-flight retry continues after abort |
+| **New submission during retry** | User submits new spec while retry is pending → old retry cancelled, fresh audit starts | Two audits run concurrently |
 
 ### New: Copy to Clipboard
 | Area | What to test | Risk if broken |

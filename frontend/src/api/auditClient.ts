@@ -40,7 +40,11 @@ export async function auditStream(
       const chunk: string = JSON.parse(rawChunk);
 
       if (chunk.startsWith('[SPECAUDIT_ERROR]')) {
-        throw new Error(chunk.replace('[SPECAUDIT_ERROR]', '').trim());
+        const message = chunk.replace('[SPECAUDIT_ERROR]', '').trim();
+        const isRateLimit = /rate limit/i.test(message);
+        const err = new Error(message);
+        err.name = isRateLimit ? 'RateLimitError' : 'Error';
+        throw err;
       }
       onChunk(chunk);
     }
