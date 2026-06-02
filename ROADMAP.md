@@ -17,7 +17,8 @@
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
 | Export as PDF | *(re-implemented with pdfmake, replacing html2pdf.js)* |
 | Integration tests (real OpenAPI fixtures) | `517968b` |
-| Export as JSON | `8145305` (+ trailing newline fix) |
+| Export as JSON (basic) | `8145305` (+ trailing newline fix) |
+| Structured JSON export (findings + summary objects) | `37b7a0d` |
 
 ---
 
