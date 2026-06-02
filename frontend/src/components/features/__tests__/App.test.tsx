@@ -8,6 +8,11 @@ vi.mock('../../../hooks/useAudit', () => ({
   useAudit: vi.fn(),
 }));
 
+// Mock exportPdf to avoid real pdfmake calls
+vi.mock('../../../utils/exportPdf', () => ({
+  exportPdf: vi.fn(),
+}));
+
 // Mock the useTheme hook
 vi.mock('../../../hooks/useTheme', () => ({
   useTheme: vi.fn(),
@@ -15,6 +20,7 @@ vi.mock('../../../hooks/useTheme', () => ({
 
 import { useAudit } from '../../../hooks/useAudit';
 import { useTheme } from '../../../hooks/useTheme';
+import { exportPdf } from '../../../utils/exportPdf';
 
 const mockUseAudit = useAudit as ReturnType<typeof vi.fn>;
 const mockUseTheme = useTheme as ReturnType<typeof vi.fn>;
@@ -270,5 +276,28 @@ describe('App Export PDF Button', () => {
     await waitFor(() => {});
     const button = screen.getByRole('button', { name: /export pdf/i });
     expect(button).toBeDisabled();
+  });
+
+  it('calls exportPdf on Export PDF button click', async () => {
+    const reportContent = 'Full audit report text';
+    mockUseAudit.mockReturnValue({
+      state: { status: 'complete', result: reportContent, error: null },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    const button = screen.getByRole('button', { name: /export pdf/i });
+    expect(button).toBeEnabled();
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    expect(exportPdf).toHaveBeenCalledTimes(1);
+    expect(exportPdf).toHaveBeenCalledWith(reportContent);
   });
 });
