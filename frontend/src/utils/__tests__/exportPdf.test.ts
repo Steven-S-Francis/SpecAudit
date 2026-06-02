@@ -12,9 +12,6 @@ vi.mock('html2pdf.js', () => {
     from: mockFrom,
     save: mockSave,
   });
-  mockInstance.set = mockSet;
-  mockInstance.from = mockFrom;
-  mockInstance.save = mockSave;
   return { default: mockInstance };
 });
 

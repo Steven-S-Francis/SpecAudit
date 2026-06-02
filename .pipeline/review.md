@@ -1,42 +1,22 @@
-﻿# Review Verdict: Export as PDF Feature
+﻿# Review Verdict: Fix TS2339 errors in exportPdf.test.ts mock
 
 **Verdict: SHIP**
 
----
+## Summary
+Reviewed the fix for TS2339 errors in rontend/src/utils/__tests__/exportPdf.test.ts. The change removes 3 dead lines (mockInstance property assignments) that were redundant because mockReturnValue already provides { set, from, save } on the mock function's return value. The assignments were writing properties onto the function object itself — properties never consumed by the production code.
 
-## Previous Issues — All Fixed
-
-| # | Issue | Status | Evidence |
-|---|-------|--------|----------|
-| 1 🔴 | handleExportPdf unhandled promise rejection | ✅ **Fixed** | `App.tsx:44-50`: callback is now `async` with `await exportPdf(...)` inside try/catch. Any async rejection from `html2pdf().save()` is properly caught. |
-| 2 🟡 | Missing exportPdf.test.ts | ✅ **Fixed** | Created at `frontend/src/utils/__tests__/exportPdf.test.ts` with 3 tests: callable check, empty-content no-op, filename parameter acceptance. All pass. |
-| 3 🟡 | Missing Export PDF button tests in App.test.tsx | ✅ **Fixed** | Added 3 tests under `"App Export PDF Button"` describe block: hides when result empty, shows with content, disabled during streaming. All pass. |
-| 4 🟡 | exportPdf missing optional filename parameter | ✅ **Fixed** | Signature: `export async function exportPdf(content: string, filename?: string): Promise<void>`. Uses `filename ?? `specaudit-report-${Date.now()}.pdf`` for default. |
-
----
-
-## Verification Summary
-
+## Verification Checks
 | Check | Result |
 |-------|--------|
-| **npm test -- --run** | **82/82 passed** across 13 files (was 76/76 across 12 files) |
-| **npx tsc --noEmit** | **Zero errors** |
-| New utility tests (exportPdf.test.ts) | 3/3 pass |
-| New App button tests (App.test.tsx) | 3/3 pass (12 total in file, up from 9) |
-| handleExportPdf is async + awaited | ✅ |
-| exportPdf accepts filename? | ✅ |
-| Button hidden when state.result empty | ✅ |
-| Button shown when state.result non-empty | ✅ |
-| Button disabled during streaming | ✅ |
-| No pdfLoading state per user decision | ✅ |
-| Filename convention matches spec | ✅ (specaudit-report-<timestamp>.pdf) |
-| White background, readable fonts (Option B) | ✅ |
-| Empty content early return (no-op) | ✅ |
-| Hidden off-screen container cleanup (finally) | ✅ |
-| User decision compliance (all 3 decisions) | ✅ |
+| TypeScript zero errors | ✅ |
+| 82/82 tests pass | ✅ |
+| Docker build succeeds | ✅ |
 
----
+## What was reviewed
+- **Spec** (.pipeline/spec.md): Delete lines 15–17 (mockInstance.set = mockSet; mockInstance.from = mockFrom; mockInstance.save = mockSave;)
+- **Change** (git diff): Exactly those 3 lines removed — nothing else.
+- **Test results** (.pipeline/test-results.md): All 3 verification steps passed.
+- **Actual file**: Clean file with no residual dead code; mock setup is complete via mockReturnValue alone.
 
 ## Final Verdict
-
-**SHIP.** All four previously flagged issues have been correctly resolved. Tests are now 82/82 passing, TypeScript is clean, and the implementation faithfully matches both the spec and the user decisions.
+**SHIP.** The change is correct, minimal, and complete. The 3 deleted lines were redundant dead code that caused TS2339: Property does not exist on type 'Mock<Procedure>'. The mock already returns { set, from, save } via .mockReturnValue({...}), so the chained calls consumed by exportPdf are unaffected. All verification steps (TypeScript zero errors, 82/82 tests pass, Docker build succeeds) confirm the fix is clean. The changes.md entry is accurate and descriptive.

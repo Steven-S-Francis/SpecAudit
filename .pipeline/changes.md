@@ -199,6 +199,10 @@
 
 ---
 
+### `(working tree)` — fix: remove dead mock property assignments causing TS2339 in exportPdf.test.ts
+
+- **`frontend/src/utils/__tests__/exportPdf.test.ts`** — deleted 3 dead lines (`mockInstance.set = mockSet;`, `mockInstance.from = mockFrom;`, `mockInstance.save = mockSave;`) that assigned properties directly onto a `vi.fn()` mock function object, causing TypeScript error TS2339 ("Property does not exist on type 'Mock<Procedure>'"). The mock already returns `{ set, from, save }` via `.mockReturnValue({...})`, so these assignments were redundant dead code. Removing them has zero behavioral change — the chained return values consumed by `exportPdf` are unaffected.
+
 ## Tester Focus Areas
 
 ### New: Dark Mode Toggle
