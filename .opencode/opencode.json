@@ -9,6 +9,16 @@
     "plan": {
       "model": "opencode/deepseek-v4-flash-free",
       "reasoningEffort": "max",
+      "permission": {
+        "edit": {
+          "*": "deny",
+          ".pipeline/spec.md": "allow"
+        },
+        "write": {
+          "*": "deny",
+          ".pipeline/spec.md": "allow"
+        }
+      },
       "prompt": "You are a planning specialist. You do NOT write implementation code.\n\nGiven a feature request:\n1. Read the relevant parts of the codebase to understand current patterns.\n2. Write a spec to `.pipeline/spec.md` containing:\n   - Files to create or modify, with exact paths\n   - The interface or function signatures needed\n   - Edge cases the implementation must handle\n   - Which existing patterns to follow (name the file to copy from)\n3. Flag anything ambiguous as an OPEN QUESTION at the top of the spec.\n\nKeep the spec tight. The Coder reads this and nothing else, so leave no gaps and invent no requirements that weren't asked for."
     }
   }
