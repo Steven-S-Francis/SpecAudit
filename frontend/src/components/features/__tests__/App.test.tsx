@@ -689,4 +689,44 @@ describe('App Export JSON Button', () => {
     expect(parsed.result.length).toBe(15_000);
     expect(blobArg.type).toBe('application/json;charset=utf-8');
   });
+
+  it('22: appends trailing newline to JSON output (Prettier compatibility)', async () => {
+    const reportContent = 'Trailing newline test';
+    mockUseAudit.mockReturnValue({
+      state: { status: 'complete', result: reportContent, error: null, specFormat: null },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
+
+    const origCreateElement = document.createElement.bind(document);
+    const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
+    mockAnchor.click = vi.fn();
+    vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
+      if (tagName === 'a') return mockAnchor as unknown as HTMLElement;
+      return origCreateElement(tagName);
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    const button = screen.getByRole('button', { name: /export json/i });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    const blobArg = createObjectURL.mock.calls[0][0] as Blob;
+    const blobText = await blobArg.text();
+
+    // The last character must be '\n'
+    expect(blobText.endsWith('\n')).toBe(true);
+    // The content before the trailing newline must be valid JSON
+    const jsonContent = blobText.slice(0, -1);
+    expect(() => JSON.parse(jsonContent)).not.toThrow();
+    const parsed = JSON.parse(jsonContent);
+    expect(parsed).toHaveProperty('result', reportContent);
+  });
 });

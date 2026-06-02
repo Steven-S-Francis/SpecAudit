@@ -58,7 +58,7 @@ function App() {
         exportedAt: new Date().toISOString(),
         specFormat: state.specFormat,
       };
-      const jsonString = JSON.stringify(auditResult, null, 2);
+      const jsonString = JSON.stringify(auditResult, null, 2) + '\n';
       const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

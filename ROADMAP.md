@@ -1,8 +1,8 @@
-# SpecAudit — Feature Roadmap
+﻿# SpecAudit â€” Feature Roadmap
 
 > Maintained at `ROADMAP.md`. Update as features are completed.
 
-## ✅ Completed
+## âœ… Completed
 
 | Feature | Commit |
 |---------|--------|
@@ -17,7 +17,7 @@
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
 | Export as PDF | *(re-implemented with pdfmake, replacing html2pdf.js)* |
 | Integration tests (real OpenAPI fixtures) | `517968b` |
-| Export as JSON | `8145305` |
+| Export as JSON | `8145305` (+ trailing newline fix) |
 
 ---
 
@@ -27,7 +27,7 @@
 Toggle buttons to show/hide CRITICAL / WARNING / INFO findings in the result panel.
 - **Why:** Large audit reports are easier to triage when you can focus on CRITICALs only.
 - **Affects:** `frontend/src/components/features/ResultPanel.tsx` (filter state + conditional rendering), `frontend/src/App.tsx` (pass filter state).
-- **Risk:** Filter must not interfere with streaming — should only apply once complete, or apply dynamically.
+- **Risk:** Filter must not interfere with streaming â€” should only apply once complete, or apply dynamically.
 
 ### Search within results
 Inline search input that highlights/filters audit output text.
@@ -43,7 +43,7 @@ Click a copy icon on a single severity block to copy just that finding.
 
 ### Keyboard shortcuts
 `Ctrl+Enter` to submit the audit, `Escape` to stop streaming.
-- **Why:** Power users prefer keyboard over mouse — faster iteration.
+- **Why:** Power users prefer keyboard over mouse â€” faster iteration.
 - **Affects:** `frontend/src/App.tsx` (global keydown listener), `frontend/src/components/features/InputPanel.tsx` (Ctrl+Enter).
 - **Risk:** Must not interfere with normal textarea input (e.g., multi-line text entry).
 
@@ -67,11 +67,11 @@ Persist past audits in `localStorage`, show a sidebar/list to browse and re-open
 Persistent collapsible sidebar listing recent audits with date/summary.
 - **Why:** Quick access to past audits without modal popups or page navigation.
 - **Affects:** NEW `frontend/src/components/features/HistorySidebar.tsx`, `frontend/src/App.tsx` (layout shift to accommodate sidebar), new `useHistory` hook (shared with session history).
-- **Risk:** Layout shift on mobile — sidebar may need to be a modal/drawer on small screens.
+- **Risk:** Layout shift on mobile â€” sidebar may need to be a modal/drawer on small screens.
 
 ### Toast/snackbar system
 Non-blocking notifications for transient events (network errors, copy success, rate-limit backoff).
-- **Why:** Current error display is a static card — users may miss transient events during streaming.
+- **Why:** Current error display is a static card â€” users may miss transient events during streaming.
 - **Affects:** NEW `frontend/src/components/ui/Toast.tsx`, `frontend/src/App.tsx` (toast state + render).
 - **Risk:** Toast stacking (multiple simultaneous toasts) and auto-dismiss timing.
 
@@ -79,7 +79,7 @@ Non-blocking notifications for transient events (network errors, copy success, r
 Dropdown in the header to switch between Groq, Together AI, etc. without editing `appsettings.json`.
 - **Why:** Users want to compare different models/providers without server-side config changes.
 - **Affects:** `frontend/src/App.tsx` (dropdown + provider state), `frontend/src/api/auditClient.ts` (pass selected provider in request body), `backend/src/Endpoints/AuditEndpoints.cs` (accept provider param, create dynamic client).
-- **Risk:** Backend currently uses a single singleton `OpenAIClient` — switching providers at runtime requires factory pattern or disposing/recreating the client.
+- **Risk:** Backend currently uses a single singleton `OpenAIClient` â€” switching providers at runtime requires factory pattern or disposing/recreating the client.
 
 ### Expandable findings
 Collapse/expand findings grouped by severity for easier navigation in long reports.
@@ -93,7 +93,7 @@ Collapse/expand findings grouped by severity for easier navigation in long repor
 
 ### Spec comparison
 Upload two OpenAPI specs; diff their audit results side by side.
-- **Why:** Compare "before vs after" when refactoring an API — did the new spec introduce regressions?
+- **Why:** Compare "before vs after" when refactoring an API â€” did the new spec introduce regressions?
 - **Affects:** NEW `frontend/src/components/features/ComparePanel.tsx`, `frontend/src/App.tsx` (routing or tab between audit/compare modes), `backend` may need a diff endpoint.
 - **Risk:** Requires both specs to be audited simultaneously (or store first result). Side-by-side diff of narrative markdown is non-trivial.
 
@@ -101,17 +101,17 @@ Upload two OpenAPI specs; diff their audit results side by side.
 Store specs + results in Postgres (Railway add-on) instead of localStorage.
 - **Why:** Persist beyond browser; share audits across devices; larger storage than localStorage's 5MB.
 - **Affects:** NEW `backend/src/Services/AuditStorageService.cs`, NEW `backend/src/Models/`, `backend/Program.cs` (register EF Core + Postgres), `frontend/src/api/auditClient.ts` (new endpoints for listing/loading).
-- **Risk:** Adds a database dependency — schema migrations, connection management, Railway Postgres add-on cost.
+- **Risk:** Adds a database dependency â€” schema migrations, connection management, Railway Postgres add-on cost.
 
 ### OpenAPI spec validation
 Parse and structurally validate the spec client-side before sending to AI; show pre-submit errors.
-- **Why:** Catch syntax errors early — no point sending malformed YAML to the AI. Saves a round-trip.
+- **Why:** Catch syntax errors early â€” no point sending malformed YAML to the AI. Saves a round-trip.
 - **Affects:** NEW `frontend/src/utils/validateSpec.ts` (YAML/JSON parse + structural checks), `frontend/src/components/features/InputPanel.tsx` (validation error display).
 - **Risk:** Full OpenAPI validation is complex; a simple parse + required-field check is a good start.
 
 ### GitHub App / webhook
 Auto-audit OpenAPI specs in PRs when they change.
-- **Why:** Shift-left — catch API design issues before they merge, not after.
+- **Why:** Shift-left â€” catch API design issues before they merge, not after.
 - **Affects:** NEW backend endpoint for webhook, GitHub App manifest, NEW `backend/src/Services/GitHubWebhookService.cs`, CI config update.
 - **Risk:** Webhook security (verify signature), rate-limit management, PR comment formatting. Significant infra work.
 

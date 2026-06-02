@@ -1,105 +1,81 @@
-# Review: "Export as JSON" Feature
-
-## Verdict: **SHIP** ?
-
----
+﻿# Verdict: SHIP
 
 ## Summary
 
-The implementation adds an "Export JSON" button that serializes the raw markdown audit result into a structured JSON envelope and triggers a file download via the Blob + temp <a> pattern � the same pattern used by the existing Download and Export PDF handlers.
+The implementation is correct, complete, and well-tested. The fix matches the spec exactly with no deviations.
 
-### What was done
+## Checklist
 
-| File | Action | Status |
-|------|--------|--------|
-| rontend/src/types/audit.ts | Added AuditResult interface + specFormat field to AuditState | ? |
-| rontend/src/hooks/useAudit.ts | Stores specFormat in state from payload.specFormat ?? null | ? |
-| rontend/src/App.tsx | Added handleExportJson callback + button with braces icon | ? |
-| rontend/src/components/features/__tests__/App.test.tsx | 21 tests (5 RTL integration + 16 unit/type tests) | ? |
-| rontend/src/hooks/__tests__/useAudit.test.tsx | Updated state assertions to include specFormat: null | ? |
+### 1. `frontend/src/App.tsx` line 61
 
-### Verification results
+| Aspect | Status | Details |
+|--------|--------|---------|
+| Change applied | ✅ | `JSON.stringify(auditResult, null, 2) + '\n'` |
+| No other lines modified | ✅ | Only line 61 changed |
+| Dependency array unchanged | ✅ | `[state.result, state.specFormat]` preserved |
+| try/catch intact | ✅ | Error handling pattern unchanged |
 
-| Check | Result |
-|-------|--------|
-| TypeScript (
-px tsc --noEmit) | ? Zero errors |
-| Tests (
-px vitest run) | ? 168 passed (14 files) |
+### 2. `frontend/src/components/features/__tests__/App.test.tsx` — New test 22
 
----
+| Assertion | Status | Details |
+|-----------|--------|---------|
+| Test name matches spec | ✅ | `'22: appends trailing newline to JSON output (Prettier compatibility)'` |
+| Click Export JSON button | ✅ | Full RTL render + `fireEvent.click` |
+| Spy on `URL.createObjectURL` | ✅ | Captures Blob argument |
+| Assert `blobText.endsWith('\n')` | ✅ | Verifies trailing newline presence |
+| Assert content before newline is valid JSON | ✅ | `JSON.parse(jsonContent)` does not throw |
+| Assert round-trip preserves `result` | ✅ | `expect(parsed).toHaveProperty('result', reportContent)` |
+| Follows existing spy/mock pattern | ✅ | Matches test 4 and test 21 patterns |
 
-## Detailed Assessment
+### 3. Existing tests unaffected (34 tests)
 
-### 1. Spec alignment
+| Concern | Status | Evidence |
+|---------|--------|----------|
+| `JSON.parse(blobText)` tests (4, 14, 18, 19, 21) | ✅ Unaffected | JSON.parse ignores trailing whitespace |
+| Test 12 (`'\n  '` pretty-print check) | ✅ Unaffected | Inner indentation newlines still present |
+| Pure unit tests (6–16) | ✅ Unaffected | Do not use the handler, construct JSON directly |
+| All 169 tests pass | ✅ | Confirmed in test-results.md |
 
-Every requirement from the spec is implemented correctly:
+### 4. Edge cases
 
-- **JSON envelope shape**: { version: 1, result, exportedAt, specFormat } � matches the spec exactly.
-- **specFormat propagation**: Set once via payload.specFormat ?? null in the non-retry branch, preserved on retries, reset to 
-ull on new audit or eset(). Matches spec.
-- **Handler pattern**: Identical Blob + temp <a> pattern as handleDownload, with silent try/catch. Matches spec.
-- **Button placement**: Immediately after Export PDF, inside {state.result && ...} wrapper, disabled during streaming. Matches spec.
-- **Filename**: specaudit-report-<timestamp>.json � matches the existing .md / .pdf convention. Matches spec.
-- **Icon**: Braces { } SVG icon as specified.
+| # | Scenario | Status |
+|---|----------|--------|
+| 1 | Empty result | ✅ Valid JSON + newline |
+| 2 | Existing tests not broken | ✅ All pass |
+| 3 | Multiple exports (no leakage) | ✅ Fresh string each call |
+| 4 | Very large result | ✅ One extra byte negligible |
+| 5 | Cross-platform newlines (LF only) | ✅ Uses `'\n'`, matches Prettier default |
 
-### 2. JSON envelope correctness
+## Files Changed (from git diff)
 
-The AuditResult interface enforces:
-- ersion: 1 (literal type � TypeScript ensures this is always 1)
-- esult: string (the raw markdown)
-- exportedAt: string (ISO-8601 via 
-ew Date().toISOString())
-- specFormat: string | null (preserves 
-ull for auto-detect)
+| File | Lines | Type |
+|------|-------|------|
+| `frontend/src/App.tsx` | +1/-1 | Single-line production change |
+| `frontend/src/components/features/__tests__/App.test.tsx` | +40 | New regression test |
+| `.pipeline/spec.md` | Replaced | Updated spec |
+| `.pipeline/changes.md` | Replaced | Updated summary |
+| `.pipeline/test-results.md` | Replaced | Updated results |
 
-Serialized with JSON.stringify(auditResult, null, 2) for human-readable 2-space-indented output.
+No files outside the intended scope were modified.
 
-### 3. Test coverage � comprehensive
+## Suggested Commit Message
 
-All 8 spec edge cases are tested:
+```
+fix: append trailing newline to exported JSON for Prettier compatibility
 
-| Edge Case | Test(s) | Layer |
-|-----------|---------|-------|
-| Empty result | Tests 1 (hidden), 15 (unit), 17 (no download) | RTL + unit |
-| Streaming disabled | Test 3 | RTL |
-| specFormat is null | Tests 9 (unit), 18 (RTL) | Both |
-| specFormat is "yaml" | Tests 10 (unit), 4 (RTL) | Both |
-| Large content (15K chars) | Test 21 | RTL |
-| Unicode | Test 16 | Unit |
-| ISO-8601 timestamp | Tests 8 (unit), 19 (RTL dynamic) | Both |
-| Error recovery (Blob API throws) | Tests 13 (unit), 20 (RTL) | Both |
+JSON.stringify(..., null, 2) produces valid JSON but omits the final
+newline. Prettier's insertFinalNewline: true flags the output file
+as needing formatting. Append '\n' to the serialized string before
+creating the Blob.
 
-New tests added beyond the original spec (tests 17�21) fill gaps identified during implementation, covering: empty result safety net, null specFormat at integration level, dynamic ISO-8601 validation, component-level error recovery, and large content handling.
+Changes:
+- frontend/src/App.tsx: line 61 — JSON.stringify(...) + '\n'
+- App.test.tsx: add regression test verifying blob ends with '\n'
+  and the content before the newline remains valid JSON
 
-### 4. Error handling
+All 169 tests pass, TypeScript zero errors.
+```
 
-Matches the existing pattern exactly:
-- handleCopy ? 	ry/catch { /* silently ignore */ }
-- handleDownload ? 	ry/catch { /* silently ignore */ }
-- handleExportPdf ? 	ry/catch { /* silently ignore */ }
-- handleExportJson ? 	ry/catch { /* silently ignore */ }
+## Final Verdict
 
-All four handlers silently catch exceptions without user-facing error feedback � consistent behavior across all export actions.
-
-### 5. Minor observation (not blocking)
-
-The pre-existing describe('App Copy Button'), describe('App Download Button'), and describe('App Export PDF Button') mock state objects in App.test.tsx do not include the new specFormat field. For example:
-
-`	ypescript
-state: { status: 'idle', result: '', error: null }
-`
-
-These mocks lack specFormat. This doesn't cause test failures because:
-- The mock is weakly typed (ReturnType<typeof vi.fn> ? Mock ? ny)
-- Those test blocks never access state.specFormat
-
-**Recommendation**: Add specFormat: null to all mock state objects in those describe blocks for consistency. This prevents future confusion if a test in those blocks is extended to interact with the new field. Not a blocker � the Export JSON describe block correctly includes specFormat in all its mocks.
-
----
-
-## Conclusion
-
-The implementation is thorough, well-tested, matches the spec exactly, and follows the existing codebase patterns. All 168 tests pass and TypeScript compiles with zero errors.
-
-**Verdict: SHIP** ??
+**SHIP** ✅ — The code matches the spec, the tests are meaningful, there are no security, performance, or correctness issues, and all green-checks are backed by genuine assertions.
