@@ -2,6 +2,10 @@
 
 ## Commit History
 
+### `(working tree)` — feat: Copy to Clipboard button
+- `frontend/src/components/ui/Button.tsx` — added optional `size` prop (`'sm' | 'md'`) with `sizeStyles` map; default `'md'` preserves existing `px-4 py-2 text-sm`; `'sm'` uses `px-2 py-1 text-xs`; class order moved to insert `sizeStyles` before `className` override
+- `frontend/src/App.tsx` — added `copied` state, `handleCopy` callback using `navigator.clipboard.writeText(state.result)` with 2s reset timeout; Copy button rendered inside the Audit Results `<h2>` row (after Spinner) when `state.result` is truthy, disabled during streaming, shows "Copied!" feedback for 2s
+
 ### `ec0dfdd` — chore: add blueprint and gitignore
 - `.gitignore` — ignores `bin/`, `obj/`, `node_modules/`, `.env`, `.env.local`, `*.user.json`
 - `SpecAudit_Implementation_Blueprint.md` — the full 10-step architectural contract
@@ -123,9 +127,25 @@
 
 ### `e19dc51` — fix: correct pipeline path in review agent prompt (`./pipeline/` → `.pipeline/`)
 
+### *(current)* — feat: add Copy to Clipboard button
+- **`frontend/src/components/ui/Button.tsx`** — added optional `size` prop (`'sm' | 'md'`, default `'md'`) with `sizeStyles` map
+- **`frontend/src/App.tsx`** — added "Copy" `<Button variant="ghost" size="sm">` next to "Audit Results" heading; `copied` state + `handleCopy` via `navigator.clipboard.writeText()`; shows "Copied!" for 2 seconds; hidden when no result; disabled during streaming
+- **Pre-existing bugfix:** Removed unused variables (`container` in 3 tests, `props` in 2 component overrides, `capturedAbort` in 1 test) that blocked `npm run build`
+- **New tests (7):** `frontend/src/components/ui/__tests__/Button.test.tsx` (3), `frontend/src/components/features/__tests__/App.test.tsx` (4)
+- **Pipeline verdict:** SHIP — all checks pass (55 frontend, 11 backend, zero TS errors)
+
 ---
 
 ## Tester Focus Areas
+
+### New: Copy to Clipboard
+| Area | What to test | Risk if broken |
+|------|-------------|----------------|
+| **Button visibility** | No "Copy" button before audit runs; appears after result returns | Button never shows (no clipboard access) |
+| **Streaming guard** | Button is `disabled` during streaming; enabled once complete | User copies partial output |
+| **Clipboard content** | Click Copy, paste into Notepad — full audit report appears | Wrong/incomplete content copied |
+| **Copied feedback** | Button text changes to "Copied!" for 2 seconds then reverts | No visual confirmation of copy |
+| **Error handling** | Clipboard API failure (e.g. insecure context) — silently ignored | Unhandled rejection / error in console |
 
 ### Critical paths
 | Area | What to test | Risk if broken |
@@ -141,7 +161,9 @@
 |------|-------------|
 | **Docker build** | `docker-compose build` — zero errors |
 | **CI pipeline** | Push to main — GitHub Actions passes both backend + frontend jobs |
-| **Unit tests** | `dotnet test SpecAudit.slnx` (8 pass), `npm run test` (12 pass) |
+| **Backend tests** | `dotnet test SpecAudit.slnx` — all 11 pass |
+| **Frontend tests** | `npm run test -- --run` — all existing + new tests pass (expect 48 → 55 total) |
+| **TypeScript** | `npx tsc --noEmit` — zero errors |
 | **Static files** | Access root URL in production — index.html loads, not a 404 |
 | **CORS** | Dev mode: API calls from `localhost:5173` work. Production: same-origin works |
 | **API key** | Not stored in any tracked file — only Railway env var + `dotnet user-secrets` |

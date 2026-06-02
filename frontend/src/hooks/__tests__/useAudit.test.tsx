@@ -98,10 +98,8 @@ describe('useAudit', () => {
   });
 
   it('abort cancels the ongoing audit and sets idle', async () => {
-    let capturedAbort: (() => void) | null = null;
     (auditStream as ReturnType<typeof vi.fn>).mockImplementation(
       (_payload: unknown, _onChunk: (chunk: string) => void, signal: AbortSignal) => {
-        capturedAbort = () => signal.onabort?.(new Event('abort'));
         return new Promise<void>((_, reject) => {
           signal.addEventListener('abort', () => {
             const err = new Error('The operation was aborted');

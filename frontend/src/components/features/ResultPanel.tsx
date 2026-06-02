@@ -80,10 +80,10 @@ export function ResultPanel({ content, isStreaming }: Props) {
               ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300"><code>{children}</code></pre>
               : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs">{children}</code>;
           },
-          hr({ ...props }: HrProps) {
+          hr(_props: HrProps) {
             return <hr className="border-slate-700 my-4" />;
           },
-          strong({ children, ...props }: StrongProps) {
+          strong({ children }: StrongProps) {
             return <strong className="text-slate-100 font-semibold">{children}</strong>;
           },
           p({ children }: ParaProps) {

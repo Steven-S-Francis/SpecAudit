@@ -35,7 +35,7 @@ describe('ResultPanel', () => {
 
   it('renders CRITICAL severity with red styling', () => {
     const markdown = '### [CRITICAL] Missing Auth';
-    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    render(<ResultPanel content={markdown} isStreaming={false} />);
     const badge = screen.getByText('CRITICAL');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-red-300');
@@ -46,7 +46,7 @@ describe('ResultPanel', () => {
 
   it('renders WARNING severity with amber styling', () => {
     const markdown = '### [WARNING] Missing 404 Response';
-    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    render(<ResultPanel content={markdown} isStreaming={false} />);
     const badge = screen.getByText('WARNING');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-amber-300');
@@ -56,7 +56,7 @@ describe('ResultPanel', () => {
 
   it('renders INFO severity with blue styling', () => {
     const markdown = '### [INFO] Missing Contact Block';
-    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    render(<ResultPanel content={markdown} isStreaming={false} />);
     const badge = screen.getByText('INFO');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-blue-300');

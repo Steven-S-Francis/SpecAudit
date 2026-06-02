@@ -1,13 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAudit } from './hooks/useAudit';
 import { InputPanel } from './components/features/InputPanel';
 import { ResultPanel } from './components/features/ResultPanel';
 import { Spinner } from './components/ui/Spinner';
+import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
 
 function App() {
   const { state, audit, abort } = useAudit();
   const [providerName, setProviderName] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(state.result);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable — silently ignore
+    }
+  }, [state.result]);
 
   useEffect(() => {
     fetch('/api/config')
@@ -43,6 +55,16 @@ function App() {
           <h2 className="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2">
             Audit Results
             {state.status === 'loading' && <Spinner size="sm" />}
+            {state.result && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={state.status === 'streaming'}
+                onClick={handleCopy}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </Button>
+            )}
           </h2>
 
           {state.status === 'error' && (
