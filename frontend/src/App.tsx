@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useState } from 'react';
 import { useAudit } from './hooks/useAudit';
 import { useTheme } from './hooks/useTheme';
 import { InputPanel } from './components/features/InputPanel';
@@ -22,7 +22,7 @@ function App() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Clipboard API unavailable — silently ignore
+      // Clipboard API unavailable â€” silently ignore
     }
   }, [state.result]);
 
@@ -38,7 +38,7 @@ function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch {
-      // Download API unavailable — silently ignore
+      // Download API unavailable â€” silently ignore
     }
   }, [state.result]);
 
@@ -46,7 +46,7 @@ function App() {
     try {
       await exportPdf(state.result);
     } catch {
-      // PDF generation failed — silently ignore
+      // PDF generation failed â€” silently ignore
     }
   }, [state.result]);
 
@@ -69,7 +69,7 @@ function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch {
-      // JSON export API unavailable — silently ignore
+      // JSON export API unavailable â€” silently ignore
     }
   }, [state.result, state.specFormat]);
 
@@ -154,11 +154,8 @@ function App() {
                     onClick={handleExportJson}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
-                      <polyline points="16 3 21 3 21 8" />
-                      <line x1="4" y1="20" x2="21" y2="3" />
-                      <polyline points="21 16 21 21 16 21" />
-                      <line x1="15" y1="15" x2="21" y2="21" />
-                      <line x1="4" y1="4" x2="9" y2="9" />
+                      <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1" />
+                      <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" />
                     </svg>
                     Export JSON
                   </Button>
