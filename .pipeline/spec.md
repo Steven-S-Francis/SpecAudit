@@ -1,306 +1,116 @@
-# SpecAudit: Rate-Limit Retry with Exponential Backoff
+# Auto-Scroll Results
 
-## Feature Summary
+## Open Questions
+None.
 
-When the AI provider returns a rate-limit error (HTTP 429), the frontend automatically retries the audit request up to 3 times with exponential backoff (1s, 2s, 4s) before showing an error. No user action required.
+## Overview
 
-## Architecture
+When an audit streams its result, the page should auto-scroll to keep the latest content visible. If the user scrolls up to read earlier content, auto-scrolling pauses. A "Scroll to bottom" button appears when auto-scroll is paused; clicking it re-enables auto-scroll and scrolls to bottom.
 
-| Layer | File | Change |
-|-------|------|--------|
-| **SSE client** | `frontend/src/api/auditClient.ts` | Detect rate-limit sentinel, throw `RateLimitError` |
-| **Hook** | `frontend/src/hooks/useAudit.ts` | Catch `RateLimitError`, retry with backoff |
+## Implementation Plan
 
-No backend changes — the backend already detects 429 from the AI provider and sends `[SPECAUDIT_ERROR] Rate limit reached...` inside the SSE stream.
+### 1. New hook: `useAutoScroll` — `frontend/src/hooks/useAutoScroll.ts`
 
-## No new files — only modify existing files
+A custom hook that manages auto-scroll state for a scrollable container.
 
-### 1. `frontend/src/api/auditClient.ts`
-
-In the SSE parsing loop where `[SPECAUDIT_ERROR]` is detected, distinguish rate-limit errors from other errors:
-
-**Current code (lines 42-44):**
+**Signature:**
 ```ts
-if (chunk.startsWith('[SPECAUDIT_ERROR]')) {
-  throw new Error(chunk.replace('[SPECAUDIT_ERROR]', '').trim());
+function useAutoScroll(options: {
+  deps: unknown[];      // when these change, auto-scroll triggers if at bottom
+  threshold?: number;   // px from bottom to consider "at bottom" (default 50)
+}): {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  showScrollButton: boolean;
+  scrollToBottom: () => void;
 }
 ```
 
-**New code:**
+**Behavior:**
+1. Creates an internal `containerRef` for the consumer to attach to a scrollable `<div>`.
+2. In a `useEffect`, binds a passive `scroll` event listener to the container. On each scroll, checks `scrollHeight - scrollTop - clientHeight < threshold` to determine if user is at bottom. Updates `showScrollButton` state (`true` = user is NOT at bottom).
+3. On every change in `deps`, if currently at bottom, calls `scrollToBottom()` to keep content snapped to bottom.
+4. `scrollToBottom()` scrolls the container to `scrollHeight` with `behavior: 'smooth'`, sets internal `isAtBottom` ref to `true`, sets `showScrollButton` to `false`.
+
+**Pattern:** Follows existing hook conventions in `useAudit.ts` and `useTheme.ts`.
+
+### 2. New component: `ScrollButton` — `frontend/src/components/ui/ScrollButton.tsx`
+
+A small floating "Scroll to bottom" chevron button.
+
+**Props:**
 ```ts
-if (chunk.startsWith('[SPECAUDIT_ERROR]')) {
-  const message = chunk.replace('[SPECAUDIT_ERROR]', '').trim();
-  const isRateLimit = /rate limit/i.test(message);
-  const err = new Error(message);
-  err.name = isRateLimit ? 'RateLimitError' : 'Error';
-  throw err;
+interface ScrollButtonProps {
+  onClick: () => void;
 }
 ```
 
-The `err.name` property is the only change — the hook uses it to decide whether to retry.
+**Appearance:**
+- Absolute-positioned at bottom-right of the scroll container (`absolute bottom-3 right-3`).
+- `bg-slate-700 hover:bg-slate-600 light:bg-slate-300 light:hover:bg-slate-400` background.
+- `text-slate-200 light:text-slate-700` chevron-down SVG icon.
+- `rounded-full p-2 shadow-lg w-8 h-8`.
+- `transition-opacity duration-200` — parent conditionally renders or uses `opacity` classes.
+- Rendered only when `showScrollButton` is true (conditional render, no fade-out state needed).
 
-### 2. `frontend/src/hooks/useAudit.ts`
+### 3. Modify `ResultPanel` — `frontend/src/components/features/ResultPanel.tsx`
 
-Add retry logic inside the hook. Three changes:
+**Changes:**
+1. Import `useAutoScroll` and `ScrollButton`.
+2. Call `useAutoScroll({ deps: [content] })`.
+3. Wrap the entire output in a scrollable container div with `ref={containerRef}`.
+4. Container classes: `relative w-full mt-6 max-h-[60vh] overflow-y-auto rounded-lg`.
+5. Inside the container, render either:
+   - Skeleton pulsing bars (when no content and not streaming), OR
+   - Markdown content + streaming cursor + optional `ScrollButton`
+6. `ScrollButton` is rendered below the markdown content, inside the scroll container, positioned absolutely.
 
-**a) Add refs after `abortRef`:**
-
-```ts
-const retryCount = useRef(0);
-const maxRetries = 3;
-```
-
-**b) Reset retry count at the start of `audit()` — add after `abortRef.current?.abort()`:**
-
-```ts
-retryCount.current = 0;
-```
-
-**c) Modify the catch block to detect `RateLimitError` and retry:**
-
-**Current catch block (lines 28-38):**
-```ts
-} catch (err) {
-  if ((err as Error).name === 'AbortError') {
-    setState(s => ({ ...s, status: 'idle' }));
-  } else {
-    setState(s => ({
-      ...s,
-      status: 'error',
-      error: (err as Error).message,
-    }));
-  }
-}
-```
-
-**New catch block:**
-```ts
-} catch (err) {
-  if ((err as Error).name === 'AbortError') {
-    setState(s => ({ ...s, status: 'idle' }));
-    retryCount.current = 0;
-  } else if (
-    (err as Error).name === 'RateLimitError' &&
-    retryCount.current < maxRetries
-  ) {
-    retryCount.current++;
-    setState({ status: 'loading', result: '', error: null });
-    const delay = 1000 * Math.pow(2, retryCount.current - 1);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    audit(payload); // retry — payload is captured from outer scope
-  } else {
-    retryCount.current = 0;
-    setState(s => ({
-      ...s,
-      status: 'error',
-      error: (err as Error).message,
-    }));
-  }
-}
-```
-
-## State transitions during retry
-
-| State | What user sees |
-|-------|---------------|
-| `loading` | Skeleton (initial attempt or retrying after rate limit) |
-| `streaming` | Results appear (successful retry) |
-| `error` | Error card (after 3 retries or non-rate-limit error) |
-| `idle` | Aborted (user clicked Stop during retry delay) |
-
-## Edge cases
-
-| Case | Behavior |
-|------|----------|
-| User clicks Stop during retry delay | `abortRef.current?.abort()` at top of `audit()` → old ref is aborted → nothing happens; new `audit()` starts fresh |
-| Rate limit on first attempt, success on retry | User sees loading → error is silent → loading again → streaming completes |
-| Rate limit 3 times in a row | Error card shown: "Rate limit reached. Please wait a moment and try again..." |
-| Non-rate-limit error (invalid API key) | Immediately shows error — no retry |
-| User submits new spec during retry delay | `abortRef.current?.abort()` cancels old pending retry, fresh `audit()` starts |
-| Component unmounts during retry delay | `setState` on unmounted component warning (pre-existing pattern — acceptable) |
-
-## Tests
-
-### 3. `frontend/src/api/__tests__/auditClient.test.ts` — add 1 test
-
-Add after the existing "throws an error when SSE data contains an error sentinel" test:
-
-```ts
-it('throws with name RateLimitError for rate limit sentinel', async () => {
-  const sseBody = 'data: "[SPECAUDIT_ERROR] Rate limit reached. Please wait..."\n\n';
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-    createMockResponse(true, 200, sseBody)
-  );
-  const onChunk = vi.fn();
-  const signal = new AbortController().signal;
-
-  let thrown: Error | null = null;
-  try {
-    await auditStream({ spec: 'test' }, onChunk, signal);
-  } catch (err) {
-    thrown = err as Error;
-  }
-  expect(thrown).not.toBeNull();
-  expect(thrown!.name).toBe('RateLimitError');
-});
-```
-
-### 4. `frontend/src/hooks/__tests__/useAudit.test.tsx` — add 2 tests
-
-Add after the existing "abort cancels the ongoing audit and sets idle" test:
-
-**Test 1 — retries on RateLimitError:**
-```ts
-it('retries audit when RateLimitError occurs', async () => {
-  const auditStream = vi.fn();
-  vi.mock('../../api/auditClient', () => ({ auditStream }));
-
-  // First call throws RateLimitError, second call succeeds
-  auditStream
-    .mockRejectedValueOnce(Object.assign(new Error('Rate limit reached'), { name: 'RateLimitError' }))
-    .mockResolvedValueOnce(undefined);
-
-  const { result } = renderHook(() => useAudit());
-
-  await act(async () => {
-    result.current.audit({ spec: 'test' });
-  });
-
-  // Should have been called twice (first attempt + retry)
-  expect(auditStream).toHaveBeenCalledTimes(2);
-});
-
-// Wait — this test won't work because of the setTimeout delay and recursive audit call
-```
-
-Actually, testing the retry with async timers is tricky. Let me use `vi.useFakeTimers()`:
-
-```ts
-it('retries audit when RateLimitError occurs', async () => {
-  vi.useFakeTimers();
-  const mockAuditStream = vi.fn();
-  mockAuditStream
-    .mockRejectedValueOnce(Object.assign(new Error('Rate limit'), { name: 'RateLimitError' }))
-    .mockResolvedValueOnce(undefined);
-
-  // We need to mock the module before importing useAudit
-  // So we mock at the top of the file using vi.mock
-  // Actually, auditStream is already mocked at the top level in the existing tests
-
-  const { result } = renderHook(() => useAudit());
-
-  act(() => {
-    result.current.audit({ spec: 'test' });
-  });
-
-  // First call happened, now we're in the retry delay
-  // Fast-forward past the 1s backoff
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(1000);
-  });
-
-  // The retry should have been attempted
-  // Check status
-  await waitFor(() => {
-    expect(result.current.state.status).not.toBe('error');
-  });
-
-  vi.useRealTimers();
-});
-```
-
-Hmm, the existing tests use a mock of `auditStream` at the module level. Let me look at the current test to understand the pattern.
-
-Looking at the existing test structure:
-
+**Structure:**
 ```tsx
-import { auditStream } from '../../api/auditClient';
-// ...
+const { containerRef, showScrollButton, scrollToBottom } = useAutoScroll({ deps: [content] });
 
-vi.mock('../../api/auditClient', () => ({
-  auditStream: vi.fn(),
-}));
+return (
+  <div ref={containerRef} className="relative w-full mt-6 max-h-[60vh] overflow-y-auto rounded-lg">
+    {content === '' && !isStreaming ? (
+      <>
+        {/* pulsing skeleton bars — no outer wrapper, scroll container provides it */}
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-full light:bg-slate-200" />
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-5/6 light:bg-slate-200" />
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-4/6 light:bg-slate-200" />
+      </>
+    ) : (
+      <div className="font-mono text-sm text-slate-200 light:text-slate-800">
+        <ReactMarkdown ...existing-components...>{content}</ReactMarkdown>
+        {isStreaming && <span className="..." />}
+      </div>
+    )}
+    {showScrollButton && <ScrollButton onClick={scrollToBottom} />}
+  </div>
+);
 ```
 
-And in each test:
-```tsx
-(auditStream as ReturnType<typeof vi.fn>).mockImplementation(...)
-```
+The skeleton previously had `<div className="w-full mt-6">` as its outer wrapper. This is now replaced by the scroll container's `w-full mt-6`. The skeleton's `animate-pulse` divs render directly (no intermediate wrapper), which keeps the existing test assertion (`container.querySelectorAll('.animate-pulse')`) passing.
 
-So `auditStream` is already mocked at the module level. I can build on this pattern. But the test needs to handle:
-1. `auditStream` throwing `RateLimitError`
-2. The `setTimeout` delay during retry
-3. `audit` being called recursively
+### 4. Tests
 
-This is complex to test with fake timers. Let me simplify:
+#### `useAutoScroll.test.tsx` (new) — `frontend/src/hooks/__tests__/useAutoScroll.test.tsx`
+- **Test 1:** Auto-scrolls to bottom when content changes and user is at bottom
+  - Render a test component with `useAutoScroll`, attach ref to a scrollable div
+  - Set `deps` to `[content]`, change content, verify `scrollTop` is at bottom
+- **Test 2:** Does NOT scroll when user has scrolled up
+  - Scroll up, change content, verify `scrollTop` hasn't changed
+- **Test 3:** `scrollToBottom` scrolls and resets `showScrollButton`
 
-**Test 1 — retries on RateLimitError:**
-Use `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()`. Mock `auditStream` to throw on first call, succeed on second. Verify state transitions through loading → error (retry) → streaming → complete.
+#### `ScrollButton.test.tsx` (new) — `frontend/src/components/ui/__tests__/ScrollButton.test.tsx`
+- **Test:** Renders button with aria-label, fires onClick on click
 
-**Test 2 — stops after max retries:**
-Mock `auditStream` to always throw `RateLimitError`. Advance timers through 3 backoff periods. Verify final state is 'error'.
+#### Existing `ResultPanel.test.tsx` — no changes needed
+- Skeleton test still passes (animate-pulse divs still present)
+- Content tests still pass (markdown rendering unchanged)
+- Cursor tests still pass
 
-**Updated test plan:**
-
-```tsx
-it('retries audit after RateLimitError and succeeds', async () => {
-  vi.useFakeTimers();
-  const mockStream = vi.fn()
-    .mockRejectedValueOnce(Object.assign(new Error('Rate limit'), { name: 'RateLimitError' }))
-    .mockResolvedValueOnce(undefined);
-
-  (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
-
-  const { result } = renderHook(() => useAudit());
-
-  act(() => { result.current.audit({ spec: 'test' }); });
-
-  // Wait for first call to fail and enter retry delay
-  await vi.advanceTimersByTimeAsync(100); // allow initial call to fail
-  expect(result.current.state.status).toBe('loading'); // reset to loading during retry
-
-  // Fast-forward past the 1s backoff
-  await vi.advanceTimersByTimeAsync(1000);
-
-  // Should complete successfully now
-  await waitFor(() => {
-    expect(result.current.state.status).toBe('complete');
-  });
-
-  vi.useRealTimers();
-});
-```
-
-**Test 2 — retries exhausted:**
-```tsx
-it('shows error after rate limit retries are exhausted', async () => {
-  vi.useFakeTimers();
-  const rateLimitErr = Object.assign(new Error('Rate limit'), { name: 'RateLimitError' });
-  const mockStream = vi.fn()
-    .mockRejectedValueOnce(rateLimitErr) // attempt 1
-    .mockRejectedValueOnce(rateLimitErr) // attempt 2
-    .mockRejectedValueOnce(rateLimitErr); // attempt 3
-
-  (auditStream as ReturnType<typeof vi.fn>).mockImplementation(mockStream);
-
-  const { result } = renderHook(() => useAudit());
-
-  act(() => { result.current.audit({ spec: 'test' }); });
-
-  // Fast-forward through 1s + 2s + 4s backoffs + last attempt
-  await vi.advanceTimersByTimeAsync(10000);
-  await waitFor(() => {
-    expect(result.current.state.status).toBe('error');
-  });
-
-  vi.useRealTimers();
-});
-```
-
-## Completion Criteria
-
-- [ ] `npm run build` — zero TypeScript errors
-- [ ] `npm run test -- --run` — all existing + new tests pass (expect 63 → 66 total)
-- [ ] `dotnet test SpecAudit.slnx` — backend tests still pass
-- [ ] Simulate rate limit: backend returns `[SPECAUDIT_ERROR] Rate limit reached...` → frontend retries silently → audit completes
-- [ ] After 3 rate limits → error card appears
+## Files Changed
+- **NEW:** `frontend/src/hooks/useAutoScroll.ts`
+- **NEW:** `frontend/src/components/ui/ScrollButton.tsx`
+- **MODIFIED:** `frontend/src/components/features/ResultPanel.tsx`
+- **NEW:** `frontend/src/hooks/__tests__/useAutoScroll.test.tsx`
+- **NEW:** `frontend/src/components/ui/__tests__/ScrollButton.test.tsx`

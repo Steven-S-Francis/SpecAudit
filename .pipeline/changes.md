@@ -159,6 +159,15 @@
 - **New tests (4):** rate-limit sentinel throws `RateLimitError`; non-rate-limit sentinel throws `Error`; retry succeeds after backoff; retries exhaust after 3 attempts
 - **Pipeline verdict:** SHIP — all checks pass (67 frontend, 11 backend, zero TS errors)
 
+### *(current commit)* — feat: add auto-scroll results
+
+- **NEW `frontend/src/hooks/useAutoScroll.ts`** — custom hook managing auto-scroll for a scrollable container: creates ref, binds passive scroll listener to detect "at bottom" vs "scrolled up", fires `scrollTo` on deps change when at bottom, exposes `showScrollButton` and `scrollToBottom`
+- **NEW `frontend/src/components/ui/ScrollButton.tsx`** — absolute-positioned floating chevron-down button (w-8 h-8, rounded-full, bg-slate-700, light variant)
+- **MODIFIED `frontend/src/components/features/ResultPanel.tsx`** — wraps output in scrollable container (`max-h-[60vh] overflow-y-auto`) with `useAutoScroll`; `ScrollButton` appears when user scrolls up during streaming
+- **NEW tests (5):** `useAutoScroll.test.tsx` (4) — scrolls on content change when at bottom, skips when scrolled up, button visibility toggle, graceful degradation; `ScrollButton.test.tsx` (1) — renders + fires onClick
+- **Pre-existing bugfix:** Removed unused `act` import and `rerender` variable in new test file
+- **Pipeline verdict:** SHIP — all checks pass (72 frontend, 11 backend, zero TS errors)
+
 ---
 
 ## Tester Focus Areas
@@ -187,6 +196,15 @@
 | **Stop during retry delay** | User clicks Stop during the 1s/2s/4s backoff delay → audit aborts and resets to idle | In-flight retry continues after abort |
 | **New submission during retry** | User submits new spec while retry is pending → old retry cancelled, fresh audit starts | Two audits run concurrently |
 
+### New: Auto-Scroll Results
+| Area | What to test | Risk if broken |
+|------|-------------|----------------|
+| **Auto-scroll during streaming** | Submit a spec → results stream in → page scrolls down automatically to show latest content | Page stays at top, user must scroll manually |
+| **Scroll-up pauses** | During streaming, scroll up to read earlier content → auto-scroll pauses (stops following) | Unwanted jumping to bottom while reading |
+| **Scroll-to-bottom button** | After scrolling up, a chevron-down button appears at bottom-right of the result panel | Button never shows, or shows when at bottom |
+| **Button re-scrolls** | Click the scroll-to-bottom button → page scrolls to bottom → button disappears | Click does nothing, or button stays visible |
+| **Streaming completion** | When audit finishes, auto-scroll snaps to bottom one final time | Final content cut off at top |
+
 ### New: Copy to Clipboard
 | Area | What to test | Risk if broken |
 |------|-------------|----------------|
@@ -211,7 +229,7 @@
 | **Docker build** | `docker-compose build` — zero errors |
 | **CI pipeline** | Push to main — GitHub Actions passes both backend + frontend jobs |
 | **Backend tests** | `dotnet test SpecAudit.slnx` — all 11 pass |
-| **Frontend tests** | `npm run test -- --run` — all 63 pass (10 test files) |
+| **Frontend tests** | `npm run test -- --run` — all 72 pass (12 test files) |
 | **TypeScript** | `npx tsc --noEmit` — zero errors |
 | **Static files** | Access root URL in production — index.html loads, not a 404 |
 | **CORS** | Dev mode: API calls from `localhost:5173` work. Production: same-origin works |

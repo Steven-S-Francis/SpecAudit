@@ -1,5 +1,5 @@
 # Test Results
-**Date:** 2026-06-02 13:16
+**Date:** 2026-06-02 14:31
 
 ## Backend Tests
 - **Total:** 11
@@ -7,8 +7,8 @@
 - **Failed:** 0
 
 ## Frontend Tests
-- **Total:** 67
-- **Passed:** 67
+- **Total:** 72
+- **Passed:** 72
 - **Failed:** 0
 
 ### Test file breakdown
@@ -16,10 +16,12 @@
 |-----------|-------|--------|
 | `parseSSEChunks.test.ts` | 6 | ✅ |
 | `parseSeverity.test.ts` | 6 | ✅ |
-| `auditClient.test.ts` | 8 | ✅ (2 new) |
-| `useAudit.test.tsx` | 9 | ✅ (2 new) |
+| `auditClient.test.ts` | 8 | ✅ |
+| `useAudit.test.tsx` | 9 | ✅ |
 | `useTheme.test.tsx` | 4 | ✅ |
+| `useAutoScroll.test.tsx` | 4 | ✅ (NEW) |
 | `Button.test.tsx` | 3 | ✅ |
+| `ScrollButton.test.tsx` | 1 | ✅ (NEW) |
 | `ThemeToggle.test.tsx` | 3 | ✅ |
 | `InputPanel.test.tsx` | 15 | ✅ |
 | `ResultPanel.test.tsx` | 8 | ✅ |
@@ -27,16 +29,17 @@
 
 ### New tests
 
-**auditClient.test.ts (2 new):**
-- Rate-limit sentinel throws with name `RateLimitError`
-- Non-rate-limit sentinel throws with name `Error`
+**useAutoScroll.test.tsx (4):**
+- Scrolls to bottom when content changes and user is at bottom
+- Does not scroll when user has scrolled up
+- Shows scroll button when not at bottom and hides it after scrolling down
+- Does not crash when scrollTo is unavailable
 
-**useAudit.test.ts (2 new):**
-- Retries and succeeds after RateLimitError (with backoff)
-- Shows error after RateLimitError retries are exhausted
+**ScrollButton.test.tsx (1):**
+- Renders button with chevron and fires onClick
 
 ## Summary
 **Verdict:** ALL PASS
-- **Frontend:** 67/67 passed, 10 files
+- **Frontend:** 72/72 passed, 12 files
 - **Backend:** 11/11 passed
-- **Total:** 78/78 passed, 0 failed
+- **Total:** 83/83 passed, 0 failed

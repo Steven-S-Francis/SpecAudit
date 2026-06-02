@@ -4,6 +4,8 @@ import type { ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { SeverityLevel } from '../../types/audit';
 import { parseSeverity } from '../../utils/parseSeverity';
+import { useAutoScroll } from '../../hooks/useAutoScroll';
+import { ScrollButton } from '../ui/ScrollButton';
 
 interface Props {
   content: string;
@@ -39,62 +41,72 @@ const SEVERITY_STYLES: Record<SeverityLevel, {
 };
 
 export function ResultPanel({ content, isStreaming }: Props) {
-  if (!isStreaming && content === '') {
-    return (
-      <div className="w-full mt-6">
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-full light:bg-slate-200" />
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-5/6 light:bg-slate-200" />
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-4/6 light:bg-slate-200" />
-      </div>
-    );
-  }
+  const { containerRef, showScrollButton, scrollToBottom } = useAutoScroll({ deps: [content] });
+
+  const showSkeleton = content === '' && !isStreaming;
 
   return (
-    <div className="w-full mt-6 font-mono text-sm text-slate-200 light:text-slate-800">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h3({ children }: HeadingProps) {
-            const text = String(children);
-            const severity = parseSeverity(text);
-            const cleanTitle = text
-              .replace('[CRITICAL]', '')
-              .replace('[WARNING]', '')
-              .replace('[INFO]', '')
-              .trim();
+    <div
+      ref={containerRef}
+      className="relative w-full mt-6 max-h-[60vh] overflow-y-auto rounded-lg"
+    >
+      {showSkeleton ? (
+        <>
+          <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-full light:bg-slate-200" />
+          <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-5/6 light:bg-slate-200" />
+          <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-4/6 light:bg-slate-200" />
+        </>
+      ) : (
+        <>
+          <div className="font-mono text-sm text-slate-200 light:text-slate-800">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h3({ children }: HeadingProps) {
+                  const text = String(children);
+                  const severity = parseSeverity(text);
+                  const cleanTitle = text
+                    .replace('[CRITICAL]', '')
+                    .replace('[WARNING]', '')
+                    .replace('[INFO]', '')
+                    .trim();
 
-            if (severity) {
-              const styles = SEVERITY_STYLES[severity];
-              return (
-                <div className={styles.wrapper}>
-                  <span className={styles.badge}>{severity}</span>
-                  <span className={`font-semibold ${styles.label}`}>{cleanTitle}</span>
-                </div>
-              );
-            }
-            return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
-          },
-          code({ children, className }: CodeProps) {
-            const isBlock = className?.includes('language-');
-            return isBlock
-              ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
-              : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
-          },
-          hr(_props: HrProps) {
-            return <hr className="border-slate-700 my-4 light:border-slate-300" />;
-          },
-          strong({ children }: StrongProps) {
-            return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
-          },
-          p({ children }: ParaProps) {
-            return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
-          },
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-      {isStreaming && (
-        <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
+                  if (severity) {
+                    const styles = SEVERITY_STYLES[severity];
+                    return (
+                      <div className={styles.wrapper}>
+                        <span className={styles.badge}>{severity}</span>
+                        <span className={`font-semibold ${styles.label}`}>{cleanTitle}</span>
+                      </div>
+                    );
+                  }
+                  return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
+                },
+                code({ children, className }: CodeProps) {
+                  const isBlock = className?.includes('language-');
+                  return isBlock
+                    ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
+                    : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
+                },
+                hr(_props: HrProps) {
+                  return <hr className="border-slate-700 my-4 light:border-slate-300" />;
+                },
+                strong({ children }: StrongProps) {
+                  return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
+                },
+                p({ children }: ParaProps) {
+                  return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
+                },
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+            {isStreaming && (
+              <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
+            )}
+          </div>
+          {showScrollButton && <ScrollButton onClick={scrollToBottom} />}
+        </>
       )}
     </div>
   );
