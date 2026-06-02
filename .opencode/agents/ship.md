@@ -38,7 +38,9 @@ confirm the handoff file exists before starting the next.
 6. **Delegate to `review`** — Use the `task` tool with `subagent_type: "review"`.
    Wait for `.pipeline/review.md`.
 
-7. **Report verdict** — Read and show `.pipeline/review.md` to the user.
-
-8. **Commit** — Run `git add -A && git commit -m "<descriptive message>"`.
+7. **Check verdict** — Read `.pipeline/review.md`. If the verdict is `SHIP`,
+   run `git add -A && git commit -m "<descriptive message>"`.
    Do NOT push or merge.
+
+8. **Report outcome** — Show the user the final verdict from review and
+   whether the commit was made or skipped.
