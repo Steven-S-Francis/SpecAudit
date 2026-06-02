@@ -7,6 +7,7 @@ export function useAudit() {
     status: 'idle',
     result: '',
     error: null,
+    specFormat: null,
   });
 
   const abortRef = useRef<AbortController | null>(null);
@@ -18,7 +19,7 @@ export function useAudit() {
       abortRef.current?.abort();
       retryCount.current = 0;
       abortRef.current = new AbortController();
-      setState({ status: 'loading', result: '', error: null });
+      setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });
     }
 
     try {
@@ -39,7 +40,7 @@ export function useAudit() {
         retryCount.current < maxRetries
       ) {
         retryCount.current++;
-        setState({ status: 'loading', result: '', error: null });
+        setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });
         const delay = 1000 * Math.pow(2, retryCount.current - 1);
         await new Promise(resolve => setTimeout(resolve, delay));
         audit(payload, true);
@@ -60,7 +61,7 @@ export function useAudit() {
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
-    setState({ status: 'idle', result: '', error: null });
+    setState({ status: 'idle', result: '', error: null, specFormat: null });
   }, []);
 
   return { state, audit, abort, reset };

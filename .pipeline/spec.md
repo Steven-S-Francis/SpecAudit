@@ -1,211 +1,397 @@
-# Spec: Integration Tests with Real OpenAPI Fixture
+# Spec: Export Audit Result as JSON
 
 ## Overview
 
-Add integration-style tests that exercise the **full frontend feature pipeline** using **real data** (both input spec and AI audit output) instead of hand-crafted mocks. This gives confidence that all features (audit streaming, display, copy, download, export PDF) work correctly with realistic content.
+Add a new "Export JSON" button beside the existing Download and Export PDF buttons. It serializes the raw markdown audit result into a structured JSON envelope and triggers a file download via the same Blob + temp `<a>` pattern used by the existing Download handler.
 
-**Input fixture:** The `FraudLabs Pro Fraud Detection-swagger.json` file (OpenAPI 3.0.1 spec)
-**Output fixture:** The AI's actual audit response for that spec (14 findings, 6 critical, 4 warning, 4 info — provided by the user)
+**Approach:** Option 1 — wrap the markdown string in a JSON envelope. No backend changes needed. The JSON envelope includes metadata (export timestamp, spec format) alongside the raw result.
+
+---
+
+## Open Questions
+
+1. **File name pattern:** `specaudit-report-<timestamp>.json` aligns with existing `.md` / `.pdf` convention. Confirm.
+2. **JSON icon:** A braces `{ }` SVG icon is proposed below to differentiate from Download (arrow) and Export PDF (file). Confirm or provide alternative icon.
+
+---
+
+## JSON Schema
+
+The exported `.json` file will have the following shape:
+
+```typescript
+interface AuditResult {
+  /** Schema version for forward compatibility */
+  version: 1;
+  /** The full raw markdown audit result */
+  result: string;
+  /** ISO-8601 timestamp of when the export was triggered */
+  exportedAt: string;
+  /** The spec format that was audited, if known ('yaml' | 'json' | null) */
+  specFormat: string | null;
+}
+```
+
+Example output:
+
+```json
+{
+  "version": 1,
+  "result": "# SpecAudit Report\n\n## Summary\n**Total Findings:** 14 ...",
+  "exportedAt": "2026-06-03T14:30:00.000Z",
+  "specFormat": "json"
+}
+```
 
 ---
 
 ## Files to Create / Modify
 
 | File | Action | Purpose |
-|---|---|---|
-| `frontend/src/test-fixtures/fraudlabs-swagger.json` | **Create** | Copy of the swagger spec with clean name |
-| `frontend/src/test-fixtures/fraudlabs-audit-result.md` | **Create** | The AI's actual audit output for this spec |
-| `frontend/src/__tests__/integration/feature-pipeline.test.ts` | **Create** | Integration tests exercising the full feature chain |
-| `.gitignore` | **Modify** | Remove `*swagger.json` pattern (we want the fixture tracked) |
+|------|--------|---------|
+| `frontend/src/types/audit.ts` | **Modify** | Add `AuditResult` type; add `specFormat` field to `AuditState` |
+| `frontend/src/hooks/useAudit.ts` | **Modify** | Store `specFormat` in state when `audit()` is called |
+| `frontend/src/App.tsx` | **Modify** | Add `handleExportJson` callback and a new Button; import `AuditResult` |
+| `frontend/src/App.test.tsx` (new) | **Create** | Test the `handleExportJson` logic |
 
 ### Not modified
-- `frontend/src/utils/exportPdf.ts` — no changes needed
-- `frontend/src/App.tsx` — no changes needed
-- `frontend/src/api/auditClient.ts` — no changes needed
-- `frontend/src/hooks/useAudit.ts` — no changes needed
+- `backend/` — no changes needed; the JSON export is a client-side wrapper
+- `frontend/src/utils/exportPdf.ts` — unchanged
+- `frontend/src/api/auditClient.ts` — unchanged
+- `frontend/src/components/ui/Button.tsx` — unchanged
+- `frontend/src/utils/parseSSEChunks.ts` — unchanged
 
 ---
 
-## Fixtures
+## Detailed Changes
 
-### 1. `frontend/src/test-fixtures/fraudlabs-swagger.json`
+### 1. `frontend/src/types/audit.ts` — Add types
 
-Copy of `FraudLabs Pro Fraud Detection-swagger.json`. The original file stays at the repo root (for direct user access), the fixture copy lives in `test-fixtures/` for clean imports.
+Add the `AuditResult` export interface and extend `AuditState`:
 
-### 2. `frontend/src/test-fixtures/fraudlabs-audit-result.md`
+```typescript
+// New export
+export interface AuditResult {
+  version: 1;
+  result: string;
+  exportedAt: string;
+  specFormat: string | null;
+}
 
-The exact markdown output provided by the user:
-
-````markdown
-# SpecAudit Report
-
-## Summary
-**Total Findings:** 14 | **Critical:** 6 | **Warnings:** 4 | **Info:** 4
-
-**Spec Format:** OpenAPI 3.0.1
-**Endpoints Analyzed:** 2
-**Audit Verdict:** FAIL
-
----
-
-## Findings
-
-### [CRITICAL] Missing Security Scheme Definition
-**Category:** Security
-**Location:** Global
-**Issue:** The OpenAPI specification does not define a security scheme, which is required to secure the API endpoints.
-**Recommendation:** Add a security scheme definition to the OpenAPI specification, such as OAuth2 or API key-based authentication.
-
-### [CRITICAL] API Keys Passed as Query Parameters
-**Category:** Security
-**Location:** /v1/order/feedback, /v1/order/screen
-**Issue:** API keys are passed as query parameters, which is insecure and vulnerable to tampering.
-**Recommendation:** Pass API keys as headers instead of query parameters.
-
-... (full content as provided by user) ...
-````
-
----
-
-## Integration Test Design
-
-### Test file: `frontend/src/__tests__/integration/feature-pipeline.test.ts`
-
-**Environment:** `jsdom` (same as other tests)
-
-**Architecture:** The test mocks `fetch` to return the real audit output as SSE chunks, then exercises the actual frontend code paths (no module-level mocking of features).
-
-### Component under test
-
-The full pipeline:
-```
-Swagger fixture (JSON)
-  → auditStream reads it as mock SSE response
-  → onChunk accumulates into result string
-  → markdownToContent parses the real output
-  → exportPdf builds docDefinition
-  → Download creates Blob
-  → Copy writes to clipboard
-```
-
-### Mock Strategy
-
-Only `fetch` is mocked. All other modules (`auditClient`, `exportPdf`, `parseSSEChunks`, etc.) use their real implementations.
-
-```ts
-// Mock fetch only — everything else is real
-vi.spyOn(globalThis, 'fetch').mockResolvedValue(createSSEMockResponse(fixtureChunks));
-
-// For exportPdf, we mock pdfmake (same as existing tests)
-vi.mock('pdfmake/build/pdfmake', () => { ... });
-vi.mock('pdfmake/build/vfs_fonts', () => ({ default: {} }));
-```
-
-### SSE Mock Helper
-
-```ts
-function createSSEMockResponse(chunks: string[]): Response {
-  const encoder = new TextEncoder();
-  // Each chunk is JSON-encoded and wrapped in `data: <json>\n`
-  const encoded = chunks.map(c => encoder.encode(`data: ${JSON.stringify(c)}\n`));
-
-  let i = 0;
-  const reader: ReadableStreamDefaultReader<Uint8Array> = {
-    read() {
-      if (i < encoded.length) {
-        return Promise.resolve({ done: false, value: encoded[i++] });
-      }
-      return Promise.resolve({ done: true, value: undefined as unknown as Uint8Array });
-    },
-    cancel() { /* noop */ },
-    releaseLock() { /* noop */ },
-    closed: Promise.resolve(undefined),
-  } as ReadableStreamDefaultReader<Uint8Array>;
-
-  return {
-    ok: true,
-    status: 200,
-    body: { getReader: () => reader },
-  } as unknown as Response;
+// Modified — add specFormat field
+export interface AuditState {
+  status: AuditStatus;
+  result: string;
+  error: string | null;
+  specFormat: string | null;   // ← NEW
 }
 ```
 
-### Test Cases
+**Rationale:** `specFormat` is set once when the audit begins (from `AuditRequest.specFormat`) and is included in the JSON envelope metadata. It is `null` if the user did not specify a format (auto-detect).
 
-All tests use the **real audit result fixture** as input data. The swagger JSON fixture is imported for context but the primary data flow starts from the audit result.
+### 2. `frontend/src/hooks/useAudit.ts` — Store specFormat
 
-#### Group 1: SSE Streaming Pipeline
+1. Update the initial state to include `specFormat: null`:
 
-| # | Test | Assertions |
-|---|------|------------|
-| 1 | `auditStream` accumulates all chunks into the correct final result | On complete, the accumulated string exactly matches the fixture content |
-| 2 | `auditStream` calls `onChunk` for each SSE data line | `onChunk` called correct number of times |
-| 3 | `auditStream` handles the full content without errors | Resolves successfully, no thrown errors |
-| 4 | `auditStream` with `AbortSignal` cancels mid-stream | Creates abort controller, calls `abort()`, verifies rejection with `AbortError` |
-| 5 | Source map smoke test: the fixture file is valid markdown | String starts with `# SpecAudit Report`, contains `[CRITICAL]`, `[WARNING]`, `[INFO]`, `Governance Score` |
+   ```typescript
+   const [state, setState] = useState<AuditState>({
+     status: 'idle',
+     result: '',
+     error: null,
+     specFormat: null,   // ← NEW
+   });
+   ```
 
-#### Group 2: Content Structure Verification
+2. In the `audit` callback, store `payload.specFormat` when starting a fresh audit (the `!isRetry` branch):
 
-| # | Test | Assertions |
-|---|------|------------|
-| 6 | `markdownToContent` parses the full realistic output | Returns an array of content nodes |
-| 7 | All 14 findings produce content nodes | Count of severity blocks (tables with `noBorders`) equals 14 |
-| 8 | 6 CRITICAL blocks with correct colors | Count of tables where badge text is "CRITICAL" = 6 |
-| 9 | 4 WARNING blocks with correct colors | Count of tables where badge text is "WARNING" = 4 |
-| 10 | 4 INFO blocks with correct colors | Count of tables where badge text is "INFO" = 4 |
-| 11 | Summary heading is parsed as h2 | The "Summary" heading produces `{ text: 'Summary', fontSize: 14, bold: true }` |
-| 12 | Findings heading is parsed as h1 | The "Findings" heading produces `{ text: 'Findings', fontSize: 18, bold: true }` |
-| 13 | Governance Score heading is parsed as h1 | The "Governance Score" heading produces `{ text: 'Governance Score', fontSize: 18, bold: true }` |
-| 14 | Horizontal rules preserved | Number of `---` lines in fixture matches count of `canvas` nodes |
-| 15 | Inline bold preserved (e.g., **Total Findings:**) | At least one inline `bold: true` segment in the paragraph text |
+   ```typescript
+   if (!isRetry) {
+     abortRef.current?.abort();
+     retryCount.current = 0;
+     abortRef.current = new AbortController();
+     setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });
+   }
+   ```
 
-#### Group 3: Export PDF
+   On retries, `specFormat` is preserved because we don't reset it.
 
-| # | Test | Assertions |
-|---|------|------------|
-| 16 | `exportPdf` creates docDefinition with correct structure | `pageSize: 'A4'`, `content` is array |
-| 17 | Title block includes "SpecAudit Report" | First content element's stack has title text |
-| 18 | All severity blocks are represented in the PDF content | The docDefinition content array contains the same number of table nodes as the fixture has severity blocks |
-| 19 | `exportPdf` uses default filename format | `.download()` called with name matching `specaudit-report-\d+\.pdf` |
-| 20 | `exportPdf` accepts custom filename | `.download()` called with custom name |
+3. In the error/catch branches that reset state, include `specFormat: null`:
 
-#### Group 4: Download (Markdown)
+   - AbortError branch: `setState(s => ({ ...s, status: 'idle' }));` — no change needed here; we just change status
+   - Rate-limit retry branch: `setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });`
+   - Fatal error branch: `setState(s => ({ ...s, status: 'error', error: ... }));` — no change needed; specFormat stays
 
-| # | Test | Assertions |
-|---|------|------------|
-| 21 | Download handler creates Blob with correct content | `Blob([result], { type: 'text/markdown;charset=utf-8' })` where result equals fixture text |
-| 22 | Anchor element configured correctly | `a.download` matches `specaudit-report-<timestamp>.md` |
-| 23 | Download triggers click on anchor | `a.click()` is called |
+   Actually, looking more carefully at the retry flow: on retry, a new `payload` with the same `specFormat` is passed, so using `payload.specFormat` in the retry branch is correct.
 
-#### Group 5: Copy
+4. In the `reset` callback, add `specFormat: null`:
 
-| # | Test | Assertions |
-|---|------|------------|
-| 24 | Copy handler writes full fixture content to clipboard | `navigator.clipboard.writeText` called with content matching fixture exactly |
-| 25 | Copy with partial content (single finding excerpt) | Copy handler works with any substring of the fixture |
+   ```typescript
+   setState({ status: 'idle', result: '', error: null, specFormat: null });
+   ```
 
-#### Group 6: Spec Format Detection
+**Edge case:** If `payload.specFormat` is `undefined` (not provided), store `null`.
 
-| # | Test | Assertions |
-|---|------|------------|
-| 26 | Swagger fixture is valid parseable JSON | `JSON.parse(fixture)` does not throw |
-| 27 | Fixture has expected OpenAPI structure | `parsed.openapi === '3.0.1'`, `parsed.info.title` contains "FraudLabs" |
+### 3. `frontend/src/App.tsx` — Add JSON export handler + button
 
----
+#### New import
 
-## `.gitignore` Fix
+```typescript
+import type { AuditResult } from './types/audit';
+```
 
-Remove the `*swagger.json` line from `.gitignore` so the fixture files are tracked in version control.
+#### New handler: `handleExportJson`
 
----
+Follow the same Blob + temp `<a>` pattern as `handleDownload` (lines 28–42):
 
-## File Size Considerations
+```typescript
+const handleExportJson = useCallback(() => {
+  try {
+    const auditResult: AuditResult = {
+      version: 1,
+      result: state.result,
+      exportedAt: new Date().toISOString(),
+      specFormat: state.specFormat,
+    };
+    const jsonString = JSON.stringify(auditResult, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `specaudit-report-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    // JSON export API unavailable — silently ignore
+  }
+}, [state.result, state.specFormat]);
+```
 
-- `fraudlabs-swagger.json`: ~12KB (404 lines)
-- `fraudlabs-audit-result.md`: ~6KB (the AI output)
-- `feature-pipeline.test.ts`: ~250 lines of test code
+**Dependencies:** `state.result` and `state.specFormat`.
 
-These are small files, no performance concerns.
+#### New Button in JSX
+
+Add a new `<Button>` immediately after the Export PDF button (after line 125), inside the same fragment:
+
+```tsx
+<Button
+  variant="ghost"
+  size="sm"
+  disabled={state.status === 'streaming'}
+  onClick={handleExportJson}
+>
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
+    <polyline points="16 3 21 3 21 8" />
+    <line x1="4" y1="20" x2="21" y2="3" />
+    <polyline points="21 16 21 21 16 21" />
+    <line x1="15" y1="15" x2="21" y2="21" />
+    <line x1="4" y1="4" x2="9" y2="9" />
+  </svg>
+  Export JSON
+</Button>
+```
+
+**Icon:** Braces / code icon (two brackets with lines connecting — `{ }` metaphor).
+
+**Disabled condition:** Same as Copy/Download/Export PDF — disabled while `state.status === 'streaming'`.
+
+**Placement order (left to right):** Copy · Download · Export PDF · **Export JSON**
+
+### 4. `frontend/src/App.test.tsx` — Test file (new)
+
+Create `frontend/src/App.test.tsx` with tests for the JSON export handler.
+
+```typescript
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { AuditResult } from './types/audit';
+
+// We test the JSON export logic in isolation (same pattern as the Download
+// group in feature-pipeline.test.ts). The actual handler is inside App.tsx;
+// we test the same algorithm a standalone handler would use.
+
+const SAMPLE_MARKDOWN = '# SpecAudit Report\n\n## Summary\n**Total Findings:** 3';
+
+function createTestResult(specFormat: string | null = 'json'): AuditResult {
+  return {
+    version: 1,
+    result: SAMPLE_MARKDOWN,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    specFormat,
+  };
+}
+
+describe('Export JSON', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('1: creates a valid AuditResult object with all required fields', () => {
+    const result = createTestResult('yaml');
+    expect(result).toHaveProperty('version', 1);
+    expect(result).toHaveProperty('result', SAMPLE_MARKDOWN);
+    expect(result).toHaveProperty('exportedAt');
+    expect(result).toHaveProperty('specFormat', 'yaml');
+  });
+
+  it('2: version is always 1', () => {
+    const result = createTestResult();
+    expect(result.version).toBe(1);
+  });
+
+  it('3: exportedAt is a valid ISO-8601 date string', () => {
+    const result = createTestResult();
+    const parsed = new Date(result.exportedAt);
+    expect(parsed.toISOString()).toBe(result.exportedAt);
+  });
+
+  it('4: specFormat can be null (auto-detect)', () => {
+    const result = createTestResult(null);
+    expect(result.specFormat).toBeNull();
+  });
+
+  it('5: specFormat can be "yaml"', () => {
+    const result = createTestResult('yaml');
+    expect(result.specFormat).toBe('yaml');
+  });
+
+  it('6: JSON.stringify produces valid parsable JSON', () => {
+    const result = createTestResult();
+    const json = JSON.stringify(result);
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual(result);
+  });
+
+  it('7: Pretty-printed JSON (2-space indent) is valid', () => {
+    const result = createTestResult();
+    const json = JSON.stringify(result, null, 2);
+    expect(() => JSON.parse(json)).not.toThrow();
+    expect(json).toContain('\n  ');
+  });
+
+  it('8: creates Blob with correct content type', () => {
+    const result = createTestResult();
+    const jsonString = JSON.stringify(result, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    expect(blob.type).toBe('application/json;charset=utf-8');
+  });
+
+  it('9: Blob content matches original result object after round-trip', async () => {
+    const result = createTestResult();
+    const jsonString = JSON.stringify(result, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const text = await blob.text();
+    const parsed = JSON.parse(text);
+    expect(parsed).toEqual(result);
+  });
+
+  it('10: filename uses correct pattern', () => {
+    const filename = `specaudit-report-${Date.now()}.json`;
+    expect(filename).toMatch(/^specaudit-report-\d+\.json$/);
+  });
+
+  it('11: anchor element has correct download attribute', () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+
+    const result = createTestResult();
+    const jsonString = JSON.stringify(result, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `specaudit-report-${Date.now()}.json`;
+
+    expect(a.download).toMatch(/^specaudit-report-\d+\.json$/);
+    expect(a.href).toBe('blob:mock-url');
+
+    URL.revokeObjectURL(url);
+  });
+
+  it('12: triggers click on anchor (full download flow)', () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL');
+
+    const origCreateElement = document.createElement.bind(document);
+    const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
+    const clickSpy = vi.fn();
+    mockAnchor.click = clickSpy;
+    vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
+      if (tagName === 'a') return mockAnchor as unknown as HTMLElement;
+      return origCreateElement(tagName);
+    });
+
+    // Execute the same logic as handleExportJson
+    const result = createTestResult();
+    const jsonString = JSON.stringify(result, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `specaudit-report-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+  });
+
+  it('13: catch block prevents errors from propagating', () => {
+    // Simulate a browser API failure — mirroring the try/catch in App.tsx
+    const handleExportJsonSafe = () => {
+      try {
+        const result = createTestResult();
+        const jsonString = JSON.stringify(result, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `specaudit-report-${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch {
+        // JSON export unavailable — silently ignore
+      }
+    };
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+      throw new Error('URL API unavailable');
+    });
+
+    expect(() => handleExportJsonSafe()).not.toThrow();
+  });
+
+  it('14: handles empty result string', () => {
+    const result: AuditResult = {
+      version: 1,
+      result: '',
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      specFormat: null,
+    };
+    const json = JSON.stringify(result, null, 2);
+    const parsed = JSON.parse(json);
+    expect(parsed.result).toBe('');
+  });
+
+  it('15: handles result with unicode characters', () => {
+    const unicodeResult = `# Café résumé\n\nCrème brûlée — 日本語\n\n\`console.log("héllo")\``;
+    const result: AuditResult = {
+      version: 1,
+      result: unicodeResult,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      specFormat: null,
+    };
+    const json = JSON.stringify(result, null, 2);
+    const parsed = JSON.parse(json);
+    expect(parsed.result).toBe(unicodeResult);
+  });
+});
+```
 
 ---
 
@@ -213,40 +399,77 @@ These are small files, no performance concerns.
 
 | # | Scenario | Handling |
 |---|----------|----------|
-| 1 | Empty fixture (file exists but is empty) | Test imports the file directly — if empty, the test fails on the first assertion |
-| 2 | Fixture has unexpected formatting (AI output changes) | The test asserts structural properties (counts of severity blocks, headings) not exact text string — making it resilient to minor AI output variation |
-| 3 | SSE chunk boundary splits a line | The `parseSSEChunks` function handles partial lines via `remainingBuffer` — the mock splits content at complete `data: ...\n` boundaries, which matches how the real backend sends them |
-| 4 | `fetch` mock leak between tests | Use `beforeEach` to clear and restore the mock via `vi.restoreAllMocks()` |
+| 1 | **Empty result** (`state.result === ''`) | The handler still produces valid JSON with `result: ""`. The download goes through (empty file is valid JSON). Same behavior as the Download handler for empty content. |
+| 2 | **Streaming in progress** | Button is disabled (`state.status === 'streaming'`), matching Copy/Download/Export PDF behavior. `handleExportJson` is not callable. |
+| 3 | **Loading state** | No buttons are rendered yet (wrapped in `{state.result && ...}`), same as existing buttons. |
+| 4 | **Error state** | `state.result` may contain the markdown accumulated before the error. The JSON export includes whatever markdown `state.result` holds — no special error handling needed; the markdown itself may contain `[SPECAUDIT_ERROR]` text if streaming failed midway. This is consistent with current behavior for Download and Export PDF. |
+| 5 | **`specFormat` is null** | The JSON envelope includes `"specFormat": null`. This is valid JSON. |
+| 6 | **Browser Blob/URL API unavailable** | The `try/catch` block silently catches any exception, matching the existing Download handler pattern. |
+| 7 | **Unicode in markdown** | `JSON.stringify` natively handles UTF-8; the test verifies unicode round-trips correctly. |
+| 8 | **Very large result** | `JSON.stringify` handles strings of any length; no limit is imposed. The Blob API handles large data natively. If the string is extremely large, `URL.createObjectURL` may use significant memory — same risk as the existing Download handler. |
 
 ---
 
-## Files NOT Modified
+## Test Strategy
 
-- `frontend/src/App.tsx` — unchanged (the integration test exercises the same handler functions App.tsx would call)
-- `frontend/src/hooks/useAudit.ts` — unchanged (the integration test calls `auditStream` directly with the same pattern)
-- Any other production code file
+### Unit tests (`frontend/src/App.test.tsx`) — 15 tests
+
+| # | Test | Assertions |
+|---|------|------------|
+| 1 | Creates a valid `AuditResult` | All required fields present |
+| 2 | `version` is always `1` | `result.version === 1` |
+| 3 | `exportedAt` is valid ISO-8601 | `new Date(result.exportedAt).toISOString() === result.exportedAt` |
+| 4 | `specFormat` can be `null` | `result.specFormat === null` |
+| 5 | `specFormat` can be `"yaml"` | `result.specFormat === 'yaml'` |
+| 6 | JSON.stringify round-trips | `JSON.parse(JSON.stringify(result))` equals original |
+| 7 | Pretty-printed JSON is valid | Contains newlines + 2-space indent, parseable |
+| 8 | Blob type is correct | `blob.type === 'application/json;charset=utf-8'` |
+| 9 | Blob content round-trips | `JSON.parse(await blob.text())` equals original object |
+| 10 | Filename pattern | Matches `specaudit-report-\d+\.json` |
+| 11 | Anchor configured correctly | `a.download` matches pattern, `a.href` is blob URL |
+| 12 | Full download flow triggers click | `a.click()` called, `revokeObjectURL` called |
+| 13 | Error handling (catch block safety) | Thrown error in URL API does not propagate |
+| 14 | Empty result string | Serializes as `"result": ""` |
+| 15 | Unicode characters in result | Survives round-trip without corruption |
+
+### Integration tests
+
+No integration test changes needed. The existing `feature-pipeline.test.ts` already covers the SSE streaming pipeline, content parsing, PDF export, download, and copy. Adding JSON export tests to that file is optional but low-priority since the handler follows the exact same Blob + `<a>` pattern already tested in Group 4 (Download).
+
+---
+
+## Implementation Order
+
+1. Modify `frontend/src/types/audit.ts` — add `AuditResult` type + `specFormat` field to `AuditState`
+2. Modify `frontend/src/hooks/useAudit.ts` — store `specFormat` in state
+3. Modify `frontend/src/App.tsx` — add `handleExportJson` + button
+4. Create `frontend/src/App.test.tsx` — 15 tests
+5. Run `npm test -- --run` to verify all tests pass
+6. Run `npx tsc --noEmit` to verify TypeScript
+7. Run `npm run build` to verify production build
 
 ---
 
 ## Verification
 
 | Step | Command | Expected |
-|---|---|---|
-| 1. Fix gitignore | Remove `*swagger.json`, verify with `git check-ignore` | File not ignored |
-| 2. Re-add fixture to git | `git add frontend/src/test-fixtures/` | Tracked |
-| 3. TypeScript | `npx tsc --noEmit` | Zero errors |
-| 4. Tests | `npm test -- --run` | All tests pass (existing + new integration tests) |
-| 5. Build | `npm run build` in `frontend/` | Zero errors |
+|------|---------|----------|
+| 1. TypeScript | `npx tsc --noEmit` | Zero errors |
+| 2. Tests | `npm test -- --run` | All existing + 15 new tests pass |
+| 3. Build | `npm run build` | Zero errors |
+| 4. Manual | Run frontend, complete audit, click Export JSON | Downloads valid `.json` file with expected structure |
 
 ---
 
 ## Summary
 
 | Aspect | Detail |
-|---|---|
-| **Goal** | Integration tests with real OpenAPI spec + real AI audit output |
-| **New files** | 2 fixtures + 1 test file |
-| **Modified files** | `.gitignore` |
-| **Tests added** | 27 integration tests covering SSE streaming, content parsing, export PDF, download, copy |
-| **Mock footprint** | Only `fetch` is mocked — all feature code runs with real implementations |
-| **CI-safe** | ✅ Yes (no API key, no backend, no network — fixture data is in-repo) |
+|--------|--------|
+| **Approach** | JSON envelope wrapping the raw markdown (Option 1) |
+| **Backend changes** | None |
+| **New TypeScript types** | `AuditResult` (export interface) |
+| **Modified state** | `AuditState.specFormat` (stores the audit request's format) |
+| **Modified files** | `types/audit.ts`, `hooks/useAudit.ts`, `App.tsx` |
+| **Created files** | `App.test.tsx` |
+| **Tests added** | 15 unit tests for JSON export logic |
+| **Pattern copied from** | `handleDownload` (App.tsx lines 28–42) |

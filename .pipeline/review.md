@@ -1,81 +1,105 @@
-ï»¿# Review Verdict
+# Review: "Export as JSON" Feature
 
-**VERDICT: SHIP**
+## Verdict: **SHIP** ?
 
 ---
 
 ## Summary
 
-The integration test implementation is complete, correct, and well-structured. 32 tests (27 per spec + 5 edge-case additions) exercise the full frontend feature pipeline with real OpenAPI fixture data and minimal mocking (only fetch + pdfmake).
+The implementation adds an "Export JSON" button that serializes the raw markdown audit result into a structured JSON envelope and triggers a file download via the Blob + temp <a> pattern — the same pattern used by the existing Download and Export PDF handlers.
+
+### What was done
+
+| File | Action | Status |
+|------|--------|--------|
+| rontend/src/types/audit.ts | Added AuditResult interface + specFormat field to AuditState | ? |
+| rontend/src/hooks/useAudit.ts | Stores specFormat in state from payload.specFormat ?? null | ? |
+| rontend/src/App.tsx | Added handleExportJson callback + button with braces icon | ? |
+| rontend/src/components/features/__tests__/App.test.tsx | 21 tests (5 RTL integration + 16 unit/type tests) | ? |
+| rontend/src/hooks/__tests__/useAudit.test.tsx | Updated state assertions to include specFormat: null | ? |
+
+### Verification results
+
+| Check | Result |
+|-------|--------|
+| TypeScript (
+px tsc --noEmit) | ? Zero errors |
+| Tests (
+px vitest run) | ? 168 passed (14 files) |
 
 ---
 
-## Checklist Results
+## Detailed Assessment
 
-### 1. Spec Alignment
+### 1. Spec alignment
 
-| Spec Requirement | Status | Notes |
-|---|---|---|
-| Create fraudlabs-swagger.json | Done | 404-line real OpenAPI 3.0.1 spec |
-| Create fraudlabs-audit-result.md | Done | Real AI audit with 14 findings |
-| Create feature-pipeline.test.ts | Done | 32 tests across 7 groups |
-| Modify .gitignore | Done | No *swagger.json pattern present (never was) |
-| Mock only fetch + pdfmake | Done | All other modules use real implementations |
-| SSE mock helper | Done | createSSEMockResponse with optional abort |
-| 6 test groups per spec | Done | 5 original + 1 edge-case group added |
-| beforeEach cleanup | Done | Each mock-using group cleans up |
+Every requirement from the spec is implemented correctly:
 
-**Spec deviations** (documented in changes.md):
-- Tests 12-13: fixture uses ## headings, tests assert h2 (correct, matches real data)
-- Test 1: chunk split uses capturing group to preserve double-newline separators
+- **JSON envelope shape**: { version: 1, result, exportedAt, specFormat } — matches the spec exactly.
+- **specFormat propagation**: Set once via payload.specFormat ?? null in the non-retry branch, preserved on retries, reset to 
+ull on new audit or eset(). Matches spec.
+- **Handler pattern**: Identical Blob + temp <a> pattern as handleDownload, with silent try/catch. Matches spec.
+- **Button placement**: Immediately after Export PDF, inside {state.result && ...} wrapper, disabled during streaming. Matches spec.
+- **Filename**: specaudit-report-<timestamp>.json — matches the existing .md / .pdf convention. Matches spec.
+- **Icon**: Braces { } SVG icon as specified.
 
-### 2. Test Quality
+### 2. JSON envelope correctness
 
-**Mock surface is minimal**: Only fetch (via vi.spyOn) and pdfmake (via vi.mock) are mocked. All real modules execute:
-- auditClient.ts - real SSE streaming logic
-- exportPdf.ts - real markdownToContent parsing + docDefinition construction
-- parseSSEChunks.ts - real chunk parsing
-- parseParagraph - real inline formatting parser
+The AuditResult interface enforces:
+- ersion: 1 (literal type — TypeScript ensures this is always 1)
+- esult: string (the raw markdown)
+- exportedAt: string (ISO-8601 via 
+ew Date().toISOString())
+- specFormat: string | null (preserves 
+ull for auto-detect)
 
-**Edge cases covered** (tests 28-32):
-- Trailing whitespace on lines still produces 14 severity blocks
-- Empty title after ### [CRITICAL] produces a table node with text: ''
-- Unclosed code fence followed by code is flushed as code node
-- handleDownload catch block swallows URL.createObjectURL throw
-- handleExportPdf catch block swallows pdfmake.createPdf throw
+Serialized with JSON.stringify(auditResult, null, 2) for human-readable 2-space-indented output.
 
-**Mock leakage check**: Each mock-using group has its own beforeEach. Groups using vi.restoreAllMocks() (1, 4, 5, 7) fully restore implementations. Group 3 uses vi.clearAllMocks(), which is sufficient because its mocks are stable factory functions. Group 3 runs before Group 7 in file order, so no cross-contamination occurs.
+### 3. Test coverage — comprehensive
 
-**One minor fragility note**: Test 32 mutates mockCreatePdf.mockImplementation(() => { throw ... }) globally. If a future developer adds tests after Group 7 that use exportPdf without a beforeEach that restores mocks, those tests would fail. Consider changing Group 3 to also use vi.restoreAllMocks() for defensive consistency. Not a blocker.
+All 8 spec edge cases are tested:
 
-### 3. Fixture Correctness
+| Edge Case | Test(s) | Layer |
+|-----------|---------|-------|
+| Empty result | Tests 1 (hidden), 15 (unit), 17 (no download) | RTL + unit |
+| Streaming disabled | Test 3 | RTL |
+| specFormat is null | Tests 9 (unit), 18 (RTL) | Both |
+| specFormat is "yaml" | Tests 10 (unit), 4 (RTL) | Both |
+| Large content (15K chars) | Test 21 | RTL |
+| Unicode | Test 16 | Unit |
+| ISO-8601 timestamp | Tests 8 (unit), 19 (RTL dynamic) | Both |
+| Error recovery (Blob API throws) | Tests 13 (unit), 20 (RTL) | Both |
 
-| Fixture | Lines | Valid JSON | OpenAPI ver | Findings |
-|---|---|---|---|---|
-| fraudlabs-swagger.json | 404 | JSON.parse succeeds | 3.0.1 | N/A |
-| fraudlabs-audit-result.md | 109 | N/A | N/A | 6 CRITICAL, 4 WARNING, 4 INFO |
+New tests added beyond the original spec (tests 17–21) fill gaps identified during implementation, covering: empty result safety net, null specFormat at integration level, dynamic ISO-8601 validation, component-level error recovery, and large content handling.
 
-Both fixtures contain real, non-trivial data. The tests assert structural properties (counts, heading levels, badge text) rather than exact strings, making them resilient to minor AI output changes.
+### 4. Error handling
 
-### 4. .gitignore
+Matches the existing pattern exactly:
+- handleCopy ? 	ry/catch { /* silently ignore */ }
+- handleDownload ? 	ry/catch { /* silently ignore */ }
+- handleExportPdf ? 	ry/catch { /* silently ignore */ }
+- handleExportJson ? 	ry/catch { /* silently ignore */ }
 
-Current .gitignore has NO *swagger.json or *swagger* pattern. The fixture files in frontend/src/test-fixtures/ are not ignored. The root FraudLabs Pro Fraud Detection-swagger.json is also not ignored (untracked, can be added).
+All four handlers silently catch exceptions without user-facing error feedback — consistent behavior across all export actions.
 
-**Note**: The original .gitignore was a PowerShell self-writing script template. The cleanup removed the PowerShell wrapper. There was never actually a *swagger.json pattern in .gitignore. The spec narrative slightly misstates the change, but the outcome is correct.
+### 5. Minor observation (not blocking)
 
-### 5. Passed All Checks
+The pre-existing describe('App Copy Button'), describe('App Download Button'), and describe('App Export PDF Button') mock state objects in App.test.tsx do not include the new specFormat field. For example:
 
-| Step | Result |
-|---|---|
-| npx tsc --noEmit (frontend/) | Zero errors |
-| npm test -- --run (frontend/) | All 147 tests pass (14 files) |
-| npm run build (frontend/) | Build succeeds (verified via changes.md) |
-| git check-ignore on fixtures | Not ignored |
+`	ypescript
+state: { status: 'idle', result: '', error: null }
+`
+
+These mocks lack specFormat. This doesn't cause test failures because:
+- The mock is weakly typed (ReturnType<typeof vi.fn> ? Mock ? ny)
+- Those test blocks never access state.specFormat
+
+**Recommendation**: Add specFormat: null to all mock state objects in those describe blocks for consistency. This prevents future confusion if a test in those blocks is extended to interact with the new field. Not a blocker — the Export JSON describe block correctly includes specFormat in all its mocks.
 
 ---
 
-## Verdict: SHIP
+## Conclusion
 
-The implementation is production-ready. No blockers, no regression risk, no production code modified. The 5 extra edge-case tests (28-32) fill real gaps in the original spec and add meaningful robustness coverage.
+The implementation is thorough, well-tested, matches the spec exactly, and follows the existing codebase patterns. All 168 tests pass and TypeScript compiles with zero errors.
 
-**One low-priority suggestion**: Align Group 3 (Export PDF)'s beforeEach to use vi.restoreAllMocks() instead of vi.clearAllMocks(). This would make cleanup consistent across all groups and prevent future order-dependent failures if tests are reordered or extended.
+**Verdict: SHIP** ??

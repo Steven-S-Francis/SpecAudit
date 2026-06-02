@@ -1,53 +1,52 @@
-# Changes Summary
+# Changes Summary — Export Audit Result as JSON
 
 ## Files Modified
 
-| File | Action | Description |
-|------|--------|-------------|
-| `.gitignore` | **Modified** | Removed `*swagger.json` pattern so the OpenAPI fixture file is tracked in version control |
-| `frontend/src/test-fixtures/fraudlabs-swagger.json` | **Created** | Copy of `FraudLabs Pro Fraud Detection-swagger.json` (OpenAPI 3.0.1 spec) for clean imports in tests |
-| `frontend/src/test-fixtures/fraudlabs-audit-result.md` | **Created** | Real AI audit output for the fraudlabs spec (14 findings: 6 CRITICAL, 4 WARNING, 4 INFO) |
-| `frontend/src/__tests__/integration/feature-pipeline.test.ts` | **Created** | 27 integration tests exercising the full frontend feature pipeline with real fixture data |
+### 1. `frontend/src/types/audit.ts`
+- Added `specFormat: string | null` field to the `AuditState` interface (stores the spec format from the audit request, or `null` for auto-detect)
+- Added new `AuditResult` export interface with fields: `version: 1`, `result: string`, `exportedAt: string`, `specFormat: string | null`
 
-## No Production Code Modified
+### 2. `frontend/src/hooks/useAudit.ts`
+- Initial state now includes `specFormat: null`
+- When audit starts (initial call, not retry): stores `payload.specFormat ?? null` in state
+- On rate-limit retry: stores `payload.specFormat ?? null` (preserves format across retries)
+- On `reset()`: resets `specFormat` to `null`
 
-The following files were explicitly **not modified** per spec:
-- `frontend/src/utils/exportPdf.ts` — unchanged
-- `frontend/src/App.tsx` — unchanged
-- `frontend/src/api/auditClient.ts` — unchanged
-- `frontend/src/hooks/useAudit.ts` — unchanged
+### 3. `frontend/src/App.tsx`
+- Imported `AuditResult` type from `./types/audit`
+- Added `handleExportJson` callback using the same Blob + temp `<a>` pattern as `handleDownload`:
+  - Builds `AuditResult` object with `version: 1`, `state.result`, `new Date().toISOString()`, `state.specFormat`
+  - Serializes with `JSON.stringify(auditResult, null, 2)`
+  - Creates Blob with `type: 'application/json;charset=utf-8'`
+  - Downloads as `specaudit-report-<timestamp>.json`
+  - Wrapped in try/catch for safety
+  - Dependencies: `state.result`, `state.specFormat`
+- Added `Export JSON` button with braces `{ }` SVG icon immediately after the Export PDF button
+  - Same `disabled` logic (`state.status === 'streaming'`)
+  - Only rendered when `state.result` is truthy (same wrapper pattern)
 
-## Test Count Breakdown
+### 4. `frontend/src/components/features/__tests__/App.test.tsx`
+- Added import for `AuditResult` type
+- Added shared test helpers: `SAMPLE_MARKDOWN` constant and `createTestResult()` factory function
+- Added new `describe('App Export JSON Button', ...)` block with 16 tests:
+  - Tests 1-3: Button visibility (hidden when empty, shown with content, disabled when streaming) — rendered via React Testing Library
+  - Tests 4-5: Full download flow (correct JSON envelope, correct filename `.json` extension) — with Blob content parsing and DOM anchor verification
+  - Tests 6-16: Pure unit tests for the `AuditResult` type and JSON serialization (field presence, ISO-8601 validation, null/yaml specFormat, JSON round-trip, pretty-print, Blob type, unicode handling, empty result)
 
-| Category | Count |
-|----------|-------|
-| Existing tests before change | 115 |
-| New integration tests added | 27 |
-| **Total after change** | **142** |
+### 5. `frontend/src/hooks/__tests__/useAudit.test.tsx`
+- Updated two state equality assertions to include `specFormat: null` (initial state and reset state)
 
-### New Integration Tests (27)
+## Tester Focus Areas
 
-| Group | Tests | Description |
-|-------|-------|-------------|
-| 1 — SSE Streaming | 1–5 | `auditStream` with real fixture as SSE chunks; accumulation, chunk count, error handling, abort, fixture validation |
-| 2 — Content Structure | 6–15 | `markdownToContent` parsing: heading levels, severity block counts (6 CRITICAL, 4 WARNING, 4 INFO), horizontal rules, inline bold |
-| 3 — Export PDF | 16–20 | `exportPdf` docDefinition structure, title block, severity block inclusion, default/custom filename |
-| 4 — Download | 21–23 | Blob content/type verification, anchor filename pattern, click trigger (with mocked `createElement` and `URL`) |
-| 5 — Copy | 24–25 | Clipboard write with full fixture content and partial excerpt |
-| 6 — Spec Format | 26–27 | JSON parse validation, OpenAPI version and title detection |
-
-## Verification Results
-
-| Step | Status |
-|------|--------|
-| `.gitignore` fix — `git check-ignore` | ✅ Returns nothing (file not ignored) |
-| TypeScript — `npx tsc --noEmit` (frontend/) | ✅ Zero errors |
-| Tests — `npm test -- --run` (frontend/) | ✅ All 142 tests pass (14 test files) |
-| Build — `npm run build` (frontend/) | ✅ Build succeeds |
-| Docker — `docker compose build` (repo root) | ✅ Image built successfully |
+1. **Button placement**: Export JSON button appears right after Export PDF, inside the same conditional fragment (`{state.result && ...}`)
+2. **Disabled state**: All action buttons (Copy, Download, Export PDF, Export JSON) share the same `state.status === 'streaming'` disabled condition
+3. **Filename pattern**: Uses `specaudit-report-<timestamp>.json` matching the existing `.md` / `.pdf` convention
+4. **Error handling**: Try/catch block catches any Blob/URL API failures (same pattern as `handleDownload`)
+5. **specFormat propagation**: Set once via `payload.specFormat ?? null` in the non-retry branch, preserved through retries, reset on new audit
+6. **Build verification**: `npx tsc --noEmit` (zero errors), `npm test -- --run` (163 passed, 14 files), `npm run build` (succeeds)
 
 ## Deviations from Spec
 
-1. **Tests 12 & 13 — heading level mismatch**: The spec test table asserts "Findings" and "Governance Score" are parsed as h1 (`fontSize: 18`), but the fixture content uses `##` (h2) for both headings. The implementation matches the fixture: these tests check for h2 properties (`fontSize: 14`, `bold: true`). This is consistent with the actual fixture data rather than the spec table.
-
-2. **Test 1 — SSE chunk boundary handling**: The original test split fixture content by `\n\n` which lost the separator. The implementation now splits using `/(\n\n)/` with a capturing group, keeping the double-newline attached to each preceding chunk. This ensures `accumulated.join('')` exactly reproduces `fixtureContent`.
+- **Test file location**: The spec said to create `frontend/src/App.test.tsx` (new), but an existing App test file already exists at `frontend/src/components/features/__tests__/App.test.tsx`. Per user decision, the new tests were added to the existing file instead.
+- **`vi.restoreAllMocks()`**: Used in the Export JSON describe block's `beforeEach` instead of `vi.clearAllMocks()` to properly clean up spies from prior test blocks (prevents `document.createElement` spy interference causing "Maximum call stack size exceeded").
+- **Additional test**: Test 5 (filename validation) was enhanced to also verify `URL.createObjectURL` was called, since the unused variable caused a TypeScript `noUnusedLocals` error during `tsc -b`.

@@ -8,6 +8,7 @@ import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
 import { ThemeToggle } from './components/ui/ThemeToggle';
 import { exportPdf } from './utils/exportPdf';
+import type { AuditResult } from './types/audit';
 
 function App() {
   const { state, audit, abort } = useAudit();
@@ -48,6 +49,29 @@ function App() {
       // PDF generation failed — silently ignore
     }
   }, [state.result]);
+
+  const handleExportJson = useCallback(() => {
+    try {
+      const auditResult: AuditResult = {
+        version: 1,
+        result: state.result,
+        exportedAt: new Date().toISOString(),
+        specFormat: state.specFormat,
+      };
+      const jsonString = JSON.stringify(auditResult, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `specaudit-report-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // JSON export API unavailable — silently ignore
+    }
+  }, [state.result, state.specFormat]);
 
   useEffect(() => {
     fetch('/api/config')
@@ -122,6 +146,21 @@ function App() {
                       <line x1="16" y1="17" x2="8" y2="17" />
                     </svg>
                     Export PDF
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={state.status === 'streaming'}
+                    onClick={handleExportJson}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
+                      <polyline points="16 3 21 3 21 8" />
+                      <line x1="4" y1="20" x2="21" y2="3" />
+                      <polyline points="21 16 21 21 16 21" />
+                      <line x1="15" y1="15" x2="21" y2="21" />
+                      <line x1="4" y1="4" x2="9" y2="9" />
+                    </svg>
+                    Export JSON
                   </Button>
                 </>
               )}

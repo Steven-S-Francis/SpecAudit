@@ -21,6 +21,7 @@ describe('useAudit', () => {
       status: 'idle',
       result: '',
       error: null,
+      specFormat: null,
     });
   });
 
@@ -142,6 +143,7 @@ describe('useAudit', () => {
       status: 'idle',
       result: '',
       error: null,
+      specFormat: null,
     });
   });
 

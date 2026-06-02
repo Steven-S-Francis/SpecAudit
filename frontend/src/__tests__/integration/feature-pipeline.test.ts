@@ -270,7 +270,8 @@ describe('Content Structure Verification', () => {
 
 describe('Export PDF', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
+    mockCreatePdf.mockClear();
   });
 
   it('16: creates docDefinition with correct structure', async () => {

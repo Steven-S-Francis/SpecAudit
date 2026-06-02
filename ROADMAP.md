@@ -17,16 +17,11 @@
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
 | Export as PDF | *(re-implemented with pdfmake, replacing html2pdf.js)* |
 | Integration tests (real OpenAPI fixtures) | `517968b` |
+| Export as JSON | *(pending commit)* |
 
 ---
 
 ## Small (quick wins)
-
-### Export as JSON
-Download the raw audit result as structured JSON.
-- **Why:** Enable programmatic consumption of audits — CI pipelines, dashboards, further analysis.
-- **Affects:** `frontend/src/App.tsx` (new button), possibly a new `AuditResult` type for the JSON shape.
-- **Risk:** JSON schema must align with the SSE chunk structure; may need a new serialization endpoint on the backend.
 
 ### Severity filter
 Toggle buttons to show/hide CRITICAL / WARNING / INFO findings in the result panel.
