@@ -16,21 +16,21 @@ function App() {
   const [providerName, setProviderName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
-  const displayContent = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
+  const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(state.result);
+      await navigator.clipboard.writeText(strippedResult);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       // Clipboard API unavailable â€” silently ignore
     }
-  }, [state.result]);
+  }, [strippedResult]);
 
   const handleDownload = useCallback(() => {
     try {
-      const blob = new Blob([state.result], { type: 'text/markdown;charset=utf-8' });
+      const blob = new Blob([strippedResult], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -42,15 +42,15 @@ function App() {
     } catch {
       // Download API unavailable â€” silently ignore
     }
-  }, [state.result]);
+  }, [strippedResult]);
 
   const handleExportPdf = useCallback(async () => {
     try {
-      await exportPdf(state.result);
+      await exportPdf(strippedResult);
     } catch {
       // PDF generation failed â€” silently ignore
     }
-  }, [state.result]);
+  }, [strippedResult]);
 
   const handleExportJson = useCallback(() => {
     try {
@@ -177,7 +177,7 @@ function App() {
           )}
 
           <ResultPanel
-            content={displayContent}
+            content={strippedResult}
             isStreaming={state.status === 'streaming'}
           />
         </div>

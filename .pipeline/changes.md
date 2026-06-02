@@ -1,13 +1,23 @@
-## Changes made
+# Changes: Strip JSON block from all user-facing exports
 
-### 1. `frontend/src/components/features/ResultPanel.tsx`
-- **Added `style={{ padding: '5px' }}`** to the outer container `<div>` (line ~51). This gives the result content a 5px padding inside the scrollable container.
+## File changed
+- `frontend/src/App.tsx`
 
-### 2. `frontend/src/App.tsx`
-- **Added `displayContent` variable** (line ~18) that strips trailing ` ```json...``` ` code blocks from `state.result` using the regex `/```json[\s\S]*?```\s*$/gm`. These blocks are used only by the JSON export button and should not be visible in the markdown preview.
-- **Changed `ResultPanel` `content` prop** from `state.result` to `displayContent`, so the user sees the cleaned markdown without the trailing JSON block.
+## What changed
+- **Renamed** `displayContent` → `strippedResult` (line 19): clearer name since it's now used by all user-facing exports, not just display.
+- **`handleCopy`** (line 23, 29): now copies `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
+- **`handleDownload`** (line 33, 45): now downloads `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
+- **`handleExportPdf`** (line 49, 53): now exports `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
+- **`handleExportJson`** (lines 55-81): **unchanged** — still uses `state.findings`/`state.summary` with `state.result` fallback when no structured data exists.
+- **`ResultPanel`** (line 180): now receives `strippedResult` instead of `displayContent`.
 
-### Tester focus
-- Verify the result container now has visible 5px padding around its content.
-- Verify that when `state.result` contains a trailing ` ```json...``` ` block, it is stripped from the display but still available for the JSON export button (which reads `state.result` directly via `handleCopy`/`handleDownload`/`handleExportPdf`).
-- Confirm no regression: TypeScript `tsc --noEmit` passes, all 177 tests pass.
+## Effect
+The trailing ```json...``` block is no longer included in Copy, Download (.md), Export PDF, or the UI render. It remains accessible only via the Export JSON button.
+
+## Tester focus
+- `npx tsc --noEmit` — zero errors ✅
+- `npm test -- --run` — all 177 tests pass ✅
+- Verify Copy button copies markdown without the trailing JSON block
+- Verify Download (.md) file has no trailing JSON block
+- Verify Export PDF has no trailing JSON block
+- Verify Export JSON still works (uses findings/summary, falls back to result)
