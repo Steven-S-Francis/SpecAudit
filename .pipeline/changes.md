@@ -1,91 +1,53 @@
 # Changes Summary
 
-## Overview
-Replaced `html2pdf.js` (DOM screenshot-based PDF generation) with `pdfmake` (native declarative PDF generation). The markdown content is parsed line-by-line and converted into pdfmake's content array format — no DOM elements, no `html2canvas`, no screenshots.
-
 ## Files Modified
 
-### 1. `frontend/package.json`
-- **Removed** `html2pdf.js` from `dependencies`
-- **Added** `pdfmake` to `dependencies`
-- **Added** `@types/pdfmake` to `devDependencies`
+| File | Action | Description |
+|------|--------|-------------|
+| `.gitignore` | **Modified** | Removed `*swagger.json` pattern so the OpenAPI fixture file is tracked in version control |
+| `frontend/src/test-fixtures/fraudlabs-swagger.json` | **Created** | Copy of `FraudLabs Pro Fraud Detection-swagger.json` (OpenAPI 3.0.1 spec) for clean imports in tests |
+| `frontend/src/test-fixtures/fraudlabs-audit-result.md` | **Created** | Real AI audit output for the fraudlabs spec (14 findings: 6 CRITICAL, 4 WARNING, 4 INFO) |
+| `frontend/src/__tests__/integration/feature-pipeline.test.ts` | **Created** | 27 integration tests exercising the full frontend feature pipeline with real fixture data |
 
-### 2. `frontend/src/utils/exportPdf.ts` (rewritten)
-- **Removed** all html2pdf.js / html2canvas / DOM manipulation code
-- **Added** pdfmake with VFS font setup (`addVirtualFileSystem`)
-- **Exported** `exportPdf(content, filename?)` — unchanged signature
-- **Exported** `markdownToContent(markdown)` — converts markdown to pdfmake content array
-- **Implemented** full markdown-to-pdfmake mapping:
-  - Title block (SpecAudit Report + timestamp)
-  - h1 headings (`# Title`) — fontSize 18, bold
-  - h2 headings (`## Title`) — fontSize 14, bold
-  - Severity blocks (`### [CRITICAL|WARNING|INFO] Title`) — 3-column tables with `noBorders` layout
-  - Fenced code blocks — dark background (`#1e293b`)
-  - Inline code — amber background (`#f1f5f9`, `#b45309`)
-  - Bold (`**text**`) — `bold: true`
-  - Horizontal rules (`---`) — canvas line
-  - Regular paragraphs with inline formatting parsing
-- **Document structure**: pageSize A4, pageMargins [40,60,40,60], defaultStyle Roboto
-- **Error handling**: empty content returns early; errors propagate naturally (caller catches)
+## No Production Code Modified
 
-### 3. `frontend/src/utils/__tests__/exportPdf.test.ts` (rewritten)
-- **Removed** html2pdf.js mock
-- **Added** pdfmake mock with `createPdf`, `addVirtualFileSystem`, `fonts`
-- **Added** vfs_fonts mock
-- **25 test cases** covering:
-  - Function exports
-  - Early return on empty content
-  - Correct docDefinition structure (pageSize A4, content array)
-  - Custom and default filename formats
-  - Title block inclusion
-  - Severity block → table with noBorders
-  - Code block → text with background
-  - h1/h2 conversion
-  - Horizontal rule → canvas
-  - Inline bold and inline code parsing
-  - Plain paragraph (simple form)
-  - Inline code at start/end of line
-  - Empty line skipping
-  - Mixed content ordering
-  - Error propagation (createPdf throws, download rejects)
+The following files were explicitly **not modified** per spec:
+- `frontend/src/utils/exportPdf.ts` — unchanged
+- `frontend/src/App.tsx` — unchanged
+- `frontend/src/api/auditClient.ts` — unchanged
+- `frontend/src/hooks/useAudit.ts` — unchanged
 
-### 4. `frontend/src/components/features/__tests__/App.test.tsx`
-- **Added** `vi.mock('../../../utils/exportPdf', () => ({ exportPdf: vi.fn() }))` at the top
-- **Added** import for `exportPdf` from the mocked module
-- **Added** test: "calls exportPdf on Export PDF button click" — verifies the button correctly invokes `exportPdf` with `state.result`
+## Test Count Breakdown
 
-### 5. `frontend/vite.config.ts`
-- **Added** `optimizeDeps.exclude: ['pdfmake']` to prevent Vite from pre-bundling the pdfmake deep import
+| Category | Count |
+|----------|-------|
+| Existing tests before change | 115 |
+| New integration tests added | 27 |
+| **Total after change** | **142** |
 
-## TypeScript Adjustments
-- pdfmake 0.3.x @types describe named exports, but the UMD build provides a default export with `createPdf`, `addVirtualFileSystem`, etc. as instance methods.
-- Used an `PdfMakeInstance` interface with type assertion at module level to match runtime shape.
-- Used `addVirtualFileSystem(pdfFonts)` (correct API for pdfmake 0.3.x) instead of `pdfMake.vfs = pdfFonts.vfs`.
+### New Integration Tests (27)
+
+| Group | Tests | Description |
+|-------|-------|-------------|
+| 1 — SSE Streaming | 1–5 | `auditStream` with real fixture as SSE chunks; accumulation, chunk count, error handling, abort, fixture validation |
+| 2 — Content Structure | 6–15 | `markdownToContent` parsing: heading levels, severity block counts (6 CRITICAL, 4 WARNING, 4 INFO), horizontal rules, inline bold |
+| 3 — Export PDF | 16–20 | `exportPdf` docDefinition structure, title block, severity block inclusion, default/custom filename |
+| 4 — Download | 21–23 | Blob content/type verification, anchor filename pattern, click trigger (with mocked `createElement` and `URL`) |
+| 5 — Copy | 24–25 | Clipboard write with full fixture content and partial excerpt |
+| 6 — Spec Format | 26–27 | JSON parse validation, OpenAPI version and title detection |
 
 ## Verification Results
+
 | Step | Status |
 |------|--------|
-| `npm install` | ✅ Passed |
-| `npx tsc --noEmit` | ✅ Zero errors |
-| `npx vitest run` | ✅ 105 tests pass (13 files) |
-| `npm run build` | ✅ Build succeeds |
-| `docker compose build` | ⏭️ Skipped (builds backend only, no frontend impact) |
-
-## Tester Focus Areas
-
-1. **Export PDF button wiring**: Click "Export PDF" in the UI and verify a PDF file is downloaded with actual content (not blank).
-2. **Severity blocks**: Verify `CRITICAL`, `WARNING`, and `INFO` blocks render correctly with colored left-border accent.
-3. **Code blocks**: Verify fenced code blocks have dark background.
-4. **Headings**: Verify h1/h2 rendering with proper font sizes.
-5. **Inline formatting**: Verify **bold** and `inline code` render correctly within paragraphs.
-6. **Empty content**: Verify clicking Export PDF with no results does nothing.
-7. **Long content**: Verify multi-page PDFs render correctly (pdfmake handles pagination automatically).
-8. **Unicode/special chars**: Verify special characters render correctly in the PDF.
+| `.gitignore` fix — `git check-ignore` | ✅ Returns nothing (file not ignored) |
+| TypeScript — `npx tsc --noEmit` (frontend/) | ✅ Zero errors |
+| Tests — `npm test -- --run` (frontend/) | ✅ All 142 tests pass (14 test files) |
+| Build — `npm run build` (frontend/) | ✅ Build succeeds |
+| Docker — `docker compose build` (repo root) | ✅ Image built successfully |
 
 ## Deviations from Spec
 
-1. **`@types/pdfmake` version**: The spec says `^0.3.7` but latest available is `0.3.3`. Used `^0.3.0`.
-2. **`pdfmake` version**: The spec says `^0.3.7` but latest is `0.3.9`. Used `^0.3.9`.
-3. **VFS font setup**: The spec pattern `pdfMake.vfs = pdfFonts.vfs` doesn't work with pdfmake 0.3.x. Used `pdfMake.addVirtualFileSystem(pdfFonts)` instead, which is the correct API for this version.
-4. **Import pattern**: The spec uses `import pdfMake from 'pdfmake/build/pdfmake'` with no type mention. Due to mismatch between runtime (UMD default export) and types (named exports), a local `PdfMakeInstance` interface was added with module-level type assertion for type safety.
-5. **`markdownToContent` return type**: The spec uses `Record<string, unknown>[]` but pdfmake's `TDocumentDefinitions.content` expects `Content` type. Used `unknown` bridging cast at the boundary.
+1. **Tests 12 & 13 — heading level mismatch**: The spec test table asserts "Findings" and "Governance Score" are parsed as h1 (`fontSize: 18`), but the fixture content uses `##` (h2) for both headings. The implementation matches the fixture: these tests check for h2 properties (`fontSize: 14`, `bold: true`). This is consistent with the actual fixture data rather than the spec table.
+
+2. **Test 1 — SSE chunk boundary handling**: The original test split fixture content by `\n\n` which lost the separator. The implementation now splits using `/(\n\n)/` with a capturing group, keeping the double-newline attached to each preceding chunk. This ensures `accumulated.join('')` exactly reproduces `fixtureContent`.
