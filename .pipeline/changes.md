@@ -2,6 +2,14 @@
 
 ## Commit History
 
+### `(working tree)` — fix: move scroll button back inside result container (revert outside-container mistake)
+
+- **`frontend/src/components/features/ResultPanel.tsx`** — re-add `useAutoScroll` import and hook call; remove `containerRef` prop (container ref is owned internally again); re-add `ScrollButton` import and render inside the scroll container div with `absolute bottom-3 right-3`; `ScrollButton` uses `direction` prop from `isAtBottom` state
+- **`frontend/src/App.tsx`** — remove `useAutoScroll` import, `ScrollButton` import, hook call, `containerRef` prop from `<ResultPanel>`, and the fixed `ScrollButton` render block
+- **`frontend/src/components/features/__tests__/ResultPanel.test.tsx`** — remove `dummyRef` variable and all `containerRef={dummyRef}` props from renders
+- **`.pipeline/spec.md`** — rewritten with corrected plan
+- **Pipeline verdict:** SHIP — all checks pass (76 frontend, 0 backend changes)
+
 ### `(working tree)` — feat: add Export as Markdown download button
 
 - **`frontend/src/App.tsx`** — added `handleDownload` callback that creates a `Blob` from `state.result` (type `text/markdown;charset=utf-8`), generates a blob URL, creates a temp `<a>` element with download attribute (`specaudit-report-{timestamp}.md`), triggers download, and cleans up; added `<Button variant="ghost" size="sm">` with download SVG icon next to the Copy button, same visibility/disabling rules

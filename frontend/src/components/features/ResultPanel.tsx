@@ -41,9 +41,8 @@ const SEVERITY_STYLES: Record<SeverityLevel, {
 };
 
 export function ResultPanel({ content, isStreaming }: Props) {
-  const { containerRef, showScrollButton, scrollToBottom } = useAutoScroll({ deps: [content] });
-
   const showSkeleton = content === '' && !isStreaming;
+  const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content] });
 
   return (
     <div
@@ -58,8 +57,8 @@ export function ResultPanel({ content, isStreaming }: Props) {
         </>
       ) : (
         <>
-          <div className="font-mono text-sm text-slate-200 light:text-slate-800">
-            <ReactMarkdown
+        <div className="font-mono text-sm text-slate-200 light:text-slate-800">
+          <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
                 h3({ children }: HeadingProps) {
@@ -105,7 +104,14 @@ export function ResultPanel({ content, isStreaming }: Props) {
               <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
             )}
           </div>
-          {showScrollButton && <ScrollButton onClick={scrollToBottom} />}
+          {content && (
+            <div className="absolute bottom-3 right-3">
+              <ScrollButton
+                onClick={isAtBottom ? scrollToTop : scrollToBottom}
+                direction={isAtBottom ? 'up' : 'down'}
+              />
+            </div>
+          )}
         </>
       )}
     </div>

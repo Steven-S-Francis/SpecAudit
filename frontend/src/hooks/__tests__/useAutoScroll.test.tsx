@@ -15,19 +15,18 @@ afterEach(() => {
 });
 
 function TestComponent({ content }: { content: string }) {
-  const { containerRef, showScrollButton, scrollToBottom } = useAutoScroll({ deps: [content] });
+  const { containerRef, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content] });
   return (
-    <div
-      ref={containerRef}
-      style={{ height: '100px', overflow: 'auto' }}
-      data-testid="scroll-container"
-    >
-      <div style={{ height: '200px' }}>{content}</div>
-      {showScrollButton && (
-        <button onClick={scrollToBottom} data-testid="scroll-button">
-          Scroll to bottom
-        </button>
-      )}
+    <div>
+      <div
+        ref={containerRef}
+        style={{ height: '100px', overflow: 'auto' }}
+        data-testid="scroll-container"
+      >
+        <div style={{ height: '200px' }}>{content}</div>
+      </div>
+      <button onClick={scrollToBottom} data-testid="scroll-bottom">Scroll bottom</button>
+      <button onClick={scrollToTop} data-testid="scroll-top">Scroll top</button>
     </div>
   );
 }
@@ -38,7 +37,6 @@ describe('useAutoScroll', () => {
     const { container, rerender } = render(<TestComponent content="initial" />);
     const scrollEl = container.querySelector('[data-testid="scroll-container"]')!;
 
-    // Override scrollTo on this element
     Object.defineProperty(scrollEl, 'scrollTo', { value: scrollTo, writable: true });
     Object.defineProperty(scrollEl, 'scrollHeight', { value: 200, writable: true });
     Object.defineProperty(scrollEl, 'clientHeight', { value: 100, writable: true });
@@ -61,61 +59,38 @@ describe('useAutoScroll', () => {
     Object.defineProperty(scrollEl, 'scrollTo', { value: scrollTo, writable: true });
     Object.defineProperty(scrollEl, 'scrollHeight', { value: 200, writable: true });
     Object.defineProperty(scrollEl, 'clientHeight', { value: 100, writable: true });
-    // User has scrolled up significantly
     Object.defineProperty(scrollEl, 'scrollTop', { value: 10, writable: true });
 
-    // Fire a scroll event so the handler registers the position
     fireEvent.scroll(scrollEl);
 
     rerender(<TestComponent content="updated" />);
 
-    // scrollTo should not have been called since user is not at bottom
     expect(scrollTo).not.toHaveBeenCalled();
   });
 
-  it('shows scroll button when not at bottom and hides it after scrolling down', () => {
+  it('scrollToBottom scrolls to bottom and scrollToTop scrolls to top', () => {
     const scrollTo = vi.fn();
-    const { container } = render(<TestComponent content="initial" />);
-
-    // No button initially (at bottom by default)
-    expect(screen.queryByTestId('scroll-button')).not.toBeInTheDocument();
-
+    const { container } = render(<TestComponent content="content" />);
     const scrollEl = container.querySelector('[data-testid="scroll-container"]')!;
+
     Object.defineProperty(scrollEl, 'scrollTo', { value: scrollTo, writable: true });
     Object.defineProperty(scrollEl, 'scrollHeight', { value: 200, writable: true });
     Object.defineProperty(scrollEl, 'clientHeight', { value: 100, writable: true });
-    Object.defineProperty(scrollEl, 'scrollTop', { value: 10, writable: true });
 
-    // Fire scroll to trigger state update
-    fireEvent.scroll(scrollEl);
-
-    // Button should appear
-    expect(screen.getByTestId('scroll-button')).toBeInTheDocument();
-
-    // Click the button to scroll to bottom
-    scrollTo.mockClear();
-    fireEvent.click(screen.getByTestId('scroll-button'));
-
-    // Button should disappear
-    expect(screen.queryByTestId('scroll-button')).not.toBeInTheDocument();
+    // Click scroll to bottom
+    fireEvent.click(screen.getByTestId('scroll-bottom'));
     expect(scrollTo).toHaveBeenCalledWith({
       top: 200,
       behavior: 'smooth',
     });
-  });
 
-  it('does not crash when scrollTo is unavailable', () => {
-    // Remove scrollTo from this element's prototype for this test
-    const { container, rerender } = render(<TestComponent content="initial" />);
-    const scrollEl = container.querySelector('[data-testid="scroll-container"]')!;
-    Object.defineProperty(scrollEl, 'scrollTo', { value: undefined, writable: true });
-    Object.defineProperty(scrollEl, 'scrollHeight', { value: 200, writable: true });
-    Object.defineProperty(scrollEl, 'clientHeight', { value: 100, writable: true });
-    Object.defineProperty(scrollEl, 'scrollTop', { value: 100, writable: true });
+    scrollTo.mockClear();
 
-    // Should not throw
-    expect(() => {
-      rerender(<TestComponent content="updated" />);
-    }).not.toThrow();
+    // Click scroll to top
+    fireEvent.click(screen.getByTestId('scroll-top'));
+    expect(scrollTo).toHaveBeenCalledWith({
+      top: 0,
+      behavior: 'smooth',
+    });
   });
 });

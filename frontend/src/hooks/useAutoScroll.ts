@@ -8,7 +8,7 @@ interface UseAutoScrollOptions {
 export function useAutoScroll({ deps, threshold = 50 }: UseAutoScrollOptions) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isAtBottomRef = useRef(true);
-  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -17,7 +17,7 @@ export function useAutoScroll({ deps, threshold = 50 }: UseAutoScrollOptions) {
     const onScroll = () => {
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
       isAtBottomRef.current = atBottom;
-      setShowScrollButton(!atBottom);
+      setIsAtBottom(atBottom);
     };
 
     el.addEventListener('scroll', onScroll, { passive: true });
@@ -40,8 +40,17 @@ export function useAutoScroll({ deps, threshold = 50 }: UseAutoScrollOptions) {
       behavior: 'smooth' as ScrollBehavior,
     });
     isAtBottomRef.current = true;
-    setShowScrollButton(false);
+    setIsAtBottom(true);
   }, []);
 
-  return { containerRef, showScrollButton, scrollToBottom };
+  const scrollToTop = useCallback(() => {
+    containerRef.current?.scrollTo?.({
+      top: 0,
+      behavior: 'smooth' as ScrollBehavior,
+    });
+    isAtBottomRef.current = false;
+    setIsAtBottom(false);
+  }, []);
+
+  return { containerRef, isAtBottom, scrollToBottom, scrollToTop };
 }

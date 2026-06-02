@@ -24,7 +24,7 @@ export function Button({ variant, disabled, onClick, children, className = '', s
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${variantStyles[variant]} ${sizeStyles[size]} ${className}`}
+      className={`inline-flex items-center gap-1 rounded-lg font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${variantStyles[variant]} ${sizeStyles[size]} ${className}`}
     >
       {children}
     </button>
