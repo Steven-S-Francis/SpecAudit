@@ -2,7 +2,11 @@
 
 ## Commit History
 
-### `(working tree)` — fix: move scroll button back inside result container (revert outside-container mistake)
+### `(working tree)` — feat: add ship.md pipeline orchestrator agent
+
+- **NEW `.opencode/agents/ship.md`** — orchestrator agent that runs the full feature pipeline: delegates to `plan` → waits for spec.md → delegates to `build` → waits for changes.md → delegates to `test` → checks test-results.md → delegates to `review` → reports verdict → commits (no push/merge). Invoked via `@ship <feature request>` from chat. Auto-discovered — no config change needed.
+
+### `2e80522` — fix: move scroll button back inside result container (revert outside-container mistake)
 
 - **`frontend/src/components/features/ResultPanel.tsx`** — re-add `useAutoScroll` import and hook call; remove `containerRef` prop (container ref is owned internally again); re-add `ScrollButton` import and render inside the scroll container div with `absolute bottom-3 right-3`; `ScrollButton` uses `direction` prop from `isAtBottom` state
 - **`frontend/src/App.tsx`** — remove `useAutoScroll` import, `ScrollButton` import, hook call, `containerRef` prop from `<ResultPanel>`, and the fixed `ScrollButton` render block
