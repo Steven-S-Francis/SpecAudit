@@ -15,7 +15,7 @@
 | CI for PRs | `5a2e250` |
 | Ship agent (pipeline orchestrator) | `.opencode/agents/ship.md` |
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
-| Export as PDF | `(working tree)` |
+| Export as PDF | `9ae721e` |
 
 ---
 
