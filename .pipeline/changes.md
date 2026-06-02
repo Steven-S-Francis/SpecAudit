@@ -2,6 +2,12 @@
 
 ## Commit History
 
+### `(working tree)` — feat: add Export as Markdown download button
+
+- **`frontend/src/App.tsx`** — added `handleDownload` callback that creates a `Blob` from `state.result` (type `text/markdown;charset=utf-8`), generates a blob URL, creates a temp `<a>` element with download attribute (`specaudit-report-{timestamp}.md`), triggers download, and cleans up; added `<Button variant="ghost" size="sm">` with download SVG icon next to the Copy button, same visibility/disabling rules
+- **New tests (4):** `App.test.tsx` — hides Download when result empty, shows with content, disables during streaming, downloads file on click with Blob type + filename verification
+- **Pipeline verdict:** SHIP — all checks pass (76 frontend, 11 backend, zero TS errors)
+
 ### `(working tree)` — feat: Copy to Clipboard button
 - `frontend/src/components/ui/Button.tsx` — added optional `size` prop (`'sm' | 'md'`) with `sizeStyles` map; default `'md'` preserves existing `px-4 py-2 text-sm`; `'sm'` uses `px-2 py-1 text-xs`; class order moved to insert `sizeStyles` before `className` override
 - `frontend/src/App.tsx` — added `copied` state, `handleCopy` callback using `navigator.clipboard.writeText(state.result)` with 2s reset timeout; Copy button rendered inside the Audit Results `<h2>` row (after Spinner) when `state.result` is truthy, disabled during streaming, shows "Copied!" feedback for 2s

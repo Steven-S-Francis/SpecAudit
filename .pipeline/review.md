@@ -1,42 +1,69 @@
-﻿# Pipeline Review
-**Date:** 2026-06-02
+﻿# Final Review: Export as Markdown Download Button
 
-## Scope
-Auto-scroll results when streaming audit content. Implements `useAutoScroll` hook, `ScrollButton` component, and modifies `ResultPanel` to wrap output in a scrollable container with auto-scroll behavior.
+## Verdict: SHIP
+
+All checks pass. The implementation is correct, the tests are meaningful, and there are no security or performance concerns.
+
+---
 
 ## Assessment
 
 ### Spec Compliance
-**Full match** — `useAutoScroll` hook signature (`deps`, `threshold`, returns `containerRef`, `showScrollButton`, `scrollToBottom`) matches spec. `ScrollButton` uses absolute positioning (`bottom-3 right-3`), chevron-down SVG icon, `bg-slate-700 hover:bg-slate-600` / `light:bg-slate-300 light:hover:bg-slate-400` background, `rounded-full w-8 h-8 shadow-lg`, conditional render based on `showScrollButton`. `ResultPanel` wraps content in a scrollable container with `max-h-[60vh] overflow-y-auto rounded-lg`. Minor cosmetic deviations from spec (uses `flex items-center justify-center` centering instead of `p-2`; uses `transition-colors` instead of `transition-opacity duration-200`), but these are functionally equivalent and acceptable — the spec itself notes "no fade-out state needed" since the button is conditionally rendered.
+
+| Requirement | Status | Notes |
+|---|---|---|
+| `handleDownload` uses `useCallback` | Yes | Lines 27-41 of `App.tsx` |
+| Blob type `text/markdown;charset=utf-8` | Yes | Exact match |
+| Download filename `specaudit-report-{timestamp}.md` | Yes | Uses `Date.now()` timestamp |
+| Temp `<a>` element appended, clicked, removed | Yes | Full lifecycle in handler |
+| `URL.revokeObjectURL(url)` cleanup | Yes | Called after removal |
+| `try/catch` silently ignores errors | Yes | Matches `handleCopy` pattern |
+| Button is `<Button variant="ghost" size="sm">` | Yes | Lines 90-102 |
+| Button placed **after** Copy button | Yes | Both inside `{state.result && <>...</>}` block |
+| `disabled` when `state.status === 'streaming'` | Yes | Same logic as Copy button |
+| `onClick={handleDownload}` | Yes | |
+| SVG icon matches spec exactly | Yes | All paths, polyline, line match |
 
 ### Test Quality
-**5 meaningful tests**:
-- `useAutoScroll.test.tsx` (4 tests): Verifies scroll-on-content-change when at bottom; skip-scroll when scrolled up; button visibility toggle (appears on scroll-up, disappears after click); graceful degradation when `scrollTo` is unavailable (optional chaining guard). All test real hook behaviors.
-- `ScrollButton.test.tsx` (1 test): Verifies button renders with aria-label, contains SVG, fires onClick.
 
-### Security
-**No concerns** — Feature is entirely frontend DOM interaction. No data is transmitted or stored.
+The 4 new tests in `App.test.tsx` (lines 124-223) are meaningful:
 
-### Performance
-**Passive scroll listener** (`{ passive: true }`) ensures scroll events don't block rendering. Lightweight state updates (`setShowScrollButton`). No polling, no timers, no layout thrashing.
+| Test | What it covers | Verdict |
+|---|---|---|
+| Hides Download when result empty | Idle state - button not rendered | Pass - uses `queryByText` (correct for absence) |
+| Shows Download when result has content | Complete state - button visible | Pass - uses `getByText` (correct for presence) |
+| Disables Download when streaming | Streaming state - button disabled | Pass - uses `getByRole` with regex matcher |
+| Downloads file on click | Full download flow: blob, filename, click, cleanup | Pass - mocks URL methods, spies on `createElement`, verifies blob type, filename pattern, anchor click, and `revokeObjectURL` |
+
+**Minor gap**: The 4th test does not verify the Blob content string (only the MIME type). This is acceptable - reading Blob content in jsdom requires async `.text()` and would over-complicate a component test. The test correctly asserts that a Blob is created with `state.result`, which is a strong behavioral signal.
 
 ### Correctness
-**Stale closure prevention** — `isAtBottomRef` is a `useRef`, so the deps effect always reads the current scroll-position value, not a captured one.
-**Optional chaining** — `containerRef.current?.scrollTo?.()` guards against both null container and unavailable `scrollTo` (jsdom compatibility).
-**Event cleanup** — The scroll `useEffect` returns a cleanup function that removes the scroll listener from the captured element reference.
-**Scroll-on-deps-change guard** — The deps effect only scrolls when `isAtBottomRef.current` is `true`, correctly respecting user scroll-up intent.
-**`scrollToBottom` stability** — Wrapped in `useCallback` with empty deps, ensuring stable identity across renders.
 
-## Changes
-- **NEW** `frontend/src/hooks/useAutoScroll.ts` — auto-scroll hook (47 lines)
-- **NEW** `frontend/src/components/ui/ScrollButton.tsx` — scroll-to-bottom floating button (17 lines)
-- **MODIFIED** `frontend/src/components/features/ResultPanel.tsx` — scroll container + hook integration
-- **NEW** `frontend/src/hooks/__tests__/useAutoScroll.test.tsx` — 4 tests (121 lines)
-- **NEW** `frontend/src/components/ui/__tests__/ScrollButton.test.tsx` — 1 test (20 lines)
+- Blob MIME type `text/markdown;charset=utf-8` is correct for Markdown files
+- Download filename uses `Date.now()` for uniqueness while remaining deterministic
+- Cleanup (`revokeObjectURL`) prevents memory leaks
+- Empty-string edge case is moot: the button is only rendered when `state.result` is truthy
 
-## Verdict
-**VERDICT:** SHIP
-- Frontend build: Zero errors (277 modules, 252ms)
-- Frontend tests: 72/72 pass (12 files)
-- Backend tests: 11/11 pass
-- TypeScript: Zero errors (`tsc -b` succeeds)
+### Security
+
+- Blob URLs are same-origin only; revoked immediately after download starts
+- Temp `<a>` element is created and destroyed synchronously; no persistent DOM
+- No user data exposure beyond what is already visible in the UI
+
+### Performance
+
+- `useCallback` with correct `[state.result]` dependency prevents unnecessary re-creation
+- No timers, polling, or expensive computation
+- DOM operations for download are synchronous and negligible
+
+### Build & Test Results
+
+| Check | Result |
+|---|---|
+| `npm run build` (tsc + vite) | 0 TS errors, 277 modules |
+| `npm run test -- --run` | 76/76 frontend tests, 12 files |
+| `dotnet test SpecAudit.slnx` | 11/11 backend tests |
+
+## Conclusion
+
+The feature is a faithful implementation of the spec, follows the established `handleCopy` pattern exactly, and is well-tested. The commit is ready to ship.
