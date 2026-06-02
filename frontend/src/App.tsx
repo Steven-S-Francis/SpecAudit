@@ -54,10 +54,15 @@ function App() {
     try {
       const auditResult: AuditResult = {
         version: 1,
-        result: state.result,
+        findings: state.findings,
+        summary: state.summary,
         exportedAt: new Date().toISOString(),
         specFormat: state.specFormat,
       };
+      // Only include result field if no structured data (fallback)
+      if (state.findings.length === 0 && state.summary === null) {
+        auditResult.result = state.result;
+      }
       const jsonString = JSON.stringify(auditResult, null, 2) + '\n';
       const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -71,7 +76,7 @@ function App() {
     } catch {
       // JSON export API unavailable â€” silently ignore
     }
-  }, [state.result, state.specFormat]);
+  }, [state.result, state.findings, state.summary, state.specFormat]);
 
   useEffect(() => {
     fetch('/api/config')

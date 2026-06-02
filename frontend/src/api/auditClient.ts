@@ -1,10 +1,11 @@
-import type { AuditRequest } from '../types/audit';
+import type { AuditRequest, Finding, AuditSummary } from '../types/audit';
 import { parseSSEChunks } from '../utils/parseSSEChunks';
 
 export async function auditStream(
   payload: AuditRequest,
   onChunk: (chunk: string) => void,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onStructured?: (data: { findings: Finding[]; summary: AuditSummary }) => void
 ): Promise<void> {
   const response = await fetch('/api/audit', {
     method: 'POST',
@@ -23,6 +24,8 @@ export async function auditStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
+
+  const STRUCTURED_PREFIX = '[SPECAUDIT_STRUCTURED]';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -46,6 +49,20 @@ export async function auditStream(
         err.name = isRateLimit ? 'RateLimitError' : 'Error';
         throw err;
       }
+
+      if (chunk.startsWith(STRUCTURED_PREFIX)) {
+        if (onStructured) {
+          try {
+            const jsonStr = chunk.slice(STRUCTURED_PREFIX.length);
+            const data = JSON.parse(jsonStr);
+            onStructured(data);
+          } catch {
+            // Ignore invalid JSON in structured sentinel
+          }
+        }
+        continue;
+      }
+
       onChunk(chunk);
     }
   }

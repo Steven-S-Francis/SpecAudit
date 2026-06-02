@@ -1,5 +1,8 @@
 using System.ClientModel;
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
@@ -8,7 +11,7 @@ using SpecAudit.Models.Requests;
 
 namespace SpecAudit.Services;
 
-public sealed class SpecAuditService
+public sealed partial class SpecAuditService
 {
     private const string SystemPrompt = """
         You are a strict API Governance Architect performing a formal security and design audit of an OpenAPI specification. Your role is regulatory, not advisory. You identify violations, not suggestions.
@@ -108,7 +111,43 @@ public sealed class SpecAuditService
         | Documentation Quality | {0–25}/25 |
 
         **Rationale:** {Two to three sentences explaining the score, referencing the most severe findings.}
+
+        AFTER your complete markdown report, append a JSON code block at the very end with the structured findings summary. The JSON block must be the very last content — no text after it.
+
+        ```json
+        {
+          "findings": [
+            {
+              "severity": "CRITICAL",
+              "title": "Missing Security Scheme Definition",
+              "category": "Security",
+              "location": "Global",
+              "issue": "description...",
+              "recommendation": "fix..."
+            }
+          ],
+          "summary": {
+            "totalFindings": 14,
+            "critical": 6,
+            "warnings": 4,
+            "info": 4,
+            "verdict": "FAIL",
+            "governanceScore": 60,
+            "endpointsAnalyzed": 2,
+            "dimensions": {
+              "security": 15,
+              "restConformance": 15,
+              "schemaCompleteness": 10,
+              "documentationQuality": 20
+            }
+          }
+        }
+        ```
+
+        The `findings` array must contain one entry per finding block in the report, in the same order. The `summary` must reflect the same numbers as the human-readable report summary. Ensure severity values match exactly: "CRITICAL", "WARNING", or "INFO".
         """;
+
+    private const string StructuredSentinel = "[SPECAUDIT_STRUCTURED]";
 
     private readonly ChatClient _chatClient;
     private readonly AiOptions _options;
@@ -144,13 +183,25 @@ public sealed class SpecAuditService
             Temperature = 0.1f
         };
 
+        var fullText = new StringBuilder();
+
         await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, ct))
         {
             foreach (var part in update.ContentUpdate)
             {
                 if (!string.IsNullOrEmpty(part.Text))
+                {
+                    fullText.Append(part.Text);
                     yield return part.Text;
+                }
             }
+        }
+
+        // After streaming completes, extract structured JSON from the full text
+        var json = ExtractStructuredJson(fullText.ToString());
+        if (json is not null)
+        {
+            yield return $"{StructuredSentinel}{json}";
         }
     }
 
@@ -159,4 +210,28 @@ public sealed class SpecAuditService
         var format = request.SpecFormat ?? "auto-detect";
         return $"Analyze the following OpenAPI specification (format: {format}):\n\n{request.Spec}";
     }
+
+    internal static string? ExtractStructuredJson(string markdown)
+    {
+        var match = StructuredJsonRegex().Match(markdown);
+        if (!match.Success)
+            return null;
+
+        var json = match.Groups[1].Value.Trim();
+        if (string.IsNullOrEmpty(json))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return json;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    [GeneratedRegex(@"[\s\S]*```json\s*([\s\S]*?)\s*```\s*$")]
+    private static partial Regex StructuredJsonRegex();
 }

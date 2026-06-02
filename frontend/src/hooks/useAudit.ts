@@ -6,6 +6,8 @@ export function useAudit() {
   const [state, setState] = useState<AuditState>({
     status: 'idle',
     result: '',
+    findings: [],
+    summary: null,
     error: null,
     specFormat: null,
   });
@@ -19,7 +21,7 @@ export function useAudit() {
       abortRef.current?.abort();
       retryCount.current = 0;
       abortRef.current = new AbortController();
-      setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });
+      setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
     }
 
     try {
@@ -27,7 +29,12 @@ export function useAudit() {
       await auditStream(
         payload,
         (chunk) => setState(s => ({ ...s, result: s.result + chunk })),
-        abortRef.current!.signal
+        abortRef.current!.signal,
+        (data) => setState(s => ({
+          ...s,
+          findings: data.findings,
+          summary: data.summary,
+        }))
       );
       setState(s => ({ ...s, status: 'complete' }));
       retryCount.current = 0;
@@ -40,7 +47,7 @@ export function useAudit() {
         retryCount.current < maxRetries
       ) {
         retryCount.current++;
-        setState({ status: 'loading', result: '', error: null, specFormat: payload.specFormat ?? null });
+        setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
         const delay = 1000 * Math.pow(2, retryCount.current - 1);
         await new Promise(resolve => setTimeout(resolve, delay));
         audit(payload, true);
@@ -61,7 +68,7 @@ export function useAudit() {
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
-    setState({ status: 'idle', result: '', error: null, specFormat: null });
+    setState({ status: 'idle', result: '', findings: [], summary: null, error: null, specFormat: null });
   }, []);
 
   return { state, audit, abort, reset };

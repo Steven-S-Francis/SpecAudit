@@ -20,6 +20,8 @@ describe('useAudit', () => {
     expect(result.current.state).toEqual({
       status: 'idle',
       result: '',
+      findings: [],
+      summary: null,
       error: null,
       specFormat: null,
     });
@@ -142,6 +144,8 @@ describe('useAudit', () => {
     expect(result.current.state).toEqual({
       status: 'idle',
       result: '',
+      findings: [],
+      summary: null,
       error: null,
       specFormat: null,
     });
@@ -221,5 +225,58 @@ describe('useAudit', () => {
     expect(mockStream).toHaveBeenCalledTimes(4);
 
     vi.useRealTimers();
+  });
+
+  it('onStructured callback updates findings and summary in state', async () => {
+    const structuredData = {
+      findings: [
+        {
+          severity: 'CRITICAL' as const,
+          title: 'Test Finding',
+          category: 'Security',
+          location: '/test',
+          issue: 'Test issue',
+          recommendation: 'Test recommendation',
+        },
+      ],
+      summary: {
+        totalFindings: 1,
+        critical: 1,
+        warnings: 0,
+        info: 0,
+        verdict: 'FAIL',
+        governanceScore: 50,
+        endpointsAnalyzed: 1,
+        dimensions: {
+          security: 10,
+          restConformance: 10,
+          schemaCompleteness: 10,
+          documentationQuality: 20,
+        },
+      },
+    };
+
+    (auditStream as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _payload: unknown,
+        _onChunk: (chunk: string) => void,
+        _signal: AbortSignal,
+        onStructured?: (data: { findings: unknown[]; summary: unknown }) => void
+      ) => {
+        if (onStructured) {
+          onStructured(structuredData);
+        }
+        return Promise.resolve();
+      }
+    );
+
+    const { result } = renderHook(() => useAudit());
+
+    await act(async () => {
+      await result.current.audit({ spec: 'test' });
+    });
+
+    expect(result.current.state.findings).toEqual(structuredData.findings);
+    expect(result.current.state.summary).toEqual(structuredData.summary);
   });
 });

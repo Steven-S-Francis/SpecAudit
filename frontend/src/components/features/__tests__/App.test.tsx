@@ -31,6 +31,8 @@ const SAMPLE_MARKDOWN = '# SpecAudit Report\n\n## Summary\n**Total Findings:** 3
 function createTestResult(specFormat: string | null = 'json'): AuditResult {
   return {
     version: 1,
+    findings: [],
+    summary: null,
     result: SAMPLE_MARKDOWN,
     exportedAt: '2026-01-01T00:00:00.000Z',
     specFormat,
@@ -53,7 +55,7 @@ describe('App Copy Button', () => {
 
     // Default mock for useAudit — idle, no result
     mockUseAudit.mockReturnValue({
-      state: { status: 'idle', result: '', error: null },
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -75,7 +77,7 @@ describe('App Copy Button', () => {
 
   it('shows Copy button when result has content', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: 'Audit report content', error: null },
+      state: { status: 'complete', result: 'Audit report content', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -88,7 +90,7 @@ describe('App Copy Button', () => {
 
   it('disables Copy button when streaming', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'streaming', result: 'Partial content...', error: null },
+      state: { status: 'streaming', result: 'Partial content...', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -145,7 +147,7 @@ describe('App Download Button', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
     mockUseAudit.mockReturnValue({
-      state: { status: 'idle', result: '', error: null },
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -164,7 +166,7 @@ describe('App Download Button', () => {
 
   it('shows Download button when result has content', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: 'Audit report content', error: null },
+      state: { status: 'complete', result: 'Audit report content', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -177,7 +179,7 @@ describe('App Download Button', () => {
 
   it('disables Download button when streaming', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'streaming', result: 'Partial content...', error: null },
+      state: { status: 'streaming', result: 'Partial content...', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -192,7 +194,7 @@ describe('App Download Button', () => {
   it('downloads file on click', async () => {
     const reportContent = 'Full audit report text';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -246,7 +248,7 @@ describe('App Export PDF Button', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
     mockUseAudit.mockReturnValue({
-      state: { status: 'idle', result: '', error: null },
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -265,7 +267,7 @@ describe('App Export PDF Button', () => {
 
   it('shows Export PDF button when result has content', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: 'Audit report content', error: null },
+      state: { status: 'complete', result: 'Audit report content', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -278,7 +280,7 @@ describe('App Export PDF Button', () => {
 
   it('disables Export PDF button when streaming', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'streaming', result: 'Partial content...', error: null },
+      state: { status: 'streaming', result: 'Partial content...', findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -293,7 +295,7 @@ describe('App Export PDF Button', () => {
   it('calls exportPdf on Export PDF button click', async () => {
     const reportContent = 'Full audit report text';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -322,7 +324,7 @@ describe('App Export JSON Button', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
     mockUseAudit.mockReturnValue({
-      state: { status: 'idle', result: '', error: null, specFormat: null },
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -341,7 +343,7 @@ describe('App Export JSON Button', () => {
 
   it('2: shows Export JSON button when result has content', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: 'Audit report content', error: null, specFormat: null },
+      state: { status: 'complete', result: 'Audit report content', findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -354,7 +356,7 @@ describe('App Export JSON Button', () => {
 
   it('3: disables Export JSON button when streaming', async () => {
     mockUseAudit.mockReturnValue({
-      state: { status: 'streaming', result: 'Partial content...', error: null, specFormat: null },
+      state: { status: 'streaming', result: 'Partial content...', findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -370,7 +372,7 @@ describe('App Export JSON Button', () => {
     const reportContent = 'Full audit report text';
     const specFormat = 'yaml';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -407,6 +409,10 @@ describe('App Export JSON Button', () => {
     const parsed = JSON.parse(blobText);
     expect(parsed).toHaveProperty('version', 1);
     expect(parsed).toHaveProperty('result', reportContent);
+    expect(parsed).toHaveProperty('findings');
+    expect(parsed).toHaveProperty('summary');
+    expect(parsed.findings).toEqual([]);
+    expect(parsed.summary).toBeNull();
     expect(parsed).toHaveProperty('exportedAt');
     expect(parsed).toHaveProperty('specFormat', specFormat);
 
@@ -421,7 +427,7 @@ describe('App Export JSON Button', () => {
   it('5: validates the downloaded filename ends in .json', async () => {
     const reportContent = 'Some report';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -514,6 +520,8 @@ describe('App Export JSON Button', () => {
   it('15: handles empty result string', () => {
     const result: AuditResult = {
       version: 1,
+      findings: [],
+      summary: null,
       result: '',
       exportedAt: '2026-01-01T00:00:00.000Z',
       specFormat: null,
@@ -521,12 +529,16 @@ describe('App Export JSON Button', () => {
     const json = JSON.stringify(result, null, 2);
     const parsed = JSON.parse(json);
     expect(parsed.result).toBe('');
+    expect(parsed.findings).toEqual([]);
+    expect(parsed.summary).toBeNull();
   });
 
   it('16: handles result with unicode characters', () => {
     const unicodeResult = '# Café résumé\n\nCrème brûlée — 日本語\n\n`console.log("héllo")`';
     const result: AuditResult = {
       version: 1,
+      findings: [],
+      summary: null,
       result: unicodeResult,
       exportedAt: '2026-01-01T00:00:00.000Z',
       specFormat: null,
@@ -534,6 +546,8 @@ describe('App Export JSON Button', () => {
     const json = JSON.stringify(result, null, 2);
     const parsed = JSON.parse(json);
     expect(parsed.result).toBe(unicodeResult);
+    expect(parsed.findings).toEqual([]);
+    expect(parsed.summary).toBeNull();
   });
 
   it('does not trigger download when result is empty', async () => {
@@ -552,7 +566,7 @@ describe('App Export JSON Button', () => {
   it('includes specFormat: null in JSON envelope when specFormat is null', async () => {
     const reportContent = 'Report with auto-detected format';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -582,12 +596,16 @@ describe('App Export JSON Button', () => {
     const parsed = JSON.parse(blobText);
     expect(parsed.specFormat).toBeNull();
     expect(parsed).toHaveProperty('result', reportContent);
+    expect(parsed).toHaveProperty('findings');
+    expect(parsed.findings).toEqual([]);
+    expect(parsed).toHaveProperty('summary');
+    expect(parsed.summary).toBeNull();
   });
 
   it('generates a valid ISO-8601 exportedAt in the download payload', async () => {
     const reportContent = 'Timing test';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat: 'json' },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat: 'json' },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -626,7 +644,7 @@ describe('App Export JSON Button', () => {
   it('recovers silently when Blob/URL API throws', async () => {
     const reportContent = 'Recovery test';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -655,7 +673,7 @@ describe('App Export JSON Button', () => {
   it('handles very large result content without crashing', async () => {
     const largeContent = 'x'.repeat(15_000);
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: largeContent, error: null, specFormat: null },
+      state: { status: 'complete', result: largeContent, findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -693,7 +711,7 @@ describe('App Export JSON Button', () => {
   it('22: appends trailing newline to JSON output (Prettier compatibility)', async () => {
     const reportContent = 'Trailing newline test';
     mockUseAudit.mockReturnValue({
-      state: { status: 'complete', result: reportContent, error: null, specFormat: null },
+      state: { status: 'complete', result: reportContent, findings: [], summary: null, error: null, specFormat: null },
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
@@ -728,5 +746,135 @@ describe('App Export JSON Button', () => {
     expect(() => JSON.parse(jsonContent)).not.toThrow();
     const parsed = JSON.parse(jsonContent);
     expect(parsed).toHaveProperty('result', reportContent);
+    expect(parsed).toHaveProperty('findings');
+    expect(parsed.findings).toEqual([]);
+    expect(parsed).toHaveProperty('summary');
+    expect(parsed.summary).toBeNull();
+  });
+
+  it('JSON export includes findings and summary when structured data available', async () => {
+    const structuredData = {
+      findings: [
+        {
+          severity: 'CRITICAL',
+          title: 'Test Finding',
+          category: 'Security',
+          location: '/test',
+          issue: 'Test issue',
+          recommendation: 'Test recommendation',
+        },
+      ],
+      summary: {
+        totalFindings: 1,
+        critical: 1,
+        warnings: 0,
+        info: 0,
+        verdict: 'FAIL',
+        governanceScore: 50,
+        endpointsAnalyzed: 1,
+        dimensions: {
+          security: 10,
+          restConformance: 10,
+          schemaCompleteness: 10,
+          documentationQuality: 20,
+        },
+      },
+    };
+
+    mockUseAudit.mockReturnValue({
+      state: {
+        status: 'complete',
+        result: '# Some markdown\n```json\n{"findings":[]}\n```',
+        findings: structuredData.findings,
+        summary: structuredData.summary,
+        error: null,
+        specFormat: null,
+      },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
+
+    const origCreateElement = document.createElement.bind(document);
+    const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
+    mockAnchor.click = vi.fn();
+    vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
+      if (tagName === 'a') return mockAnchor as unknown as HTMLElement;
+      return origCreateElement(tagName);
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    const button = screen.getByRole('button', { name: /export json/i });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    const blobArg = createObjectURL.mock.calls[0][0] as Blob;
+    const blobText = await blobArg.text();
+    const parsed = JSON.parse(blobText);
+
+    expect(parsed).toHaveProperty('version', 1);
+    expect(parsed).toHaveProperty('findings');
+    expect(parsed.findings).toEqual(structuredData.findings);
+    expect(parsed).toHaveProperty('summary');
+    expect(parsed.summary).toEqual(structuredData.summary);
+    // When structured data is available, result should NOT be included
+    expect(parsed).not.toHaveProperty('result');
+    expect(parsed).toHaveProperty('exportedAt');
+    expect(parsed).toHaveProperty('specFormat', null);
+  });
+
+  it('JSON export includes result field when no structured data (fallback)', async () => {
+    mockUseAudit.mockReturnValue({
+      state: {
+        status: 'complete',
+        result: 'Plain markdown without structured data',
+        findings: [],
+        summary: null,
+        error: null,
+        specFormat: null,
+      },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
+
+    const origCreateElement = document.createElement.bind(document);
+    const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
+    mockAnchor.click = vi.fn();
+    vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
+      if (tagName === 'a') return mockAnchor as unknown as HTMLElement;
+      return origCreateElement(tagName);
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    const button = screen.getByRole('button', { name: /export json/i });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    const blobArg = createObjectURL.mock.calls[0][0] as Blob;
+    const blobText = await blobArg.text();
+    const parsed = JSON.parse(blobText);
+
+    expect(parsed).toHaveProperty('version', 1);
+    expect(parsed).toHaveProperty('findings');
+    expect(parsed.findings).toEqual([]);
+    expect(parsed).toHaveProperty('summary');
+    expect(parsed.summary).toBeNull();
+    // When no structured data, result should be included as fallback
+    expect(parsed).toHaveProperty('result', 'Plain markdown without structured data');
+    expect(parsed).toHaveProperty('exportedAt');
+    expect(parsed).toHaveProperty('specFormat', null);
   });
 });

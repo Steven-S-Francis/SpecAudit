@@ -154,6 +154,68 @@ describe('SSE Streaming Pipeline', () => {
     expect(fixtureContent).toContain('[INFO]');
     expect(fixtureContent).toContain('Governance Score');
   });
+
+  it('6: SSE stream with structured sentinel at end extracts findings', async () => {
+    const structuredPayload = {
+      findings: [
+        {
+          severity: 'CRITICAL',
+          title: 'Test Finding',
+          category: 'Security',
+          location: '/test',
+          issue: 'Test issue',
+          recommendation: 'Test fix',
+        },
+      ],
+      summary: {
+        totalFindings: 1,
+        critical: 1,
+        warnings: 0,
+        info: 0,
+        verdict: 'FAIL',
+        governanceScore: 50,
+        endpointsAnalyzed: 1,
+        dimensions: { security: 10, restConformance: 10, schemaCompleteness: 10, documentationQuality: 20 },
+      },
+    };
+    const structuredJson = JSON.stringify(structuredPayload);
+
+    // Simulate the backend pattern: markdown chunks followed by a structured sentinel chunk
+    const chunks = [
+      '# SpecAudit Report\n\n## Summary\n',
+      '**Total Findings:** 1\n\n',
+      'Some additional markdown content\n',
+      `[SPECAUDIT_STRUCTURED]${structuredJson}`,
+    ];
+
+    const mockResponse = createSSEMockResponse(chunks);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse);
+
+    const accumulated: string[] = [];
+    let extractedData: unknown = null;
+
+    await auditStream(
+      { spec: 'openapi: 3.0.0' },
+      (chunk) => { accumulated.push(chunk); },
+      new AbortController().signal,
+      (data) => { extractedData = data; }
+    );
+
+    // All markdown chunks should be accumulated (sentinel chunk is excluded)
+    const fullResult = accumulated.join('');
+    expect(fullResult).toContain('# SpecAudit Report');
+    expect(fullResult).toContain('**Total Findings:** 1');
+    expect(fullResult).not.toContain('[SPECAUDIT_STRUCTURED]');
+
+    // Structured data should be extracted
+    expect(extractedData).not.toBeNull();
+    if (extractedData) {
+      const data = extractedData as { findings: unknown[]; summary: unknown };
+      expect(data.findings).toHaveLength(1);
+      expect(data.findings[0]).toHaveProperty('severity', 'CRITICAL');
+      expect(data.summary).toHaveProperty('totalFindings', 1);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

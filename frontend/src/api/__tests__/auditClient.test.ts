@@ -152,4 +152,84 @@ describe('auditStream', () => {
       auditStream({ spec: 'test' }, onChunk, signal)
     ).rejects.toThrow('Response body is not readable');
   });
+
+  describe('structured event handling', () => {
+    it('calls onStructured when chunk contains [SPECAUDIT_STRUCTURED] prefix', async () => {
+      const structuredPayload = {
+        findings: [{ severity: 'CRITICAL', title: 'Test', category: 'Security', location: '/test', issue: 'Issue', recommendation: 'Fix' }],
+        summary: { totalFindings: 1, critical: 1, warnings: 0, info: 0, verdict: 'FAIL', governanceScore: 50, endpointsAnalyzed: 1, dimensions: { security: 10, restConformance: 10, schemaCompleteness: 10, documentationQuality: 20 } },
+      };
+      const structuredJson = JSON.stringify(structuredPayload);
+      // The data line must be JSON-encoded so that JSON.parse(rawChunk) produces the correct string
+      const dataValue = JSON.stringify(`[SPECAUDIT_STRUCTURED]${structuredJson}`);
+      const sseBody = `data: "chunk1"\n\ndata: ${dataValue}\n\n`;
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        createMockResponse(true, 200, sseBody)
+      );
+      const onChunk = vi.fn();
+      const onStructured = vi.fn();
+      const signal = new AbortController().signal;
+
+      await auditStream({ spec: 'test' }, onChunk, signal, onStructured);
+
+      expect(onStructured).toHaveBeenCalledTimes(1);
+      expect(onStructured).toHaveBeenCalledWith(structuredPayload);
+      // The structured chunk should NOT be passed to onChunk
+      expect(onChunk).toHaveBeenCalledTimes(1);
+      expect(onChunk).toHaveBeenCalledWith('chunk1');
+    });
+
+    it('does not pass structured chunk to onChunk', async () => {
+      const dataValue = JSON.stringify('[SPECAUDIT_STRUCTURED]{"findings":[]}');
+      const sseBody = `data: "normal"\n\ndata: ${dataValue}\n\n`;
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        createMockResponse(true, 200, sseBody)
+      );
+      const onChunk = vi.fn();
+      const onStructured = vi.fn();
+      const signal = new AbortController().signal;
+
+      await auditStream({ spec: 'test' }, onChunk, signal, onStructured);
+
+      expect(onChunk).toHaveBeenCalledTimes(1);
+      expect(onChunk).toHaveBeenCalledWith('normal');
+      expect(onStructured).toHaveBeenCalled();
+    });
+
+    it('ignores invalid JSON in structured sentinel', async () => {
+      const sseBody = 'data: "normal"\n\ndata: "[SPECAUDIT_STRUCTURED]{invalid}"\n\n';
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        createMockResponse(true, 200, sseBody)
+      );
+      const onChunk = vi.fn();
+      const onStructured = vi.fn();
+      const signal = new AbortController().signal;
+
+      await expect(
+        auditStream({ spec: 'test' }, onChunk, signal, onStructured)
+      ).resolves.toBeUndefined();
+
+      // onChunk should still receive the normal chunk
+      expect(onChunk).toHaveBeenCalledTimes(1);
+      expect(onChunk).toHaveBeenCalledWith('normal');
+      // onStructured should NOT be called for invalid JSON
+      expect(onStructured).not.toHaveBeenCalled();
+    });
+
+    it('does not call onStructured when callback not provided', async () => {
+      const dataValue = JSON.stringify('[SPECAUDIT_STRUCTURED]{"findings":[]}');
+      const sseBody = `data: "normal"\n\ndata: ${dataValue}\n\n`;
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        createMockResponse(true, 200, sseBody)
+      );
+      const onChunk = vi.fn();
+      const signal = new AbortController().signal;
+
+      await auditStream({ spec: 'test' }, onChunk, signal);
+
+      // Should not throw even without onStructured
+      expect(onChunk).toHaveBeenCalledTimes(1);
+      expect(onChunk).toHaveBeenCalledWith('normal');
+    });
+  });
 });
