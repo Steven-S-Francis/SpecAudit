@@ -7,6 +7,7 @@ import { Spinner } from './components/ui/Spinner';
 import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
 import { ThemeToggle } from './components/ui/ThemeToggle';
+import { exportPdf } from './utils/exportPdf';
 
 function App() {
   const { state, audit, abort } = useAudit();
@@ -37,6 +38,14 @@ function App() {
       URL.revokeObjectURL(url);
     } catch {
       // Download API unavailable — silently ignore
+    }
+  }, [state.result]);
+
+  const handleExportPdf = useCallback(async () => {
+    try {
+      await exportPdf(state.result);
+    } catch {
+      // PDF generation failed — silently ignore
     }
   }, [state.result]);
 
@@ -99,6 +108,20 @@ function App() {
                       <line x1="12" y1="15" x2="12" y2="3" />
                     </svg>
                     Download
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={state.status === 'streaming'}
+                    onClick={handleExportPdf}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <line x1="16" y1="13" x2="8" y2="13" />
+                      <line x1="16" y1="17" x2="8" y2="17" />
+                    </svg>
+                    Export PDF
                   </Button>
                 </>
               )}

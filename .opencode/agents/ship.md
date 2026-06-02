@@ -1,6 +1,5 @@
 ---
 description: Run the full SpecAudit feature pipeline: Plan → Build → Test → Review, then commit. Use when the user asks to implement a new feature end-to-end.
-mode: primary
 model: opencode/deepseek-v4-flash-free
 reasoningEffort: max
 permission:

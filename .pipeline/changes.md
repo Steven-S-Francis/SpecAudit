@@ -2,6 +2,13 @@
 
 ## Commit History
 
+### `(working tree)` — feat: add Export as PDF button
+
+- **NEW `frontend/src/utils/exportPdf.ts`** — utility that converts audit result markdown to a clean white-background HTML page, then uses `html2pdf.js` to generate a downloadable A4 PDF. Handles severity blocks (CRITICAL/WARNING/INFO with colored borders/badges), fenced code blocks, inline code, bold, headings, horizontal rules, and paragraphs.
+- **`frontend/src/App.tsx`** — added `handleExportPdf` callback and "Export PDF" ghost button next to the existing Download button; disabled during streaming; uses `specaudit-report-<timestamp>.pdf` filename matching the `.md` pattern.
+- **`frontend/package.json`** — added `html2pdf.js` dependency.
+- **Pipeline verdict:** SHIP — all checks pass (76 frontend, zero TS errors)
+
 ### `(working tree)` — fix: make scroll button sticky to viewport instead of absolute-positioned
 
 - **`frontend/src/components/features/ResultPanel.tsx`** — changed scroll button wrapper from `absolute bottom-3 right-3` to `sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none` so the button stays visible at the bottom-right of the scroll viewport instead of scrolling with content

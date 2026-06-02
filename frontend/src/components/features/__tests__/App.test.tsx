@@ -221,3 +221,54 @@ describe('App Download Button', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
   });
 });
+
+describe('App Export PDF Button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    mockUseAudit.mockReturnValue({
+      state: { status: 'idle', result: '', error: null },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+    mockUseTheme.mockReturnValue({
+      theme: 'dark',
+      toggle: vi.fn(),
+    });
+  });
+
+  it('hides Export PDF button when result is empty', async () => {
+    render(<App />);
+    await waitFor(() => {});
+    expect(screen.queryByText('Export PDF')).not.toBeInTheDocument();
+  });
+
+  it('shows Export PDF button when result has content', async () => {
+    mockUseAudit.mockReturnValue({
+      state: { status: 'complete', result: 'Audit report content', error: null },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+    expect(screen.getByText('Export PDF')).toBeInTheDocument();
+  });
+
+  it('disables Export PDF button when streaming', async () => {
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial content...', error: null },
+      audit: vi.fn(),
+      abort: vi.fn(),
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+    const button = screen.getByRole('button', { name: /export pdf/i });
+    expect(button).toBeDisabled();
+  });
+});

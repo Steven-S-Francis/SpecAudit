@@ -15,16 +15,11 @@
 | CI for PRs | `5a2e250` |
 | Ship agent (pipeline orchestrator) | `.opencode/agents/ship.md` |
 | Error UX (inline validation, status cards) | Step 7 + Step 9 |
+| Export as PDF | `(working tree)` |
 
 ---
 
 ## Small (quick wins)
-
-### Export as PDF
-Generate a downloadable PDF report from the audit result.
-- **Why:** Users can save/share reports outside the browser — attach to emails, print, store offline.
-- **Affects:** `frontend/src/App.tsx` (new button next to Download), new utility or external lib (html2canvas/jspdf)
-- **Risk:** Client-side PDF rendering can be fragile with long markdown and severity blocks; page overflow on narrow output.
 
 ### Export as JSON
 Download the raw audit result as structured JSON.

@@ -1,84 +1,42 @@
-# Review Verdict
-
-**Date:** 2026-06-02
-
-**Reviewer:** SpecAudit Review Agent
-
----
-
-## VERDICT: SHIP
-
-All changes match the spec. All 76 frontend tests pass. TypeScript type-check yields zero errors. No correctness, security, or performance issues found.
-
----
-
-## Spec Compliance
-
-### ResultPanel.tsx (line 108) - absolute -> sticky [OK]
-
-| Spec | Actual | Status |
-|------|--------|--------|
-| `absolute bottom-3 right-3` | (removed) | OK |
-| `sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none` | Present at line 108 | OK |
-
-### ScrollButton.tsx (line 10) - add `pointer-events-auto` [OK]
-
-| Spec | Actual | Status |
-|------|--------|--------|
-| Add `pointer-events-auto` to button className | Present on line 10, appended after existing classes | OK |
-
-### Edge Cases
-
-| Scenario | Expected | Status |
-|----------|----------|--------|
-| No content | Button not rendered (`{content && ...}` guard) | OK |
-| Short content (no scroll) | Button sits at bottom-right; sticky falls back to relative when no overflow | OK |
-| Long content (scrolled) | Button floats at bottom-right of visible viewport | OK |
-| Scrolled to very bottom | Button sits at natural in-flow position after content | OK |
-| Click-through | Wrapper = `pointer-events-none`, Button = `pointer-events-auto` | OK |
-
----
-
-## Test Results
-
-| Metric | Result |
-|--------|--------|
-| Frontend tests | **76 passed** (12 files) |
-| Backend tests | **11 passed** (unchanged) |
-| TypeScript (`tsc --noEmit`) | **Zero errors** |
-| Test files exercising scroll/button | ResultPanel.test.tsx (8), ScrollButton.test.tsx (2), useAutoScroll.test.tsx (3) |
-
----
-
-## Review: Implementation Details
-
-### DOM Structure Supports Sticky Correctly
-The parent container (line 50) has `max-h-[60vh] overflow-y-auto` - this creates the scrollport. The sticky wrapper is a **direct child sibling** of the content div, which is the correct DOM structure for `position: sticky` to work within the scroll container.
-
-### Click-Through Mechanism Correct
-- Wrapper div: `pointer-events-none` - clicks on the padded area pass through to underlying content.
-- Button itself: `pointer-events-auto` - clicks on the button are captured normally.
-- This is the standard Tailwind pattern for overlay buttons over interactive content.
-
-### Visual Equivalence Verified
-- Old: `right-3` (right offset) + implicit default width = natural width at right edge.
-- New: `flex justify-end pr-3` - button pushed to right edge by flex layout, with 12px padding on right side.
-- Both produce the same visual appearance: button 12px from right edge.
-
-### Z-Index
-`z-10` is sufficient - no other positioned elements in the scroll container use z-index, so the button will render above scrolled content.
-
----
-
-## Security & Performance
-
-- **Security:** No new concerns. The scroll button takes no user data, performs no network calls, and has no XSS surface.
-- **Performance:** No timers, no polling, no layout thrashing. `sticky` is GPU-composited in modern browsers. The wrapper class change from `absolute` to `sticky` has zero performance cost.
-
----
-
-## Conclusion
-
-The code faithfully implements the spec: the scroll button wrapper is changed from `absolute` to `sticky` with all required utility classes, and the button itself receives `pointer-events-auto` to maintain clickability. All 76 tests pass, TypeScript is clean, and the implementation has no correctness, security, or performance issues.
+﻿# Review Verdict: Export as PDF Feature
 
 **Verdict: SHIP**
+
+---
+
+## Previous Issues — All Fixed
+
+| # | Issue | Status | Evidence |
+|---|-------|--------|----------|
+| 1 🔴 | handleExportPdf unhandled promise rejection | ✅ **Fixed** | `App.tsx:44-50`: callback is now `async` with `await exportPdf(...)` inside try/catch. Any async rejection from `html2pdf().save()` is properly caught. |
+| 2 🟡 | Missing exportPdf.test.ts | ✅ **Fixed** | Created at `frontend/src/utils/__tests__/exportPdf.test.ts` with 3 tests: callable check, empty-content no-op, filename parameter acceptance. All pass. |
+| 3 🟡 | Missing Export PDF button tests in App.test.tsx | ✅ **Fixed** | Added 3 tests under `"App Export PDF Button"` describe block: hides when result empty, shows with content, disabled during streaming. All pass. |
+| 4 🟡 | exportPdf missing optional filename parameter | ✅ **Fixed** | Signature: `export async function exportPdf(content: string, filename?: string): Promise<void>`. Uses `filename ?? `specaudit-report-${Date.now()}.pdf`` for default. |
+
+---
+
+## Verification Summary
+
+| Check | Result |
+|-------|--------|
+| **npm test -- --run** | **82/82 passed** across 13 files (was 76/76 across 12 files) |
+| **npx tsc --noEmit** | **Zero errors** |
+| New utility tests (exportPdf.test.ts) | 3/3 pass |
+| New App button tests (App.test.tsx) | 3/3 pass (12 total in file, up from 9) |
+| handleExportPdf is async + awaited | ✅ |
+| exportPdf accepts filename? | ✅ |
+| Button hidden when state.result empty | ✅ |
+| Button shown when state.result non-empty | ✅ |
+| Button disabled during streaming | ✅ |
+| No pdfLoading state per user decision | ✅ |
+| Filename convention matches spec | ✅ (specaudit-report-<timestamp>.pdf) |
+| White background, readable fonts (Option B) | ✅ |
+| Empty content early return (no-op) | ✅ |
+| Hidden off-screen container cleanup (finally) | ✅ |
+| User decision compliance (all 3 decisions) | ✅ |
+
+---
+
+## Final Verdict
+
+**SHIP.** All four previously flagged issues have been correctly resolved. Tests are now 82/82 passing, TypeScript is clean, and the implementation faithfully matches both the spec and the user decisions.
