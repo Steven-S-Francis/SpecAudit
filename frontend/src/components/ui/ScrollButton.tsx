@@ -7,7 +7,7 @@ export function ScrollButton({ onClick, direction }: Props) {
   return (
     <button
       onClick={onClick}
-      className="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-200 shadow-lg flex items-center justify-center transition-colors light:bg-slate-300 light:hover:bg-slate-400 light:text-slate-700"
+      className="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-200 shadow-lg flex items-center justify-center transition-colors light:bg-slate-300 light:hover:bg-slate-400 light:text-slate-700 pointer-events-auto"
       aria-label={direction === 'down' ? 'Scroll to bottom' : 'Scroll to top'}
     >
       {direction === 'down' ? (

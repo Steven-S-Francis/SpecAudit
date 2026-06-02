@@ -8,89 +8,77 @@
 
 ## VERDICT: SHIP
 
-All changes match the spec. All 76 frontend tests and 11 backend tests pass. TypeScript type-check yields zero errors. No correctness, security, or performance issues found.
+All changes match the spec. All 76 frontend tests pass. TypeScript type-check yields zero errors. No correctness, security, or performance issues found.
 
 ---
 
 ## Spec Compliance
 
-### ResultPanel.tsx — re-add useAutoScroll + ScrollButton inside container [OK]
-- `useAutoScroll` import and hook call present (lines 7, 45) [OK]
-- No `containerRef` prop — ref owned internally (Props interface, line 10-13) [OK]
-- `ScrollButton` import and render inside scroll container with `absolute bottom-3 right-3` (lines 8, 107-114) [OK]
-- `ScrollButton` uses `direction` prop from `isAtBottom` state: `direction={isAtBottom ? 'up' : 'down'}`, `onClick={isAtBottom ? scrollToTop : scrollToBottom}` (lines 110-111) [OK]
+### ResultPanel.tsx (line 108) - absolute -> sticky [OK]
 
-### App.tsx — moved auto-scroll concerns out [OK]
-- No `useAutoScroll` import [OK]
-- No `ScrollButton` import [OK]
-- No hook call for auto-scroll [OK]
-- No `containerRef={containerRef}` on `<ResultPanel>` [OK]
-- No fixed-position `ScrollButton` render [OK]
+| Spec | Actual | Status |
+|------|--------|--------|
+| `absolute bottom-3 right-3` | (removed) | OK |
+| `sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none` | Present at line 108 | OK |
 
-### ResultPanel.test.tsx — no containerRef prop [OK]
-- No `dummyRef` variable [OK]
-- No `containerRef={dummyRef}` on any `<ResultPanel>` render [OK]
-- All 8 existing tests pass unchanged [OK]
+### ScrollButton.tsx (line 10) - add `pointer-events-auto` [OK]
 
-### Unchanged helpers — already correct [OK]
-- `useAutoScroll.ts` returns `{ containerRef, isAtBottom, scrollToBottom, scrollToTop }` [OK]
-- `ScrollButton.tsx` accepts `direction` prop (`'up' | 'down'`) with correct chevron SVG + aria-label [OK]
-- `Button.tsx` has `inline-flex items-center gap-1` base classes for horizontal icon+text alignment [OK]
+| Spec | Actual | Status |
+|------|--------|--------|
+| Add `pointer-events-auto` to button className | Present on line 10, appended after existing classes | OK |
 
----
+### Edge Cases
 
-## Test Quality
-
-| Test File | Tests | Verdict |
-|-----------|-------|---------|
-| `useAutoScroll.test.tsx` | 3 | Meaningful: scrolls-on-change, pause-on-scroll-up, manual scrollToBottom/scrollToTop |
-| `ScrollButton.test.tsx` | 2 | Adequate: both directions, aria-label, onClick |
-| `ResultPanel.test.tsx` | 8 | Adequate: no regressions, no containerRef prop |
-| `App.test.tsx` | 9 | Passing: exercises real useAutoScroll implicitly |
-| All other test files | 54 | Passing, unchanged from previous rounds |
-
-Observations:
-- The "graceful degradation when `scrollTo` is unavailable" test was removed from `useAutoScroll.test.tsx`. Acceptable: `scrollTo` is now polyfilled via `beforeAll` on the prototype, making this scenario impossible in tests.
+| Scenario | Expected | Status |
+|----------|----------|--------|
+| No content | Button not rendered (`{content && ...}` guard) | OK |
+| Short content (no scroll) | Button sits at bottom-right; sticky falls back to relative when no overflow | OK |
+| Long content (scrolled) | Button floats at bottom-right of visible viewport | OK |
+| Scrolled to very bottom | Button sits at natural in-flow position after content | OK |
+| Click-through | Wrapper = `pointer-events-none`, Button = `pointer-events-auto` | OK |
 
 ---
 
-## Correctness
+## Test Results
 
-- `isAtBottom` initializes as `true` — ScrollButton shows "up" chevron when content first appears (user is at bottom after auto-scroll) [OK]
-- Scroll listener uses passive mode for performance [OK]
-- `scrollToBottom` scrolls to `scrollHeight`, sets `isAtBottom = true` [OK]
-- `scrollToTop` scrolls to `top: 0`, sets `isAtBottom = false` [OK]
-- ScrollButton hidden when `content` is empty (`{content && (...)}` guard) [OK]
-- Absolute positioning of ScrollButton wrapper is relative to the `relative` parent scroll container [OK]
-- Optional chaining (`?.scrollTo?.()`) prevents crash if `scrollTo` is unavailable [OK]
-
----
-
-## Security
-
-- No new security concerns. Blob URLs, clipboard access, and HTTP requests are unchanged from previous commits.
-- ScrollButton is a pure UI element with no external data exposure.
+| Metric | Result |
+|--------|--------|
+| Frontend tests | **76 passed** (12 files) |
+| Backend tests | **11 passed** (unchanged) |
+| TypeScript (`tsc --noEmit`) | **Zero errors** |
+| Test files exercising scroll/button | ResultPanel.test.tsx (8), ScrollButton.test.tsx (2), useAutoScroll.test.tsx (3) |
 
 ---
 
-## Performance
+## Review: Implementation Details
 
-- Passive scroll event listener (`{ passive: true }`) [OK]
-- `useCallback` for `scrollToBottom`/`scrollToTop` — stable references [OK]
-- No timers, polling, or expensive computations [OK]
+### DOM Structure Supports Sticky Correctly
+The parent container (line 50) has `max-h-[60vh] overflow-y-auto` - this creates the scrollport. The sticky wrapper is a **direct child sibling** of the content div, which is the correct DOM structure for `position: sticky` to work within the scroll container.
+
+### Click-Through Mechanism Correct
+- Wrapper div: `pointer-events-none` - clicks on the padded area pass through to underlying content.
+- Button itself: `pointer-events-auto` - clicks on the button are captured normally.
+- This is the standard Tailwind pattern for overlay buttons over interactive content.
+
+### Visual Equivalence Verified
+- Old: `right-3` (right offset) + implicit default width = natural width at right edge.
+- New: `flex justify-end pr-3` - button pushed to right edge by flex layout, with 12px padding on right side.
+- Both produce the same visual appearance: button 12px from right edge.
+
+### Z-Index
+`z-10` is sufficient - no other positioned elements in the scroll container use z-index, so the button will render above scrolled content.
 
 ---
 
-## Minor Observations (non-blocking)
+## Security & Performance
 
-1. **Button.tsx change unlisted in spec "unchanged" section**: The spec states Button.tsx already has `inline-flex items-center gap-1`, but the working tree diff shows it being added now. This is a pre-existing omission from the Download button commit. The change itself is correct — without it, the download icon and text would stack vertically. Functionally correct.
-
-2. **No scroll-button visibility test in ResultPanel.test.tsx**: The ScrollButton rendering inside ResultPanel (conditional on `content` being truthy, with direction logic) is not directly tested in ResultPanel.test.tsx. However, the ScrollButton and useAutoScroll are independently tested, and the conditional is a simple truthy check. Low risk.
+- **Security:** No new concerns. The scroll button takes no user data, performs no network calls, and has no XSS surface.
+- **Performance:** No timers, no polling, no layout thrashing. `sticky` is GPU-composited in modern browsers. The wrapper class change from `absolute` to `sticky` has zero performance cost.
 
 ---
 
 ## Conclusion
 
-The code faithfully implements the spec: the scroll button is moved back inside the result container, the `useAutoScroll` hook correctly exposes `isAtBottom`/`scrollToTop`/`scrollToBottom`, and App.tsx is clean of auto-scroll concerns. All tests pass, TypeScript is clean, and the implementation has no correctness, security, or performance issues.
+The code faithfully implements the spec: the scroll button wrapper is changed from `absolute` to `sticky` with all required utility classes, and the button itself receives `pointer-events-auto` to maintain clickability. All 76 tests pass, TypeScript is clean, and the implementation has no correctness, security, or performance issues.
 
 **Verdict: SHIP**

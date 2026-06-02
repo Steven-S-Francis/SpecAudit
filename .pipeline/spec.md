@@ -1,41 +1,37 @@
-# Fix: Scroll Button Inside Result Container
+# Fix: Scroll Button Overlap — Use `sticky` Instead of `absolute`
 
 ## Open Questions
 None.
 
-## Overview
+## Problem
 
-Correct a previous misconception: the scroll button should live **inside** the audit result scroll container (as originally designed), not fixed at the viewport bottom. This restores the original architecture while keeping the up/down toggle improvement from the previous round.
+The scroll button wrapper uses `absolute bottom-3 right-3` inside a `relative` scroll container. This pins the button to the bottom of the scroll container's *content box*, so when the user scrolls down, the button scrolls up with the content and overlaps it instead of staying visible at the bottom of the *viewport*.
+
+## Fix
+
+Replace the wrapper's `absolute` with `sticky` so the button stays visible at the bottom-right of the visible viewport of the scroll container.
 
 ---
 
 ## Changes
 
-### `frontend/src/components/features/ResultPanel.tsx`
-- Re-add `useAutoScroll` import and hook call (was incorrectly moved to `App.tsx`)
-- Remove `containerRef` prop — container ref is owned internally again
-- Re-add `ScrollButton` import and render inside the scroll container div with `absolute bottom-3 right-3` positioning
-- `ScrollButton` uses `direction` prop from `isAtBottom` state:
-  - `isAtBottom === true`: `direction="up"`, `onClick={scrollToTop}`
-  - `isAtBottom === false`: `direction="down"`, `onClick={scrollToBottom}`
+### `frontend/src/components/features/ResultPanel.tsx` (line 108)
 
-### `frontend/src/App.tsx`
-- Remove `useAutoScroll` import
-- Remove `ScrollButton` import
-- Remove `const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll(...)` hook call
-- Remove `containerRef={containerRef}` from `<ResultPanel>` usage
-- Remove the `{state.result && (<div className="fixed bottom-6 right-6 z-50"><ScrollButton>...</ScrollButton></div>)}` block
+Change the wrapper div classes from `absolute bottom-3 right-3` to:
 
-### `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-- Remove `dummyRef` variable
-- Remove `containerRef={dummyRef}` from all `<ResultPanel>` render calls
+```
+sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none
+```
 
-### Unchanged, already correct
-- `frontend/src/hooks/useAutoScroll.ts` — returns `isAtBottom`, `scrollToTop`, `scrollToBottom`
-- `frontend/src/components/ui/ScrollButton.tsx` — accepts `direction` prop (`up`/`down`)
-- `frontend/src/components/ui/Button.tsx` — has `inline-flex items-center gap-1` base classes
-- `frontend/src/hooks/__tests__/useAutoScroll.test.tsx` — tests for `isAtBottom`/`scrollToTop`
-- `frontend/src/components/ui/__tests__/ScrollButton.test.tsx` — tests for both directions
+- `sticky bottom-3` — sticks to bottom of scroll viewport
+- `z-10` — renders above scrolled content when stuck
+- `flex justify-end` — pushes child button to right edge
+- `pr-3` — 12px right padding (matches previous `right-3` offset)
+- `pointer-events-none` — allows click-through on wrapper area so content underneath remains interactive
+
+### `frontend/src/components/ui/ScrollButton.tsx` (line 10)
+
+Add `pointer-events-auto` to the button's className to re-enable clicking on the button itself (overriding `pointer-events-none` from parent wrapper).
 
 ---
 
@@ -43,6 +39,15 @@ Correct a previous misconception: the scroll button should live **inside** the a
 
 | File | Change |
 |------|--------|
-| `frontend/src/components/features/ResultPanel.tsx` | Re-add `useAutoScroll` + `ScrollButton` inside container; remove `containerRef` prop |
-| `frontend/src/App.tsx` | Remove `useAutoScroll`, `ScrollButton`, hook call, and fixed ScrollButton render |
-| `frontend/src/components/features/__tests__/ResultPanel.test.tsx` | Remove `containerRef` prop from all renders |
+| `frontend/src/components/features/ResultPanel.tsx` | Change `absolute bottom-3 right-3` → `sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none` |
+| `frontend/src/components/ui/ScrollButton.tsx` | Add `pointer-events-auto` to button className |
+
+## Edge Cases
+
+| Scenario | Expected |
+|----------|----------|
+| No content | Button not rendered (existing guard already correct) |
+| Short content (no scroll) | Button sticks at bottom-right of viewport |
+| Long content (scrolled) | Button floats at bottom-right of visible viewport |
+| Scrolled to very bottom | Button sits at natural in-flow position after content |
+| Click-through | Wrapper is `pointer-events-none`, button is `pointer-events-auto` — clicks pass through wrapper to content, button clicks still work |

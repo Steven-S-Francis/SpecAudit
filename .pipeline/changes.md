@@ -2,9 +2,13 @@
 
 ## Commit History
 
-### `(working tree)` — feat: add ship.md pipeline orchestrator agent
+### `(working tree)` — fix: make scroll button sticky to viewport instead of absolute-positioned
 
-- **NEW `.opencode/agents/ship.md`** — orchestrator agent that runs the full feature pipeline: delegates to `plan` → waits for spec.md → delegates to `build` → waits for changes.md → delegates to `test` → checks test-results.md → delegates to `review` → reports verdict → commits (no push/merge). Invoked via `@ship <feature request>` from chat. Auto-discovered — no config change needed.
+- **`frontend/src/components/features/ResultPanel.tsx`** — changed scroll button wrapper from `absolute bottom-3 right-3` to `sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none` so the button stays visible at the bottom-right of the scroll viewport instead of scrolling with content
+- **`frontend/src/components/ui/ScrollButton.tsx`** — added `pointer-events-auto` to button className to re-enable clicks through the `pointer-events-none` wrapper
+- **Pipeline verdict:** SHIP — all checks pass (76 frontend, 0 backend changes)
+
+### `(working tree)` — feat: add ship.md pipeline orchestrator agent
 
 ### `2e80522` — fix: move scroll button back inside result container (revert outside-container mistake)
 

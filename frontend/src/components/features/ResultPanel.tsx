@@ -105,7 +105,7 @@ export function ResultPanel({ content, isStreaming }: Props) {
             )}
           </div>
           {content && (
-            <div className="absolute bottom-3 right-3">
+            <div className="sticky bottom-3 z-10 flex justify-end pr-3 pointer-events-none">
               <ScrollButton
                 onClick={isAtBottom ? scrollToTop : scrollToBottom}
                 direction={isAtBottom ? 'up' : 'down'}
