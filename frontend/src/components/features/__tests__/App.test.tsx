@@ -559,7 +559,7 @@ describe('App Export JSON Button', () => {
     });
 
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
-    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
 
     const origCreateElement = document.createElement.bind(document);
     const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
@@ -662,7 +662,7 @@ describe('App Export JSON Button', () => {
     });
 
     const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
-    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue();
 
     const origCreateElement = document.createElement.bind(document);
     const mockAnchor = origCreateElement('a') as HTMLAnchorElement;
