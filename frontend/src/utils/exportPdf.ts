@@ -82,7 +82,8 @@ export async function exportPdf(content: string, filename?: string): Promise<voi
 
   const element = document.createElement('div');
   element.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:800px;padding:40px;' +
+    'position:absolute;left:0;top:0;width:800px;padding:40px;' +
+    'z-index:-1000;opacity:0.001;pointer-events:none;' +
     'font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;' +
     'line-height:1.5;font-size:12px;';
 
