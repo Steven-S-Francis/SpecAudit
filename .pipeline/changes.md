@@ -127,7 +127,19 @@
 
 ### `e19dc51` — fix: correct pipeline path in review agent prompt (`./pipeline/` → `.pipeline/`)
 
-### *(current)* — feat: add Copy to Clipboard button
+### *(current commit)* — feat: add dark mode toggle (light theme)
+
+- **New `frontend/src/hooks/useTheme.ts`** — `useTheme` hook: manages `dark`/`light` state, persists to `localStorage` under key `specaudit-theme`, toggles `.light` class on `<html>` element
+- **New `frontend/src/components/ui/ThemeToggle.tsx`** — sun (circle + rays SVG) / moon (crescent SVG) button with `aria-label` for accessibility; uses `light:` variant classes for own styling
+- **`frontend/src/index.css`** — added `@custom-variant light (&:where(.light, .light *));` after Tailwind import to enable Tailwind v4 light variant
+- **`frontend/src/App.tsx`** — wired `useTheme` + `ThemeToggle` into header; added `light:` variant classes to outer container, h1, subtitle, provider badge, h2 heading, error card, and error text
+- **`frontend/src/components/ui/Button.tsx`** — added `light:border-slate-300 light:hover:border-slate-400 light:text-slate-600` to ghost variant
+- **`frontend/src/components/ui/Card.tsx`** — added `light:bg-white light:border-slate-200` to wrapper classes
+- **`frontend/src/components/features/InputPanel.tsx`** — added `light:` variant classes to textarea (`bg-white`, `border-slate-300`, `text-slate-800`) and character counter (`text-slate-500`)
+- **`frontend/src/components/features/ResultPanel.tsx`** — added `light:` variant classes to outer div, h3, code blocks (both block and inline), hr, strong, paragraph, skeleton placeholders, blinking cursor; added `light:bg-red-50`, `light:bg-amber-50`, `light:bg-blue-50` to severity wrappers and `light:text-red-600`, `light:text-amber-600`, `light:text-blue-600` to severity badges/labels (inline code gets `light:text-amber-700` per spec)
+- **Pipeline verdict:** SHIP — all checks pass (11 backend tests pass, zero TS errors; frontend tests to be added in test stage)
+
+### *(previous)* — feat: add Copy to Clipboard button
 - **`frontend/src/components/ui/Button.tsx`** — added optional `size` prop (`'sm' | 'md'`, default `'md'`) with `sizeStyles` map
 - **`frontend/src/App.tsx`** — added "Copy" `<Button variant="ghost" size="sm">` next to "Audit Results" heading; `copied` state + `handleCopy` via `navigator.clipboard.writeText()`; shows "Copied!" for 2 seconds; hidden when no result; disabled during streaming
 - **Pre-existing bugfix:** Removed unused variables (`container` in 3 tests, `props` in 2 component overrides, `capturedAbort` in 1 test) that blocked `npm run build`
@@ -137,6 +149,20 @@
 ---
 
 ## Tester Focus Areas
+
+### New: Dark Mode Toggle
+
+| Area | What to test | Risk if broken |
+|------|-------------|----------------|
+| **Sun icon (dark mode)** | Page loads → sun icon (circle with rays SVG) visible in header | Wrong or missing icon |
+| **Moon icon (light mode)** | Click sun → moon icon (crescent SVG) visible | Wrong or missing icon |
+| **Theme switch** | Click toggle → page background switches `bg-slate-950` ↔ `bg-white` | Visual flash or broken styling |
+| **localStorage persistence** | Toggle to light → refresh page → light theme persists | Theme resets to dark on reload |
+| **html class** | Inspect `<html>` element — `.light` class present in light mode, absent in dark | CSS variant doesn't activate |
+| **Severity badges in light mode** | CRITICAL/WARNING/INFO badges visible and readable on white background | White text on white bg (invisible) |
+| **Error card in light mode** | Trigger an error → red-bordered card with visible text on white bg | Error message invisible |
+| **Code blocks in light mode** | Audit results with code blocks → light background (`bg-slate-100`) with dark text | Unreadable code |
+| **Skeleton in light mode** | Initial load (no content yet) → skeleton animation uses light gray (`bg-slate-200`) | Dark skeleton on white bg |
 
 ### New: Copy to Clipboard
 | Area | What to test | Risk if broken |
@@ -162,7 +188,7 @@
 | **Docker build** | `docker-compose build` — zero errors |
 | **CI pipeline** | Push to main — GitHub Actions passes both backend + frontend jobs |
 | **Backend tests** | `dotnet test SpecAudit.slnx` — all 11 pass |
-| **Frontend tests** | `npm run test -- --run` — all existing + new tests pass (expect 48 → 55 total) |
+| **Frontend tests** | `npm run test -- --run` — all 63 pass (10 test files) |
 | **TypeScript** | `npx tsc --noEmit` — zero errors |
 | **Static files** | Access root URL in production — index.html loads, not a 404 |
 | **CORS** | Dev mode: API calls from `localhost:5173` work. Production: same-origin works |

@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAudit } from './hooks/useAudit';
+import { useTheme } from './hooks/useTheme';
 import { InputPanel } from './components/features/InputPanel';
 import { ResultPanel } from './components/features/ResultPanel';
 import { Spinner } from './components/ui/Spinner';
 import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
+import { ThemeToggle } from './components/ui/ThemeToggle';
 
 function App() {
   const { state, audit, abort } = useAudit();
+  const { theme, toggle } = useTheme();
   const [providerName, setProviderName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -29,17 +32,20 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 p-6 lg:p-10">
+    <div className="min-h-screen bg-slate-950 text-slate-200 p-6 lg:p-10 light:bg-white light:text-slate-800">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">SpecAudit</h1>
-          <p className="text-sm text-slate-400">OpenAPI Contract Auditor</p>
+          <h1 className="text-2xl font-bold text-slate-100 light:text-slate-900">SpecAudit</h1>
+          <p className="text-sm text-slate-400 light:text-slate-500">OpenAPI Contract Auditor</p>
         </div>
-        {providerName && (
-          <span className="text-xs text-slate-500 bg-slate-900 border border-slate-800 rounded px-2 py-1">
-            {providerName}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {providerName && (
+            <span className="text-xs text-slate-500 bg-slate-900 border border-slate-800 rounded px-2 py-1 light:text-slate-600 light:bg-slate-100 light:border-slate-300">
+              {providerName}
+            </span>
+          )}
+          <ThemeToggle theme={theme} onToggle={toggle} />
+        </div>
       </header>
 
       <div className="lg:grid lg:grid-cols-2 lg:gap-8 mt-8">
@@ -52,7 +58,7 @@ function App() {
         </div>
 
         <div>
-          <h2 className="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-300 mb-2 flex items-center gap-2 light:text-slate-700">
             Audit Results
             {state.status === 'loading' && <Spinner size="sm" />}
             {state.result && (
@@ -68,8 +74,8 @@ function App() {
           </h2>
 
           {state.status === 'error' && (
-            <Card className="border-red-800 bg-red-950/20">
-              <p className="text-red-400 text-sm">{state.error}</p>
+            <Card className="border-red-800 bg-red-950/20 light:border-red-200 light:bg-red-50">
+              <p className="text-red-400 text-sm light:text-red-600">{state.error}</p>
             </Card>
           )}
 

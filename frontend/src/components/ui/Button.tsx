@@ -11,7 +11,7 @@ type Props = PropsWithChildren<{
 const variantStyles: Record<Props['variant'], string> = {
   primary: 'bg-indigo-600 hover:bg-indigo-500 text-white',
   danger: 'bg-red-700 hover:bg-red-600 text-white',
-  ghost: 'border border-slate-600 hover:border-slate-400 text-slate-300',
+  ghost: 'border border-slate-600 hover:border-slate-400 text-slate-300 light:border-slate-300 light:hover:border-slate-400 light:text-slate-600',
 };
 
 const sizeStyles = {

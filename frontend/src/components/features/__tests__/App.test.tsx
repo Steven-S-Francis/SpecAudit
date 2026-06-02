@@ -8,9 +8,16 @@ vi.mock('../../../hooks/useAudit', () => ({
   useAudit: vi.fn(),
 }));
 
+// Mock the useTheme hook
+vi.mock('../../../hooks/useTheme', () => ({
+  useTheme: vi.fn(),
+}));
+
 import { useAudit } from '../../../hooks/useAudit';
+import { useTheme } from '../../../hooks/useTheme';
 
 const mockUseAudit = useAudit as ReturnType<typeof vi.fn>;
+const mockUseTheme = useTheme as ReturnType<typeof vi.fn>;
 
 describe('App Copy Button', () => {
   const writeText = vi.fn();
@@ -32,6 +39,12 @@ describe('App Copy Button', () => {
       audit: vi.fn(),
       abort: vi.fn(),
       reset: vi.fn(),
+    });
+
+    // Default mock for useTheme — dark mode
+    mockUseTheme.mockReturnValue({
+      theme: 'dark',
+      toggle: vi.fn(),
     });
   });
 
@@ -97,5 +110,13 @@ describe('App Copy Button', () => {
     expect(screen.getByText('Copied!')).toBeInTheDocument();
     // "Copy" should no longer be visible
     expect(screen.queryByText('Copy')).not.toBeInTheDocument();
+  });
+
+  it('renders theme toggle button in header', async () => {
+    render(<App />);
+    await waitFor(() => {});
+    // Toggle button has aria-label containing "Switch to"
+    const toggle = screen.getByRole('button', { name: /switch to/i });
+    expect(toggle).toBeInTheDocument();
   });
 });

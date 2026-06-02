@@ -20,7 +20,7 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
     ? 'text-red-400'
     : count > 80000
       ? 'text-amber-400'
-      : 'text-slate-400';
+      : 'text-slate-400 light:text-slate-500';
 
   return (
     <div className="flex flex-col gap-4">
@@ -28,7 +28,7 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
         value={spec}
         onChange={(e) => setSpec(e.target.value)}
         placeholder="Paste your OpenAPI spec here (YAML or JSON)..."
-        className="bg-slate-950 border border-slate-700 rounded-lg p-4 text-slate-200 text-sm font-mono w-full resize-y min-h-[300px] focus:outline-none focus:border-indigo-500"
+        className="bg-slate-950 border border-slate-700 rounded-lg p-4 text-slate-200 text-sm font-mono w-full resize-y min-h-[300px] focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
       />
 
       <div className="flex items-center justify-between">

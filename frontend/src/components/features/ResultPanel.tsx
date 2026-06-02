@@ -22,19 +22,19 @@ const SEVERITY_STYLES: Record<SeverityLevel, {
   label: string;
 }> = {
   CRITICAL: {
-    wrapper: 'border-l-4 border-red-500 bg-red-950/40 rounded-r-lg px-4 py-3 mb-3',
-    badge:   'inline-block text-xs font-bold text-red-300 bg-red-500/20 px-2 py-0.5 rounded mr-2',
-    label:   'text-red-300',
+    wrapper: 'border-l-4 border-red-500 bg-red-950/40 rounded-r-lg px-4 py-3 mb-3 light:bg-red-50',
+    badge:   'inline-block text-xs font-bold text-red-300 light:text-red-600 bg-red-500/20 px-2 py-0.5 rounded mr-2',
+    label:   'text-red-300 light:text-red-600',
   },
   WARNING: {
-    wrapper: 'border-l-4 border-amber-500 bg-amber-950/40 rounded-r-lg px-4 py-3 mb-3',
-    badge:   'inline-block text-xs font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded mr-2',
-    label:   'text-amber-300',
+    wrapper: 'border-l-4 border-amber-500 bg-amber-950/40 rounded-r-lg px-4 py-3 mb-3 light:bg-amber-50',
+    badge:   'inline-block text-xs font-bold text-amber-300 light:text-amber-600 bg-amber-500/20 px-2 py-0.5 rounded mr-2',
+    label:   'text-amber-300 light:text-amber-600',
   },
   INFO: {
-    wrapper: 'border-l-4 border-blue-400 bg-blue-950/40 rounded-r-lg px-4 py-3 mb-3',
-    badge:   'inline-block text-xs font-bold text-blue-300 bg-blue-400/20 px-2 py-0.5 rounded mr-2',
-    label:   'text-blue-300',
+    wrapper: 'border-l-4 border-blue-400 bg-blue-950/40 rounded-r-lg px-4 py-3 mb-3 light:bg-blue-50',
+    badge:   'inline-block text-xs font-bold text-blue-300 light:text-blue-600 bg-blue-400/20 px-2 py-0.5 rounded mr-2',
+    label:   'text-blue-300 light:text-blue-600',
   },
 };
 
@@ -42,15 +42,15 @@ export function ResultPanel({ content, isStreaming }: Props) {
   if (!isStreaming && content === '') {
     return (
       <div className="w-full mt-6">
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-full" />
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-5/6" />
-        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-4/6" />
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-full light:bg-slate-200" />
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-5/6 light:bg-slate-200" />
+        <div className="bg-slate-800 animate-pulse rounded h-4 mb-3 w-4/6 light:bg-slate-200" />
       </div>
     );
   }
 
   return (
-    <div className="w-full mt-6 font-mono text-sm text-slate-200">
+    <div className="w-full mt-6 font-mono text-sm text-slate-200 light:text-slate-800">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -72,29 +72,29 @@ export function ResultPanel({ content, isStreaming }: Props) {
                 </div>
               );
             }
-            return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2">{children}</h3>;
+            return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
           },
           code({ children, className }: CodeProps) {
             const isBlock = className?.includes('language-');
             return isBlock
-              ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300"><code>{children}</code></pre>
-              : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs">{children}</code>;
+              ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
+              : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
           },
           hr(_props: HrProps) {
-            return <hr className="border-slate-700 my-4" />;
+            return <hr className="border-slate-700 my-4 light:border-slate-300" />;
           },
           strong({ children }: StrongProps) {
-            return <strong className="text-slate-100 font-semibold">{children}</strong>;
+            return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
           },
           p({ children }: ParaProps) {
-            return <p className="text-slate-400 text-sm leading-relaxed mb-2">{children}</p>;
+            return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
           },
         }}
       >
         {content}
       </ReactMarkdown>
       {isStreaming && (
-        <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom" />
+        <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
       )}
     </div>
   );
