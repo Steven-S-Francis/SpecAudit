@@ -1,6 +1,6 @@
 # SpecAudit — Complete Project Context for Code Review
 
-> Generated: 2026-06-03 | HEAD: `eae5a9e` | Branch: `main`
+> Generated: 2026-06-03 | HEAD: `ce16a18` | Branch: `main`
 > Purpose: Self-contained reference for AI-powered code review ("antigravity" or equivalent)
 
 ---
@@ -124,11 +124,11 @@ AI provider error (timeout, 429, etc.)
 
 | Export | Data Source | `\`\`\`json` block included? | Fallback |
 |--------|-------------|------------------------------|----------|
-| **UI render** (ResultPanel) | `strippedResult` | ❌ Stripped via regex | — |
+| **UI render** (ResultPanel) | `strippedResult` | ❌ Stripped via lastIndexOf | — |
 | **Copy** (clipboard) | `strippedResult` | ❌ Stripped | — |
 | **Download** (.md file) | `strippedResult` | ❌ Stripped | — |
 | **Export PDF** (pdfmake) | `strippedResult` | ❌ Stripped | — |
-| **Export JSON** | `state.findings[]` + `state.summary` | ✅ Structured (not raw markdown) | If findings=[],summary=null → includes `state.result` |
+| **Export JSON** | `state.findings[]` + `state.summary` | ✅ Structured (not raw markdown) | If findings=[],summary=null → includes `strippedResult` |
 
 ---
 
@@ -137,7 +137,7 @@ AI provider error (timeout, 429, etc.)
 ```
 /
 ├── .env                              # Local Docker: AI_API_KEY=... (gitignored)
-├── .gitignore                        # bin/, obj/, node_modules/, .env, *.user.json
+├── .gitignore                        # bin/, obj/, node_modules/, .env, *.user.json, nul
 ├── .github/workflows/ci.yml          # GitHub Actions: backend test + frontend build/test
 ├── .opencode/
 │   ├── opencode.json                 # Agent definitions (build, plan, etc.)
@@ -700,10 +700,14 @@ await auditStream(
 
 **Key variable — stripped markdown:**
 ```typescript
-const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
+const JSON_MARKER = '```json';
+const markerIndex = state.result.lastIndexOf(JSON_MARKER);
+const strippedResult = markerIndex === -1
+  ? state.result
+  : state.result.slice(0, markerIndex);
 ```
 
-This regex removes the trailing ```json...``` block from the AI response so it's not visible to users. It's used by all exports EXCEPT the JSON button.
+Uses `lastIndexOf('```json')` to find the last JSON fence. If found, everything before it is used as the display content; if not found, the full result is used. This replaces the old regex approach and matches the backend's `ExtractStructuredJson` technique.
 
 **Export handlers (4 total):**
 
@@ -860,7 +864,7 @@ export default defineConfig({
 
 | Purpose | File | Regex | Notes |
 |---------|------|-------|-------|
-| Strip JSON block from display | `App.tsx` line 19 | `/```json[\s\S]*?```\s*$/gm` | JavaScript regex, multi-line flag |
+| Strip JSON block from display | `App.tsx` line 19 | `lastIndexOf('```json')` then `slice(0, markerIndex)` | No regex — finds last ```json fence, uses everything before it |
 | SSE data line extraction | `parseSSEChunks.ts` line 13 | `line.startsWith('data: ')` | String prefix check, not regex |
 | Severity detection | `parseSeverity.ts` | `text.includes('[CRITICAL]')` | Simple string includes, 3 variants |
 | PDF severity block | `exportPdf.ts` line 166 | `/^###\s+\[(CRITICAL\|WARNING\|INFO)\]\s*(.*)$/` | Captures severity + title |
@@ -874,7 +878,7 @@ export default defineConfig({
 
 ## 7. Tests (Complete Coverage Map)
 
-### 7.1 Frontend — 203 tests, 15 files, vitest
+### 7.1 Frontend — 205 tests, 15 files, vitest
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -956,12 +960,20 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 | Dead code removal | `4cded11` | `AuditResponse.cs` deleted entirely |
 | Rate limiter middleware | `af82582` | Fixed-window 10 req/min per IP, 429 rejection |
 | Docker build fix (module declarations) | `a403458` | Moved `declare module '*.md?raw'` to `vite-env.d.ts` |
+| Permanent tsc -b fix | `60f8afd` | Exclude test dirs from tsconfig.app.json; add `vi` import in useTheme.test.tsx; add `nul` to .gitignore and .dockerignore |
+| Build agent bash lockdown | `e09745a` | Strict bash allowlist in opencode.json — deny all, allow only dotnet/npm/npx build/test commands |
+| Dark mode respects prefers-color-scheme | `e09745a` | useTheme.ts checks `prefers-color-scheme: light` before defaulting to dark |
+| JSON export uses strippedResult | `e09745a` | App.tsx JSON export fallback uses `strippedResult` instead of `state.result` |
+| JSON block display via lastIndexOf | `ce16a18` | Replace regex with `lastIndexOf('```json')` for stripping JSON block from user-visible display |
 
 ---
 
 ## 9. Commit History (Recent)
 
 ```
+ce16a18 fix: strip JSON block from display immediately via lastIndexOf
+e09745a fix: build agent bash lockdown, JSON export stripped fallback, prefers-color-scheme
+60f8afd fix: permanently prevent tsc -b failures on test files + nul ignore
 eae5a9e docs: update changes.md with Docker build fix details
 a403458 fix: move *.md?raw module declaration to vite-env.d.ts
 af82582 feat(I): add rate limiter middleware to /api/audit endpoint
@@ -1095,7 +1107,7 @@ ship (pipeline orchestrator)
 |-------|--------|---------|--------|--------|
 | **ship** | `*: deny`, `ROADMAP.md: allow` | `*: deny`, `ROADMAP.md: allow` | `*: deny`, `git *: allow` | `allow` |
 | **plan** | `*: deny`, `.pipeline/spec.md: allow` | `*: deny`, `.pipeline/spec.md: allow` | — | — |
-| **build** | `*: allow` | `*: allow` | `*: allow` | — |
+| **build** | `*: allow` | `*: allow` | `*: deny` (allowlist: dotnet build/test/restore, npm run build/test, npx tsc --noEmit, npx vitest run) | — |
 | **test** | — | — | `*: allow` | — |
 | **review** | — | — | — | — |
 
@@ -1118,7 +1130,7 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **Dark mode** | `@custom-variant light` with `.light` class | `prefers-color-scheme` media query | User-initiated toggle overrides system preference. `.light` class on `<html>` gives Tailwind v4 access via `light:` prefix. |
 | **Rate-limit retry** | Client-side exponential backoff (1s, 2s, 4s, max 3) | Server-side queue | Simpler to implement, no server state needed. Heuristic 429 detection via message content. Frontend-only means no backend changes for different retry strategies. |
 | **String accumulation** | `StringBuilder` (backend) + string concat (frontend) | Various | Backend chunks are small — `StringBuilder` is efficient. Frontend uses `setState` with previous state concatenation — simple and correct for React. |
-| **Stripped result** | `state.result.replace(/```json[\s\S]*?```\s*$/gm, '')` | Parsing the JSON on frontend | The AI prompt instructs appending the JSON block. Regex stripping is simpler and more reliable than re-serializing frontend state back to markdown. |
+| **Stripped result** | `lastIndexOf('```json')` then `slice(0, markerIndex)` | Regex `/```json[\s\S]*?```\s*$/gm` | `lastIndexOf` avoids regex, is easier to read, and correctly handles edge cases where the JSON block is not at the very end of the string. Matches the backend's `ExtractStructuredJson` approach. |
 | **InternalsVisibleTo** | Backend exposes `internal static` methods to test project | Public methods | Public methods would expose implementation details. `InternalsVisibleTo` keeps the API surface clean while enabling test access. |
 | **Temperature** | `0.1f` (low determinism) | Higher temperature | Audit is a deterministic task — the same spec should produce the same findings. Low temperature reduces hallucination. |
 | **Rate limiter** | Backend fixed-window (10 req/min per IP) | Client-side throttling | Server-side enforcement prevents API key abuse. Built into .NET 8+ — no extra packages. Fixed window is simpler than token bucket for this use case. |
@@ -1137,7 +1149,7 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **Rate limit (429 from AI)** | Backend catches, sends `[SPECAUDIT_ERROR]` | Frontend detects `RateLimitError`, retries with backoff (1s, 2s, 4s, max 3) |
 | **Rate limiter rejection (429)** | Backend `AddRateLimiter` returns 429 before endpoint is reached | Frontend `response.ok` check fails → throws `Audit failed (429): ...` → status 'error' (no retry) |
 | **Stream abortion** | Client-side `AbortController.abort()` | Backend catches `OperationCanceledException`, stream ends silently |
-| **AI omits JSON block** | `ExtractStructuredJson` returns null | No sentinel sent. Findings=[], summary=null. JSON export falls back to `result` field. |
+| **AI omits JSON block** | `ExtractStructuredJson` returns null | No sentinel sent. Findings=[], summary=null. JSON export falls back to `strippedResult` field. |
 | **AI produces invalid JSON** | `JsonDocument.Parse` throws | Caught, returns null. Same fallback as above. |
 | **Text after JSON block** | `LastIndexOf` ignores trailing content | Text after the JSON block is now ALLOWED (no `$` anchor). JSON is extracted regardless. |
 | **Malformed sentinel on frontend** | `JSON.parse` in try/catch | Silently ignored (no error thrown). |
@@ -1157,7 +1169,7 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 3. **No spec validation** — Specs are sent directly to the AI without client-side YAML/JSON validation.
 4. **No persistence** — Results exist only in browser memory. Page refresh loses the audit.
 5. **PDF inline code styling** — Inline code in PDF exports uses `background` field which pdfmake renders as highlight rather than monospace.
-6. **Stray `nul` file in working directory** — A zero-length file named `nul` sometimes appears in the project root after certain operations. Likely a PowerShell piping artifact. Can be safely deleted or gitignored.
+
 
 ---
 
