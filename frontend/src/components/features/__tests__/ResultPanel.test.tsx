@@ -37,7 +37,7 @@ describe('ResultPanel', () => {
     const markdown = '### [CRITICAL] Missing Auth';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
     // Scope query to the markdown content area to find the badge (not the toggle button)
-    const markdownArea = container.querySelector('.font-mono');
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
     const badge = within(markdownArea!).getByText('CRITICAL');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-red-300');
@@ -49,7 +49,7 @@ describe('ResultPanel', () => {
   it('renders WARNING severity with amber styling', () => {
     const markdown = '### [WARNING] Missing 404 Response';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-    const markdownArea = container.querySelector('.font-mono');
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
     const badge = within(markdownArea!).getByText('WARNING');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-amber-300');
@@ -60,7 +60,7 @@ describe('ResultPanel', () => {
   it('renders INFO severity with blue styling', () => {
     const markdown = '### [INFO] Missing Contact Block';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-    const markdownArea = container.querySelector('.font-mono');
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
     const badge = within(markdownArea!).getByText('INFO');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-blue-300');
@@ -73,7 +73,7 @@ describe('ResultPanel', () => {
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
     expect(screen.getByText('Summary')).toBeInTheDocument();
     // No severity badge should be rendered inside the markdown area
-    const markdownArea = container.querySelector('.font-mono');
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
     expect(within(markdownArea!).queryByText('CRITICAL')).not.toBeInTheDocument();
     expect(within(markdownArea!).queryByText('WARNING')).not.toBeInTheDocument();
     expect(within(markdownArea!).queryByText('INFO')).not.toBeInTheDocument();

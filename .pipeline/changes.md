@@ -55,6 +55,14 @@
   - Non-finding content (Governance Score) unaffected by filter
   - Filter works during streaming (streaming cursor still present)
 
+### Fix: TypeScript TS2345 errors in `querySelector` calls
+
+- **File**: `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+- **What**: Changed 4 occurrences of `container.querySelector('.font-mono')` to `container.querySelector<HTMLElement>('.font-mono')` to resolve TS2345 errors
+- **Why**: `querySelector` returns `Element | null` by default, but `within()` from `@testing-library/react` expects `HTMLElement`. The generic type parameter narrows the return type.
+- **Lines affected**: 40, 52, 63, 76 (declarations); lines 77-79 used `markdownArea!` which was fine once the source type was correct)
+- **Verification**: `npx tsc --noEmit` (zero errors), `npx tsc -b` (build passes), `npx vitest run` (198/198 tests pass)
+
 ## Tester focus
 
 - `npx tsc --noEmit` — zero errors ✅
