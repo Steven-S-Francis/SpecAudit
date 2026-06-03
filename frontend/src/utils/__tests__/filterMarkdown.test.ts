@@ -2,12 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { filterMarkdownBySeverity } from '../filterMarkdown';
 import fixtureContent from '../../test-fixtures/fraudlabs-audit-result.md?raw';
 
-// Declare module for Vite raw imports of .md files
-declare module '*.md?raw' {
-  const content: string;
-  export default content;
-}
-
 const CRITICAL_FINDING = `### [CRITICAL] Missing Auth Scheme
 **Category:** Security
 **Location:** /api/endpoint
