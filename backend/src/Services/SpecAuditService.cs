@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
@@ -151,18 +152,24 @@ public sealed class SpecAuditService
 
     private readonly ChatClient _chatClient;
     private readonly AiOptions _options;
+    private readonly ILogger<SpecAuditService> _logger;
 
-    public SpecAuditService(IOptions<AiOptions> options)
+    public SpecAuditService(IOptions<AiOptions> options, ILogger<SpecAuditService> logger)
     {
         _options = options.Value;
+        _logger = logger;
 
         var credential = new ApiKeyCredential(_options.ApiKey);
         var clientOptions = new OpenAIClientOptions
         {
-            Endpoint = new Uri(_options.BaseUrl)
+            Endpoint = new Uri(_options.BaseUrl),
+            NetworkTimeout = TimeSpan.FromSeconds(30)
         };
         var client = new OpenAIClient(credential, clientOptions);
         _chatClient = client.GetChatClient(_options.ModelId);
+
+        _logger.LogInformation("SpecAuditService initialized for model {ModelId} at {BaseUrl}",
+            _options.ModelId, _options.BaseUrl);
     }
 
     public int MaxInputLength => _options.MaxInputLength;
@@ -185,6 +192,8 @@ public sealed class SpecAuditService
 
         var fullText = new StringBuilder();
 
+        _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
+
         await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, ct))
         {
             foreach (var part in update.ContentUpdate)
@@ -197,11 +206,32 @@ public sealed class SpecAuditService
             }
         }
 
+        _logger.LogInformation("AI audit stream completed ({TokenCount} chars received)", fullText.Length);
+
         // After streaming completes, extract structured JSON from the full text
         var json = ExtractStructuredJson(fullText.ToString());
         if (json is not null)
         {
+            var findingsCount = 0;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("summary", out var summary) &&
+                    summary.TryGetProperty("totalFindings", out var totalFindings))
+                {
+                    findingsCount = totalFindings.GetInt32();
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore parse errors for the purposes of logging the count
+            }
+            _logger.LogInformation("Structured JSON extracted ({FindingsCount} findings)", findingsCount);
             yield return $"{StructuredSentinel}{json}";
+        }
+        else
+        {
+            _logger.LogInformation("No structured JSON found in response");
         }
     }
 

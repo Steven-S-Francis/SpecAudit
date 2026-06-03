@@ -1,66 +1,71 @@
-# Changes: Keyboard Shortcuts Feature
+# Changes: SSE Streaming Timeout Fix + Serilog Logging
 
 ## Files Modified
 
-### 1. `frontend/src/components/features/InputPanel.tsx`
-- Added `handleKeyDown` function before the return statement that intercepts `Ctrl+Enter` / `Cmd+Enter` on the textarea
-- The handler checks: input is non-empty, not over limit, status is not `loading` or `streaming` — matching the conditions when the Run Audit button is enabled
-- Added `onKeyDown={handleKeyDown}` prop to the `<textarea>` element
-- Added `title="Ctrl+Enter to run audit"` to the Run Audit button for hover tooltip
-- Added `<kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Ctrl+Enter</kbd>` inside the Run Audit button content
-- Added `title="Escape to stop"` to the Stop button for hover tooltip
-- Added `<kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Esc</kbd>` inside the Stop button content
+### 1. `backend/src/Endpoints/AuditEndpoints.cs` — Timeout fix + Serilog logging
 
-### 2. `frontend/src/App.tsx`
-- Added a new `useEffect` block (after the existing provider name fetch effect, around line 94) that registers a global `window` `keydown` event listener
-- The handler checks `e.key === 'Escape' && state.status === 'streaming'`, then calls `e.preventDefault()` and `abort()`
-- Cleanup function removes the event listener on unmount
-- Dependencies: `[state.status, abort]` — `state.status` keeps the closure fresh with latest streaming state; `abort` is stable from `useCallback`
+**Timeout fix (existing uncommitted changes + per-spec):**
+- Added `using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);` and `cts.CancelAfter(TimeSpan.FromSeconds(45));` to create a linked token that fires after 45 seconds
+- Added `var token = cts.Token;` to use as the cancellation token for the streaming call
+- Added `catch (OperationCanceledException) when (ct.IsCancellationRequested)` block for silent handling of client disconnect
+- Added `token.ThrowIfCancellationRequested();` as the **first line** inside the `await foreach` loop body (before `JsonSerializer.Serialize`). This forces an `OperationCanceledException` to be thrown on every chunk iteration after the 45s timer fires.
+- Added a **second `catch (OperationCanceledException)` block** (without `when` filter) between the client-disconnect catch and the generic `Exception` catch. This catches server-side timeout (where `token` is cancelled but `ct` — the HTTP request token — is not) and sends a `[SPECAUDIT_ERROR] The request timed out. Please try again.` message to the client using `CancellationToken.None`.
 
-### 3. `frontend/src/components/features/__tests__/InputPanel.test.tsx`
-Added 9 new test cases (total: 16 → 25):
-- `Ctrl+Enter with valid input calls onSubmit`
-- `Cmd+Enter with valid input calls onSubmit`
-- `Enter alone does NOT call onSubmit`
-- `Ctrl+Enter when input is empty does nothing`
-- `Ctrl+Enter when status is loading does nothing`
-- `Ctrl+Enter when status is streaming does nothing`
-- `Ctrl+Enter when input exceeds limit does nothing`
-- `Ctrl+Enter hint kbd renders on Run Audit button`
-- `Escape hint kbd renders on Stop button`
+**Serilog logging (new):**
+- Added `using Microsoft.Extensions.Logging;`
+- Resolved `ILogger` from `HttpContext.RequestServices` via `ILoggerFactory` (since the endpoint class is static, `ILogger<AuditEndpoints>` is not valid — using `ILoggerFactory.CreateLogger("SpecAudit.Endpoints.AuditEndpoints")` instead)
+- **Request start**: `LogInformation("Audit request: {SpecLength} chars, format: {Format}", ...)`
+- **Client disconnect**: `LogInformation("Client disconnected (Escape/abort)")` — in the `when (ct.IsCancellationRequested)` catch
+- **Timeout**: `LogInformation("Request timed out after 45s")` — in the unqualified `OperationCanceledException` catch
+- **Error**: `LogError(ex, "Audit error: {Message}", ex.Message)` — in the `Exception ex` catch
+- **Request completion**: `LogInformation("Audit request completed")` — after try-catch, before `return Results.Empty`
 
-### 4. `frontend/src/components/features/__tests__/App.test.tsx`
-Added new `describe('App Keyboard Shortcuts', ...)` block with 4 test cases (total: 37 → 41):
-- `Escape during streaming calls abort`
-- `Escape when idle does nothing`
-- `Non-Escape keys ignored during streaming`
-- `Escape in textarea during streaming calls abort`
+### 2. `backend/src/Services/SpecAuditService.cs` — No timeout changes + Serilog logging
 
-## Test Results
+**Kept (existing uncommitted changes):**
+- Already had `NetworkTimeout = TimeSpan.FromSeconds(30)` in the working tree. No timeout modifications made.
 
-- **TypeScript**: `npx tsc --noEmit` — passes with no errors
-- **Tests**: `npx vitest run` — **245 tests, 17 files, all passing** (existing tests unaffected)
-- New InputPanel tests: 9
-- New App tests: 4
+**Serilog logging (new):**
+- Added `using Microsoft.Extensions.Logging;`
+- Added `ILogger<SpecAuditService> _logger` field
+- Modified constructor to inject `ILogger<SpecAuditService> logger` parameter
+- **Constructor**: `LogInformation("SpecAuditService initialized for model {ModelId} at {BaseUrl}", ...)`
+- **Streaming start**: `LogInformation("Starting AI audit stream for spec ({Length} chars)", ...)`
+- **Streaming completion**: `LogInformation("AI audit stream completed ({TokenCount} chars received)", ...)`
+- **Structured JSON extracted**: `LogInformation("Structured JSON extracted ({FindingsCount} findings)", ...)` — parses the `summary.totalFindings` from the JSON block
+- **No structured JSON**: `LogInformation("No structured JSON found in response")`
+- Note: Did NOT add a try-catch around the `yield return` loop because C# does not allow `yield return` inside a `try-catch` block (CS1626). Errors from `CompleteChatStreamingAsync` propagate to the caller (`AuditEndpoints.cs`), which already logs them at `Error` level.
 
----
+### 3. `backend/backend.csproj` — New package reference
 
-## Fix: Add `title` prop to Button component
+- Added `<PackageReference Include="Serilog.AspNetCore" Version="9.*" />`
 
-**Problem:** Docker build failed because `InputPanel.tsx` passes `title="..."` to `<Button>`, but `Button.tsx` didn't accept a `title` prop.
+### 4. `backend/Program.cs` — Serilog configuration
 
-**Solution:** Modified `frontend/src/components/ui/Button.tsx`:
-1. Added `title?: string` to the `Props` type definition (line 9)
-2. Destructured `title` from props (line 23)
-3. Passed `title={title}` to the underlying `<button>` element (line 28)
+- Added `using Serilog;` at the top
+- Added `Log.Logger = new LoggerConfiguration().MinimumLevel.Information().WriteTo.Console().CreateLogger();` **before** `var builder = WebApplication.CreateBuilder(args);`
+- Added `builder.Host.UseSerilog();` immediately after builder creation
+- Wrapped `app.Run("http://+:5000");` in a `try { ... } finally { Log.CloseAndFlush(); }` block
 
-**Verification:**
-- `npx tsc --noEmit` — passes with zero errors
-- `npx vitest run` — all 245 tests pass
+## Catch Block Ordering (3 blocks, in order)
+
+| Position | Catch Clause | Trigger | Behavior |
+|----------|-------------|---------|----------|
+| 1st | `OperationCanceledException` **when** `ct.IsCancellationRequested` | Client disconnects (Escape, browser close) | Silent no-op — client is gone; logs `"Client disconnected (Escape/abort)"` |
+| 2nd | `OperationCanceledException` (no filter) | 45s server-side timeout fires, HTTP client still connected | Sends timeout error via `CancellationToken.None`; logs `"Request timed out after 45s"` |
+| 3rd | `Exception ex` | Rate limits (429), unexpected errors | Captures exception in Sentry, sends error message via `ct`; logs `"Audit error: {Message}"` at Error level |
+
+## Verification
+
+- `dotnet build` — **Build succeeded. 0 warnings, 0 errors.**
+- `dotnet test` — **Passed! 21/21 tests passed.**
+- No TypeScript files were affected (no frontend changes).
+- Serilog output will appear on stdout/console when running locally.
 
 ## Tester Focus Areas
 
-1. **Ctrl+Enter / Cmd+Enter on textarea**: Verify it triggers `onSubmit` with same conditions as clicking "Run Audit". Verify Enter alone still inserts newlines.
-2. **Escape global listener**: Verify Escape calls `abort()` only during streaming. Verify non-Escape keys are ignored. Verify cleanup on unmount.
-3. **Button hints**: Check `<kbd>` elements render inside both buttons with correct text. Check `title` attributes are present.
-4. **Visual on mobile**: `hidden sm:inline` on the `<kbd>` elements — should be hidden on narrow screens.
+1. **Timeout behavior**: Mock `AuditAsync` to yield chunks slowly. After 45s, verify `[SPECAUDIT_ERROR] The request timed out.` is sent to the SSE stream. Verify `"Request timed out after 45s"` appears in console logs.
+2. **Client disconnect**: Cancel `ct` mid-stream, verify no additional data is written (silent close). Verify `"Client disconnected (Escape/abort)"` appears in console logs.
+3. **Normal completion**: Verify audit completes in < 45s with no error. Verify `"Audit request completed"` appears in console logs.
+4. **Rate limiting**: If a 429 is thrown, verify the rate-limit error message is shown. Verify `"Audit error:"` appears in console logs at Error level.
+5. **Serilog startup**: Verify `"SpecAuditService initialized for model ..."` appears in console logs at startup.

@@ -1,13 +1,20 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
+using Serilog;
 using SpecAudit.Configuration;
 using SpecAudit.Endpoints;
 using SpecAudit.Services;
 using Sentry;
 using Sentry.AspNetCore;
 
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .CreateLogger();
+
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseSerilog();
 
 // Sentry error tracking (optional — only active when Sentry__Dsn is set)
 if (!string.IsNullOrWhiteSpace(builder.Configuration["Sentry:Dsn"]))
@@ -104,6 +111,13 @@ var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
 if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId) || string.IsNullOrWhiteSpace(aiOptions.ApiKey))
     throw new InvalidOperationException("Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets.");
 
-app.Run("http://+:5000");
+try
+{
+    app.Run("http://+:5000");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
 
 public partial class Program { }

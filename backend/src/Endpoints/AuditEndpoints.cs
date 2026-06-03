@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Sentry;
 using SpecAudit.Configuration;
@@ -26,37 +27,62 @@ public static class AuditEndpoints
             if (spec.Length > auditService.MaxInputLength)
                 return Results.StatusCode(413);
 
+            var loggerFactory = httpContext.RequestServices.GetRequiredService<ILoggerFactory>();
+            var logger = loggerFactory.CreateLogger("SpecAudit.Endpoints.AuditEndpoints");
+            logger.LogInformation("Audit request: {SpecLength} chars, format: {Format}",
+                spec.Length, request.SpecFormat ?? "none");
+
             httpContext.Response.ContentType = "text/event-stream";
             httpContext.Response.Headers.CacheControl = "no-cache";
             httpContext.Response.Headers.Connection = "keep-alive";
 
             var sanitizedRequest = new AuditRequest(spec, request.SpecFormat);
 
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(45));
+            var token = cts.Token;
+
             try
             {
-                await foreach (var chunk in auditService.AuditAsync(sanitizedRequest, ct))
+                await foreach (var chunk in auditService.AuditAsync(sanitizedRequest, token))
                 {
+                    token.ThrowIfCancellationRequested();  // Check timeout between chunks
+
                     var encoded = JsonSerializer.Serialize(chunk);
-                    await httpContext.Response.WriteAsync($"data: {encoded}\n\n", ct);
-                    await httpContext.Response.Body.FlushAsync(ct);
+                    await httpContext.Response.WriteAsync($"data: {encoded}\n\n", token);
+                    await httpContext.Response.Body.FlushAsync(token);
                 }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Client aborted the connection — silent no-op
+                logger.LogInformation("Client disconnected (Escape/abort)");
             }
             catch (OperationCanceledException)
             {
+                // Server-side 45-second timeout — send error to client
+                logger.LogInformation("Request timed out after 45s");
+                var sentinel = JsonSerializer.Serialize("[SPECAUDIT_ERROR] The request timed out. Please try again.");
+                await httpContext.Response.WriteAsync($"data: {sentinel}\n\n", CancellationToken.None);
+                await httpContext.Response.Body.FlushAsync(CancellationToken.None);
             }
             catch (Exception ex)
             {
                 // Capture the caught exception in Sentry so it's not lost
+                logger.LogError(ex, "Audit error: {Message}", ex.Message);
                 SentrySdk.CaptureException(ex);
 
                 var message = ex.Message.Contains("429")
                     ? "Rate limit reached. Please wait a moment and try again, or switch to a provider with higher limits."
-                    : "An error occurred. Please try again.";
+                    : ex is OperationCanceledException
+                        ? "The request timed out. Please try again."
+                        : "An error occurred. Please try again.";
                 var sentinel = JsonSerializer.Serialize($"[SPECAUDIT_ERROR] {message}");
                 await httpContext.Response.WriteAsync($"data: {sentinel}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);
             }
 
+            logger.LogInformation("Audit request completed");
             return Results.Empty;
         }).RequireRateLimiting("AuditPolicy");
 
