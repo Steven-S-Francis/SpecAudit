@@ -1,6 +1,6 @@
 # SpecAudit — Complete Project Context for Code Review
 
-> Generated: 2026-06-03 | HEAD: `775b729` | Branch: `main`
+> Generated: 2026-06-03 | HEAD: `eae5a9e` | Branch: `main`
 > Purpose: Self-contained reference for AI-powered code review ("antigravity" or equivalent)
 
 ---
@@ -55,9 +55,9 @@ User browser                    Frontend (App.tsx)              Backend (.NET 10
      │                               │  ◄── SSE: data: "chunk" ────│                                  │
      │  ◄── ReactMarkdown render ────│                              │  (StringBuilder accumulates)     │
      │                               │                              │                                  │
-     │                               │                              │  After stream complete:           │
-     │                               │                              │  ExtractStructuredJson()          │
-     │                               │                              │  regex → JsonDocument.Parse       │
+│                               │                              │  After stream complete:           │
+│                               │                              │  ExtractStructuredJson()          │
+│                               │                              │  LastIndexOf → JsonDocument.Parse │
      │                               │                              │                                  │
      │                               │  ◄── [SPECAUDIT_STRUCTURED]──│                                  │
      │                               │                              │                                  │
@@ -172,8 +172,6 @@ AI provider error (timeout, 429, etc.)
 │       ├── Models/
 │       │   ├── Requests/
 │       │   │   └── AuditRequest.cs   # { Spec, SpecFormat? }
-│       │   └── Responses/
-│       │       └── AuditResponse.cs  # StructuredFinding, etc.
 │       └── Services/
 │           └── SpecAuditService.cs   # SystemPrompt, AuditAsync, ExtractStructuredJson
 │
@@ -194,6 +192,7 @@ AI provider error (timeout, 429, etc.)
 │   └── src/
 │       ├── main.tsx                  # React bootstrap
 │       ├── index.css                 # @import "tailwindcss" + @custom-variant light
+│       ├── vite-env.d.ts             # Vite type declarations + *.md?raw module
 │       ├── App.tsx                   # Shell: layout, export handlers, strippedResult
 │       ├── App.css                   # (minimal/empty)
 │       ├── test-setup.ts             # imports @testing-library/jest-dom
@@ -253,24 +252,57 @@ AI provider error (timeout, 429, etc.)
 ### 4.1 `Program.cs` — Entry Point
 
 ```csharp
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
+
+var builder = WebApplication.CreateBuilder(args);
+
 // DI
 builder.Services.Configure<AiOptions>(builder.Configuration.GetSection("Ai"));
 builder.Services.AddSingleton<SpecAuditService>();
-builder.Services.AddCors(options => { /* localhost:5173 only, dev only */ });
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("FrontendPolicy", policy =>
+        policy.WithOrigins("http://localhost:5173")
+              .AllowAnyMethod()
+              .AllowAnyHeader());
+});
 
-// Middleware
+// Rate limiter — fixed window, 10 req/min per IP
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = 429;
+    options.AddPolicy("AuditPolicy", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            }));
+});
+
+var app = builder.Build();
+
 if (app.Environment.IsDevelopment()) app.UseCors("FrontendPolicy");
 app.UseDefaultFiles();   // Serve static files from wwwroot/
 app.UseStaticFiles();
+app.UseRateLimiter();    // Must be called after UseStaticFiles
 app.MapAuditEndpoints(); // POST /api/audit, GET /api/config
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapFallbackToFile("index.html"); // SPA fallback
 
-// Startup validation
-if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId))
-    throw new InvalidOperationException("Ai:BaseUrl and Ai:ModelId must be configured.");
+// Startup validation — all three required
+var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
+if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId) || string.IsNullOrWhiteSpace(aiOptions.ApiKey))
+    throw new InvalidOperationException("Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets.");
 
 app.Run("http://+:5000");
+
+public partial class Program { }
 ```
 
 **Key points:**
@@ -278,12 +310,16 @@ app.Run("http://+:5000");
 - CORS is only active in development (production is same-origin via SPA fallback)
 - `partial class Program` enables `WebApplicationFactory` integration tests
 - Port is hard-coded to `+:5000` (Railway compatible)
+- Rate limiter uses **fixed window** policy keyed by `RemoteIpAddress`
+- `UseRateLimiter()` must be called after `UseStaticFiles()` but before route mapping
+- Startup validation now also checks `ApiKey` — all three required
+- No NuGet packages needed: rate limiting is built into .NET 8+ (`System.Threading.RateLimiting`)
 
 ### 4.2 `SpecAuditService.cs` — Core Service
 
-**Class signature:** `public sealed partial class SpecAuditService`
+**Class signature:** `public sealed class SpecAuditService`
 
-The `partial` keyword is required by `[GeneratedRegex]`.
+(No `partial` keyword — `[GeneratedRegex]` has been removed in favor of manual string search.)
 
 #### SystemPrompt (148 lines, lines 16–148)
 
@@ -362,38 +398,51 @@ public async IAsyncEnumerable<string> AuditAsync(
 - Rate limiting is caught by `AuditEndpoints` (not here)
 - Empty/null text parts are skipped
 
-#### `ExtractStructuredJson()` — Regex Extraction
+#### `ExtractStructuredJson()` — String Search Extraction
 
 ```csharp
 internal static string? ExtractStructuredJson(string markdown)
 {
-    var match = StructuredJsonRegex().Match(markdown);
-    if (!match.Success) return null;
-    var json = match.Groups[1].Value.Trim();
-    if (string.IsNullOrEmpty(json)) return null;
-    try { using var doc = JsonDocument.Parse(json); return json; }
-    catch (JsonException) { return null; }
-}
+    const string openFence = "```json";
+    const string closeFence = "```";
 
-[GeneratedRegex(@"[\s\S]*```json\s*([\s\S]*?)\s*```\s*$")]
-private static partial Regex StructuredJsonRegex();
+    var lastOpen = markdown.LastIndexOf(openFence, StringComparison.Ordinal);
+    if (lastOpen < 0)
+        return null;
+
+    var jsonStart = lastOpen + openFence.Length;
+    var closeStart = markdown.IndexOf(closeFence, jsonStart, StringComparison.Ordinal);
+    if (closeStart < 0)
+        return null;
+
+    var json = markdown[jsonStart..closeStart].Trim();
+    if (string.IsNullOrEmpty(json))
+        return null;
+
+    try
+    {
+        using var doc = JsonDocument.Parse(json);
+        return json;
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
 ```
 
-**Regex breakdown:**
-- `[\s\S]*` — match everything before the JSON block (greedy, ensures LAST match)
-- ````json` — literal opening fence with `json` tag
-- `\s*` — optional whitespace after opening
-- `([\s\S]*?)` — capture group for JSON content (non-greedy)
-- `\s*` — optional whitespace before closing
-- ````` — literal closing fence
-- `\s*$` — optional trailing whitespace at string end (anchors to end)
+**Extraction logic breakdown:**
+- `LastIndexOf("```json")` — finds the LAST opening fence (avoids regex, handles multiple blocks)
+- `IndexOf("```", jsonStart)` — finds the corresponding closing fence after the opening fence
+- `markdown[jsonStart..closeStart]` — range slicing extracts content between fences
+- No `using System.Text.RegularExpressions;` needed (removed)
 
 **Edge cases:**
-- No ` ```json ` block → regex fails → returns null
-- Multiple ` ```json ` blocks → `[\s\S]*` at start is greedy → captures LAST one only
+- No ` ```json ` block → `LastIndexOf` returns -1 → returns null
+- Multiple ` ```json ` blocks → `LastIndexOf` captures LAST one only
 - Invalid JSON → `JsonDocument.Parse` throws → caught → returns null
 - Empty/whitespace-only block → `Trim()` returns empty → returns null
-- Text after the JSON block → `\s*$` anchor prevents match → returns null
+- Text after the JSON block → **ALLOWED** (no `$` anchor, so trailing text is ignored)
 
 #### `BuildUserMessage()` — Prompt Construction
 
@@ -437,14 +486,15 @@ app.MapPost("/api/audit", async (
     {
         // Rate limit detection via message content
         var message = ex.Message.Contains("429")
-            ? "Rate limit reached..."
-            : ex.Message;
+            ? "Rate limit reached. Please wait a moment and try again, or switch to a provider with higher limits."
+            : "An error occurred. Please try again.";
         var sentinel = JsonSerializer.Serialize($"[SPECAUDIT_ERROR] {message}");
         await httpContext.Response.WriteAsync($"data: {sentinel}\n\n", ct);
+        await httpContext.Response.Body.FlushAsync(ct);
     }
 
     return Results.Empty; // Must return Empty for SSE endpoints
-});
+}).RequireRateLimiting("AuditPolicy");
 ```
 
 **Key behavior:**
@@ -452,6 +502,9 @@ app.MapPost("/api/audit", async (
 - The empty spec check runs `Trim()` first (so whitespace-only is rejected)
 - The `MaxInputLength` check is against the original (untrimmed) length
 - Rate limit detection is heuristic: checks if `ex.Message.Contains("429")`
+- Non-429 exceptions send a generic sanitized message (was `ex.Message` — vulnerability fix)
+- `RequireRateLimiting("AuditPolicy")` applies the fixed-window rate limiter to this endpoint only
+- `/health` and `/api/config` are NOT rate-limited
 - Abandoned streams (client disconnect) are silently caught via `OperationCanceledException`
 
 #### `GET /api/config` — Provider Info
@@ -470,32 +523,7 @@ Returns only `providerName`. **Never exposes the API key.** Verified by test `Ge
 public sealed record AuditRequest(string Spec, string? SpecFormat);
 ```
 
-#### Response Models
-```csharp
-public sealed record StructuredFinding(
-    string Severity,      // "CRITICAL" | "WARNING" | "INFO"
-    string Title,
-    string Category,
-    string Location,
-    string Issue,
-    string Recommendation
-);
-
-public sealed record StructuredDimensions(
-    int Security, int RestConformance, int SchemaCompleteness, int DocumentationQuality
-);
-
-public sealed record StructuredSummary(
-    int TotalFindings, int Critical, int Warnings, int Info,
-    string Verdict, int GovernanceScore, int EndpointsAnalyzed,
-    StructuredDimensions Dimensions
-);
-
-public sealed record StructuredData(
-    List<StructuredFinding> Findings,
-    StructuredSummary Summary
-);
-```
+*(No response models — `AuditResponse.cs` was deleted as dead code. The structured JSON is parsed inline in `SpecAuditService.ExtractStructuredJson()` using `System.Text.Json.JsonDocument`. The frontend defines its own `Finding`, `AuditSummary`, and `AuditDimensions` interfaces in `types/audit.ts`.)*
 
 ### 4.5 Configuration (`AiOptions`)
 
@@ -585,9 +613,24 @@ export async function auditStream(
    - If starts with `[SPECAUDIT_STRUCTURED]` → `JSON.parse` the JSON, call `onStructured`, `continue`
    - Otherwise → call `onChunk(chunk)`
 
+**`isValidStructuredData()` type guard (new):**
+```typescript
+function isValidStructuredData(data: unknown): data is { findings: Finding[]; summary: AuditSummary } {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  if (!Array.isArray(obj.findings)) return false;
+  if (typeof obj.summary !== 'object' || obj.summary === null) return false;
+  // Validates each finding has required string fields
+  // Validates summary has numeric totalFindings, critical, warnings, info + string verdict
+  return true;
+}
+```
+This guard prevents `onStructured` from being called with malformed payloads. If validation fails, the chunk is silently skipped (same behavior as invalid JSON).
+
 **Edge cases:**
 - No `onStructured` callback → structured data silently ignored
 - Invalid JSON in structured sentinel → try/catch ignores, continues
+- Malformed JSON (wrong shape) → `isValidStructuredData` returns false → silently skipped
 - SSE partial line between reads → buffer accumulates via `parseSSEChunks`
 
 ### 5.3 SSE Parser (`utils/parseSSEChunks.ts`)
@@ -623,18 +666,21 @@ loading → loading (retry)
 
 **Rate-limit retry logic:**
 ```typescript
-let retryCount = 0;
+const retryCount = useRef(0);
 const maxRetries = 3;
 
 // In catch block:
-if (err.name === 'RateLimitError' && retryCount < maxRetries) {
-  retryCount++;
+if ((err as Error).name === 'RateLimitError' && retryCount.current < maxRetries) {
+  retryCount.current++;
   // Reset state to loading
-  const delay = 1000 * Math.pow(2, retryCount - 1); // 1s, 2s, 4s
+  setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
+  const delay = 1000 * Math.pow(2, retryCount.current - 1); // 1s, 2s, 4s
   await new Promise(resolve => setTimeout(resolve, delay));
-  audit(payload, true); // recursive call, isRetry=true
+  await audit(payload, true); // FIX: was `audit(payload, true)` (fire-and-forget bug)
 }
 ```
+
+**Key fix:** Added `await` before the recursive `audit(payload, true)` call. Previously it was fire-and-forget, which could cause state conflicts if a retry completed after the hook was unmounted or another audit was started.
 
 **Duration/Structured data integration:**
 ```typescript
@@ -682,6 +728,12 @@ This regex removes the trailing ```json...``` block from the AI response so it's
 ### 5.6 ResultPanel.tsx — Markdown Renderer
 
 ```tsx
+const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content], isStreaming });
+```
+
+Uses `useAutoScroll` with the `isStreaming` option — uses `behavior: 'auto'` during streaming (instant scroll) and `'smooth'` when streaming has stopped.
+
+```tsx
 <div ref={containerRef} className="relative w-full mt-6 max-h-[60vh] overflow-y-auto rounded-lg"
      style={{ padding: '5px' }}>
 ```
@@ -694,6 +746,7 @@ This regex removes the trailing ```json...``` block from the AI response so it's
   - **`hr`** → `<hr>` with border styling
   - **`strong`** → lighter color for emphasis
   - **`p`** → muted text color
+- Severity filter buttons (CRITICAL/WARNING/INFO toggles)
 - Streaming indicator → blinking cursor
 - Scroll button → sticky `bottom-3`, shows up/down arrow
 
@@ -711,7 +764,8 @@ Light mode overrides: `light:bg-red-50`, `light:text-red-600`, etc.
 - `<textarea>` with monospace font, min-height 300px
 - Format toggle buttons: "YAML" / "JSON" (toggle to `undefined` to deselect)
 - Character counter with color transitions: normal (`text-slate-400`) → warning at 80k (`text-amber-400`) → over limit at 100k (`text-red-400`)
-- "Run Audit" button disabled when: empty, over limit, or streaming
+- "Run Audit" button disabled when: empty, over limit, `status === 'loading'`, or `status === 'streaming'`
+- `status === 'loading'` was added to prevent double-click abort/restart while a retry is in progress
 - "Stop" button shown during streaming (red/danger variant)
 
 ### 5.8 PDF Export (`utils/exportPdf.ts`)
@@ -723,14 +777,36 @@ Light mode overrides: `light:bg-red-50`, `light:text-red-600`, etc.
   - `# Heading` → h1 (18pt, bold)
   - `## Heading` → h2 (14pt, bold)
   - `### [SEVERITY] Title` → colored table (4px border accent, badge cell + title cell)
-  - `` ``` `` → code block (dark background, monospace, 9pt)
+  - `` ``` `` → code block detection: `line.trimEnd().match(/^```(\w*)$/)` (handles CRLF)
   - `` `code` `` → inline code (amber text, light background)
   - `**bold**` → bold text
   - `---` → horizontal line
   - Plain text → paragraph with inline formatting
 - `exportPdf(content)` → creates document, triggers download
 
-### 5.9 UI Components
+### 5.9 Auto-Scroll Hook (`hooks/useAutoScroll.ts`)
+
+```typescript
+interface UseAutoScrollOptions {
+  deps: unknown[];
+  threshold?: number;
+  isStreaming?: boolean;
+}
+
+export function useAutoScroll({ deps, threshold = 50, isStreaming = false }: UseAutoScrollOptions) {
+```
+
+**`isStreaming` option (new):**
+- When `true`, scroll behavior uses `'auto'` (instant jump, no animation)
+- When `false`/omitted, scroll behavior uses `'smooth'` (animated scroll)
+- This prevents jarring animation jank during high-frequency content updates while streaming
+
+**Usage in ResultPanel:**
+```typescript
+const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content], isStreaming });
+```
+
+### 5.10 UI Components
 
 | Component | Props | Purpose |
 |-----------|-------|---------|
@@ -740,7 +816,7 @@ Light mode overrides: `light:bg-red-50`, `light:text-red-600`, etc.
 | `ThemeToggle` | `theme, onToggle` | Sun/moon icon button |
 | `ScrollButton` | `direction: 'up' | 'down'`, `onClick` | Floating scroll control |
 
-### 5.10 CSS / Dark Mode (`index.css`)
+### 5.11 CSS / Dark Mode (`index.css`)
 
 ```css
 @import "tailwindcss";
@@ -752,7 +828,7 @@ Light mode overrides: `light:bg-red-50`, `light:text-red-600`, etc.
 - Components use `light:` prefix for light mode styles
 - Preference persisted in `localStorage` via `useTheme` hook
 
-### 5.11 Build Configuration
+### 5.12 Build Configuration
 
 **`vite.config.ts`:**
 ```typescript
@@ -784,12 +860,11 @@ export default defineConfig({
 
 | Purpose | File | Regex | Notes |
 |---------|------|-------|-------|
-| Extract last ```json block | `SpecAuditService.cs` line 235 | `[\s\S]*```json\s*([\s\S]*?)\s*```\s*$` | `GeneratedRegex`, greedy prefix ensures last match |
 | Strip JSON block from display | `App.tsx` line 19 | `/```json[\s\S]*?```\s*$/gm` | JavaScript regex, multi-line flag |
 | SSE data line extraction | `parseSSEChunks.ts` line 13 | `line.startsWith('data: ')` | String prefix check, not regex |
 | Severity detection | `parseSeverity.ts` | `text.includes('[CRITICAL]')` | Simple string includes, 3 variants |
 | PDF severity block | `exportPdf.ts` line 166 | `/^###\s+\[(CRITICAL\|WARNING\|INFO)\]\s*(.*)$/` | Captures severity + title |
-| PDF code fence | `exportPdf.ts` line 146 | `/^```(\w*)$/` | Optional language tag |
+| PDF code fence | `exportPdf.ts` line 146 | `/^```(\w*)$/` with `line.trimEnd()` | Optional language tag — `trimEnd()` handles CRLF |
 | PDF inline code | `exportPdf.ts` line 34 | ``/(`[^`]+`)/`` | Backtick-delimited |
 | PDF bold | `exportPdf.ts` line 48 | `/(\*\*[^*]+\*\*)/` | Double-asterisk |
 | PDF h1 | `exportPdf.ts` line 173 | `/^#\s+(.+)$/` | Single hash |
@@ -799,12 +874,13 @@ export default defineConfig({
 
 ## 7. Tests (Complete Coverage Map)
 
-### 7.1 Frontend — 177 tests, 14 files, vitest
+### 7.1 Frontend — 203 tests, 15 files, vitest
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `utils/__tests__/parseSSEChunks.test.ts` | ~6 | SSE buffer boundary, partial lines, `data:` extraction |
-| `utils/__tests__/parseSeverity.test.ts` | ~5 | Severity detection from heading text |
+| `utils/__tests__/parseSeverity.test.ts` | ~6 | Severity detection from heading text |
+| `utils/__tests__/filterMarkdown.test.ts` | 14 | Block splitting with regex, severity filtering, real-fixture integration |
 | `utils/__tests__/exportPdf.test.ts` | 35 | markdownToContent: severity blocks, code fences, headings, inline formatting, HRs, paragraphs, edge cases |
 | `hooks/__tests__/useAudit.test.tsx` | ~10 | State machine transitions, retry logic, abort, reset, structured data callback |
 | `hooks/__tests__/useAutoScroll.test.tsx` | ~4 | Scroll position detection, auto-scroll behavior |
@@ -812,20 +888,20 @@ export default defineConfig({
 | `components/ui/__tests__/Button.test.tsx` | ~4 | Variant rendering, click handler, disabled state |
 | `components/ui/__tests__/ScrollButton.test.tsx` | ~2 | Direction prop, click event |
 | `components/ui/__tests__/ThemeToggle.test.tsx` | ~2 | Icon rendering, click toggle |
-| `components/features/__tests__/InputPanel.test.tsx` | ~8 | Spec input, format toggle, character count, submit/abort |
+| `components/features/__tests__/InputPanel.test.tsx` | ~8 | Spec input, format toggle, character count, submit/abort, loading state |
 | `components/features/__tests__/ResultPanel.test.tsx` | ~6 | Skeleton loading, markdown render, severity styling, streaming cursor |
 | `components/features/__tests__/App.test.tsx` | ~22 | Copy, Download, Export PDF, Export JSON buttons; JSON envelope shape; structured data vs fallback; trailing newline |
 | `api/__tests__/auditClient.test.ts` | ~8 | SSE streaming, error sentinel, structured sentinel, invalid JSON, abort signal |
 | `__tests__/integration/feature-pipeline.test.ts` | 32 | End-to-end flow with real FraudLabs fixture: SSE chunks, content structure, export PDF, download, copy, structured sentinel |
 
-### 7.2 Backend — 18 tests, 4 files, xUnit
+### 7.2 Backend — 19 tests, 4 files, xUnit
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `ExtractStructuredJsonTests.cs` | 7 | Valid JSON block, no block, invalid JSON, multiple blocks (only last), empty block, whitespace-only, text after block |
-| `EndpointValidationTests.cs` | 5 | Empty spec (400), whitespace-only (400), oversized (413), trimmed spec accepted (200), GET /api/config returns providerName + no apiKey |
+| `ExtractStructuredJsonTests.cs` | 7 | Valid JSON block, no block, invalid JSON, multiple blocks (only last), empty block, whitespace-only, **text after block now ALLOWED** |
+| `EndpointValidationTests.cs` | 6 | Empty spec (400), whitespace-only (400), oversized (413), trimmed spec accepted (200), GET /api/config returns providerName, GET /api/config does not return apiKey |
 | `UserMessageBuilderTests.cs` | 3 | Yaml format hint, auto-detect fallback, spec content after format hint |
-| `AiOptionsValidationTests.cs` | 2 | Missing BaseUrl throws, missing ModelId throws |
+| `AiOptionsValidationTests.cs` | 3 | Missing BaseUrl throws, missing ModelId throws, **missing ApiKey throws** |
 
 ### 7.3 Integration Test Fixture
 
@@ -866,12 +942,39 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 | JSON block stripped from display | `c7fc1d4` | JSON only accessible via export button |
 | JSON block stripped from all exports | `775b729` | Only JSON button has structured data |
 | Ship agent delegation loopholes closed | — | bash locked to git only |
+| Severity filter toggles | `5272c54` | CRITICAL/WARNING/INFO visibility buttons |
+| Severity filter block splitting fix | `227231b` | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` — isolates each finding |
+| Pipeline enforcement (NO SKIPPING STAGES) | `b66d2c9` | Full pipeline mandatory for ALL changes |
+| Sanitized error messages | `ac1d7b5` | Non-429 errors show generic message instead of `ex.Message` |
+| Fire-and-forget fix in retry | `ac1d7b5` | `audit(payload, true)` → `await audit(payload, true)` |
+| Structured data validation | `ac1d7b5` | `isValidStructuredData()` type guard in auditClient.ts |
+| Loading-state button guard | `484af5e` | `status === 'loading'` added to InputPanel disabled condition |
+| ApiKey startup validation | `484af5e` | Missing ApiKey now throws at startup |
+| CRLF-safe code fence detection | `4cded11` | `line.trimEnd().match()` in exportPdf.ts |
+| LastIndexOf JSON extraction | `4cded11` | Replaced `[GeneratedRegex]` with manual string search |
+| Scroll behavior by streaming state | `4cded11` | `isStreaming` option in useAutoScroll — `'auto'` vs `'smooth'` |
+| Dead code removal | `4cded11` | `AuditResponse.cs` deleted entirely |
+| Rate limiter middleware | `af82582` | Fixed-window 10 req/min per IP, 429 rejection |
+| Docker build fix (module declarations) | `a403458` | Moved `declare module '*.md?raw'` to `vite-env.d.ts` |
 
 ---
 
 ## 9. Commit History (Recent)
 
 ```
+eae5a9e docs: update changes.md with Docker build fix details
+a403458 fix: move *.md?raw module declaration to vite-env.d.ts
+af82582 feat(I): add rate limiter middleware to /api/audit endpoint
+4cded11 fix(C,D,E,J): CRLF fence detection, LastIndexOf extraction, scroll behavior, remove dead types
+484af5e fix(B,F): disable button during loading, validate ApiKey at startup
+ac1d7b5 fix(A,G,H): sanitize error output, fix retry await, validate structured JSON
+b66d2c9 chore: strengthen pipeline enforcement with mandatory full pipeline for all changes
+227231b fix: severity filter now correctly isolates individual findings
+9604a93 fix: cast querySelector result to HTMLElement for within()
+73e7e49 chore: tighten pipeline agent permissions and expand prompts
+2dcdfbe docs: record severity filter in ROADMAP.md
+5272c54 feat: add severity filter toggles for CRITICAL/WARNING/INFO
+25c129d docs: add updated_spec.md for AI code review + update README features
 775b729 fix: strip JSON block from all user-facing exports
 c7fc1d4 fix: add 5px padding to result panel, strip JSON block from display
 c47805b docs: record structured JSON export in ROADMAP.md
@@ -996,6 +1099,10 @@ ship (pipeline orchestrator)
 | **test** | — | — | `*: allow` | — |
 | **review** | — | — | — | — |
 
+**Changes in `b66d2c9`:**
+- Build agent's git deny removed from permissions (no longer restricts `git` commands in build agent's `bash`)
+- `ship.md` now includes "NO SKIPPING STAGES" rule — full pipeline is mandatory for ALL changes including bugs/hotfixes
+
 The ship agent is intentionally locked down to **prevent bypassing the delegation rule** — it may only run git commands and edit ROADMAP.md. All code changes must go through `task`.
 
 ---
@@ -1014,6 +1121,9 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **Stripped result** | `state.result.replace(/```json[\s\S]*?```\s*$/gm, '')` | Parsing the JSON on frontend | The AI prompt instructs appending the JSON block. Regex stripping is simpler and more reliable than re-serializing frontend state back to markdown. |
 | **InternalsVisibleTo** | Backend exposes `internal static` methods to test project | Public methods | Public methods would expose implementation details. `InternalsVisibleTo` keeps the API surface clean while enabling test access. |
 | **Temperature** | `0.1f` (low determinism) | Higher temperature | Audit is a deterministic task — the same spec should produce the same findings. Low temperature reduces hallucination. |
+| **Rate limiter** | Backend fixed-window (10 req/min per IP) | Client-side throttling | Server-side enforcement prevents API key abuse. Built into .NET 8+ — no extra packages. Fixed window is simpler than token bucket for this use case. |
+| **Block splitting (severity filter)** | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` | `\n---\n` separator-based | Real AI output uses blank lines between findings, not `---` separators. Lookahead regex splits before each `### [SEVERITY]` header regardless of separator style — more robust. |
+| **JSON extraction method** | `LastIndexOf`/`IndexOf` string search | `[GeneratedRegex]` | Removes dependency on `System.Text.RegularExpressions`. No performance difference for this use case. Also allows text after the JSON block (regex `$` anchor rejected it). |
 
 ---
 
@@ -1024,15 +1134,16 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **Empty spec** | Backend input validation | 400 BadRequest: "Spec payload cannot be empty." |
 | **Whitespace-only spec** | Backend `Trim()` then check | Treated as empty → 400 BadRequest |
 | **Oversized spec (>100k)** | Backend length check on trimmed spec | 413 Payload Too Large |
-| **Rate limit (429)** | Backend catches, sends `[SPECAUDIT_ERROR]` | Frontend detects `RateLimitError`, retries with backoff (1s, 2s, 4s, max 3) |
+| **Rate limit (429 from AI)** | Backend catches, sends `[SPECAUDIT_ERROR]` | Frontend detects `RateLimitError`, retries with backoff (1s, 2s, 4s, max 3) |
+| **Rate limiter rejection (429)** | Backend `AddRateLimiter` returns 429 before endpoint is reached | Frontend `response.ok` check fails → throws `Audit failed (429): ...` → status 'error' (no retry) |
 | **Stream abortion** | Client-side `AbortController.abort()` | Backend catches `OperationCanceledException`, stream ends silently |
 | **AI omits JSON block** | `ExtractStructuredJson` returns null | No sentinel sent. Findings=[], summary=null. JSON export falls back to `result` field. |
 | **AI produces invalid JSON** | `JsonDocument.Parse` throws | Caught, returns null. Same fallback as above. |
-| **Text after JSON block** | Regex `\s*$` anchor prevents match | Returns null. Same fallback. |
+| **Text after JSON block** | `LastIndexOf` ignores trailing content | Text after the JSON block is now ALLOWED (no `$` anchor). JSON is extracted regardless. |
 | **Malformed sentinel on frontend** | `JSON.parse` in try/catch | Silently ignored (no error thrown). |
 | **No `onStructured` callback** | TypeScript optional param, guard check | Structured sentinel ignored, continues to next chunk. |
 | **SSE partial line** | `parseSSEChunks` buffers last line | Next `reader.read()` appends to buffer, splits correctly. |
-| **Multiple ` ```json ` blocks** | Greedy `[\s\S]*` matches last only | Only the final block is extracted. |
+| **Multiple ` ```json ` blocks** | `LastIndexOf` finds last opening fence | Only the final block is extracted. |
 | **Unicode in spec/results** | JSON handles natively | Tested: "handles result with unicode characters" |
 | **Missing BaseUrl/ModelId** | Backend startup validation | `InvalidOperationException` with descriptive message. |
 | **API key exposed in config endpoint** | Backend only returns `ProviderName` | Verified by test: `GetConfig_DoesNotReturnApiKey`. |
@@ -1046,6 +1157,7 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 3. **No spec validation** — Specs are sent directly to the AI without client-side YAML/JSON validation.
 4. **No persistence** — Results exist only in browser memory. Page refresh loses the audit.
 5. **PDF inline code styling** — Inline code in PDF exports uses `background` field which pdfmake renders as highlight rather than monospace.
+6. **Stray `nul` file in working directory** — A zero-length file named `nul` sometimes appears in the project root after certain operations. Likely a PowerShell piping artifact. Can be safely deleted or gitignored.
 
 ---
 
@@ -1102,3 +1214,4 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | Frontend tests | `frontend/src/**/__tests__/` |
 | Feature roadmap | `ROADMAP.md` |
 | Pipeline agent config | `.opencode/agents/ship.md` |
+| Vite type declarations (`.md?raw` module) | `frontend/src/vite-env.d.ts` |
