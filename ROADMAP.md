@@ -20,6 +20,7 @@
 | Export as JSON (basic) | `8145305` (+ trailing newline fix) |
 | Structured JSON export (findings + summary objects) | `37b7a0d` |
 | Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
+| Monitoring / error tracking (Sentry) | `d9f6fb0` |
 
 ---
 
@@ -133,8 +134,4 @@ Point a real domain to the Railway app.
 - **Affects:** Railway dashboard (domain settings), DNS provider (CNAME record).
 - **Risk:** TLS certificate provisioning delay; domain renewal management.
 
-### Monitoring / error tracking
-Uptime check + Sentry integration.
-- **Why:** Proactive detection of outages and errors before users report them.
-- **Affects:** Sentry SDK in both backend (`dotnet add package Sentry`) and frontend (`npm install @sentry/react`). Railway health check endpoint.
-- **Risk:** Sentry may capture API keys if not sanitized; need to configure data scrubbing.
+
