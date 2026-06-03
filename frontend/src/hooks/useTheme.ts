@@ -10,6 +10,12 @@ export function useTheme() {
     } catch {
       // localStorage unavailable (SSR, privacy mode)
     }
+    // Respect OS-level preference before defaulting to dark
+    try {
+      if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+    } catch {
+      // matchMedia unavailable (SSR, older browsers)
+    }
     return 'dark';
   });
 

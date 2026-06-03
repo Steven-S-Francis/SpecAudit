@@ -158,3 +158,101 @@
 - The fix resolves the Docker build failure at the `tsc -b` step. No runtime behavior changes.
 - All existing tests (203) continue to pass, including `filterMarkdown.test.ts` which imports a `*.md?raw` fixture.
 - No other files needed changes — the global declaration covers all consumers of `*.md?raw` imports.
+
+---
+
+# Spec Document Update — Updated `updated_spec.md` to reflect all changes since HEAD `775b729`
+
+## File Changed
+
+### `updated_spec.md` — Complete project context reference updated
+
+Updated ~1200-line reference document to reflect all commits from `775b729` through `eae5a9e` (current HEAD `eae5a9e`). Specific edits:
+
+| # | Area | What changed |
+|---|------|-------------|
+| 1 | **Line 3 HEAD** | Updated from `775b729` to `eae5a9e` |
+| 2 | **Section 3 (Directory Map)** | Removed `Responses/AuditResponse.cs`, added `vite-env.d.ts` |
+| 3 | **4.1 Program.cs** | Added rate limiter code (`AddRateLimiter`, `UseRateLimiter`), added `ApiKey` to startup validation guard |
+| 4 | **4.2 SpecAuditService.cs** | Removed `partial` from class; replaced `[GeneratedRegex]` with `LastIndexOf`/`IndexOf` extraction; updated edge cases (text after JSON now ALLOWED) |
+| 5 | **4.3 AuditEndpoints.cs** | Updated catch block to show generic sanitized message; added `.RequireRateLimiting("AuditPolicy")` |
+| 6 | **4.4 Models** | Removed `AuditResponse.cs` response models section (dead types deleted) |
+| 7 | **5.2 auditClient.ts** | Added `isValidStructuredData()` type guard description |
+| 8 | **5.4 useAudit.ts** | Fixed retry code to show `await audit(payload, true)` (was fire-and-forget) |
+| 9 | **5.6 ResultPanel.tsx** | Added `useAutoScroll` with `isStreaming` option, severity filter buttons |
+| 10 | **5.7 InputPanel.tsx** | Added `status === 'loading'` to disabled condition |
+| 11 | **5.8 exportPdf.ts** | Updated code fence regex to show `line.trimEnd().match(...)` for CRLF handling |
+| 12 | **5.9 (new) useAutoScroll.ts** | Added new section describing `isStreaming` option and `'auto'` vs `'smooth'` behavior |
+| 13 | **Section 6 (Regex Reference)** | Removed `StructuredJsonRegex` row; updated code fence row with `trimEnd()` note |
+| 14 | **Section 7 (Test Counts)** | Updated: 177→203 frontend, 14→15 files, 18→19 backend; added `filterMarkdown.test.ts`; updated all changed file descriptions |
+| 15 | **Section 8 (Features)** | Added 16 new feature rows (severity filter, pipeline enforcement, sanitized errors, await fix, type guard, loading guard, ApiKey validation, CRLF fix, LastIndexOf, scroll behavior, dead code removal, rate limiter, Docker build fix) |
+| 16 | **Section 9 (Commit History)** | Added 12 commits from `25c129d` through `eae5a9e` above existing entries |
+| 17 | **Section 12 (Agent Permissions)** | Added `b66d2c9` changes note (build agent git deny removed, NO SKIPPING STAGES) |
+| 18 | **Section 13 (Key Decisions)** | Added 3 rows: rate limiter approach, block splitting regex, JSON extraction method |
+| 19 | **Section 14 (Edge Cases)** | Updated rate limit entry (→ from AI), added rate limiter rejection (429), updated text-after-JSON (now allowed), updated multiple JSON blocks (LastIndexOf) |
+| 20 | **Section 15 (Known Issues)** | Added item 6: stray `nul` file in working directory |
+| 21 | **Section 17 (Quick Reference)** | Added `vite-env.d.ts` entry |
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npm run build` (frontend: `tsc -b && vite build`) | ✅ Build succeeded (0 errors) |
+| `dotnet build backend/backend.csproj` | ✅ Build succeeded (0 warnings, 0 errors) |
+
+## Notes for Tester
+
+- The spec document is a reference for AI code review agents. Spot-check any section of interest against the actual source code.
+- All code snippets in the spec now match the current source implementation at HEAD `eae5a9e`.
+- Test counts (203 frontend, 19 backend) match the live test suite.
+
+---
+
+# Code Review Fixes — Findings 1–3 (spec.md v3)
+
+## Files Changed
+
+### `.opencode/opencode.json` (Finding 1 — Build agent bash permissions)
+- **Lines 20–29:** Replaced `"bash": { "*": "allow" }` with a strict allowlist:
+  ```json
+  "bash": {
+    "*": "deny",
+    "dotnet build": "allow",
+    "dotnet test": "allow",
+    "dotnet restore": "allow",
+    "npm run build": "allow",
+    "npm run test": "allow",
+    "npx tsc --noEmit": "allow",
+    "npx vitest run": "allow"
+  }
+  ```
+- `edit` and `write` rules are untouched — only the `bash` block changed.
+- Verified no other agents have `"bash": { "*": "allow" }` (the `plan` agent already has `"*": "deny"`).
+
+### `frontend/src/App.tsx` (Finding 2 — JSON export stripped result)
+- **Line 66:** Changed `auditResult.result = state.result;` → `auditResult.result = strippedResult;` — the JSON export fallback now uses the fence-stripped result, matching the behavior of Copy, Download, PDF export, and ResultPanel display.
+- **Line 81:** Changed dependency array `[state.result, ...]` → `[strippedResult, ...]` — keeps the `useCallback` exhaustive-deps in sync with the variable actually used inside the callback.
+
+### `frontend/src/hooks/useTheme.ts` (Finding 3 — Dark mode respects prefers-color-scheme)
+- **Lines 13–19:** Added a `try-catch` block that checks `window.matchMedia('(prefers-color-scheme: light)').matches` before falling back to `'dark'`. This ensures users with OS-level light mode see light theme on first visit.
+- The `useEffect` and `toggle` functions are unchanged.
+
+### `frontend/src/hooks/__tests__/useTheme.test.tsx` (Finding 3 — Tests)
+- **Line 11:** Changed `delete (window as any).matchMedia` → `(window as any).matchMedia = undefined` — assignment works where `delete` fails on non-configurable properties.
+- **Test rename:** `"defaults to dark theme"` → `"defaults to dark theme when no OS preference"` — explicitly mocks `matchMedia` so `(prefers-color-scheme: light)` returns `matches: false`.
+- **New test:** `"defaults to light theme when OS prefers light mode"` — mocks `matchMedia` so `(prefers-color-scheme: light)` returns `matches: true`.
+- **New test:** `"localStorage preference overrides OS preference"` — sets localStorage to `'light'`, mocks `matchMedia` with `matches: false` for both, asserts theme is `'light'`.
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` (frontend) | ✅ Passed (no errors) |
+| `dotnet build` (backend) | ✅ Passed (0 warnings, 0 errors) |
+| `npx vitest run --reporter=verbose` | ✅ **205 passed** (15 files, 0 failures) |
+
+## Notes for Tester
+
+- **Finding 1:** Verify the build agent can still run `dotnet build`, `dotnet test`, `dotnet restore`, `npm run build`, `npm run test`, `npx tsc --noEmit`, and `npx vitest run`. Commands like `rm`, `cat`, `echo`, `curl`, `python`, `git` should be denied.
+- **Finding 2:** The existing test "JSON export includes result field when no structured data (fallback)" in `App.test.tsx` should verify the exported JSON's `result` field does NOT contain the `` ```json `` fence. If the test was previously passing with the fence included, it should now pass with the stripped version.
+- **Finding 3:** The three new tests in `useTheme.test.tsx` cover: (1) OS-level light → initial light, (2) OS-level dark → initial dark, (3) localStorage overrides OS preference. All existing toggle/persist/class tests continue to pass.

@@ -63,7 +63,7 @@ function App() {
       };
       // Only include result field if no structured data (fallback)
       if (state.findings.length === 0 && state.summary === null) {
-        auditResult.result = state.result;
+        auditResult.result = strippedResult;
       }
       const jsonString = JSON.stringify(auditResult, null, 2) + '\n';
       const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
@@ -78,7 +78,7 @@ function App() {
     } catch {
       // JSON export API unavailable â€” silently ignore
     }
-  }, [state.result, state.findings, state.summary, state.specFormat]);
+  }, [strippedResult, state.findings, state.summary, state.specFormat]);
 
   useEffect(() => {
     fetch('/api/config')

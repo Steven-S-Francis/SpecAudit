@@ -7,11 +7,44 @@ describe('useTheme', () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.classList.remove('light');
+    // Reset matchMedia mock if set by a previous test
+    (window as any).matchMedia = undefined;
   });
 
-  it('defaults to dark theme', () => {
+  it('defaults to dark theme when no OS preference', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(prefers-color-scheme: dark)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe('dark');
+  });
+
+  it('defaults to light theme when OS prefers light mode', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === '(prefers-color-scheme: light)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe('light');
   });
 
   it('toggle switches to light and back', () => {
@@ -28,6 +61,25 @@ describe('useTheme', () => {
       result.current.toggle();
     });
     expect(result.current.theme).toBe('dark');
+  });
+
+  it('localStorage preference overrides OS preference', () => {
+    localStorage.setItem('specaudit-theme', 'light');
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe('light');
   });
 
   it('persists to localStorage', () => {
