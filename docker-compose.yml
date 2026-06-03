@@ -3,9 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
     ports:
       - "5000:5000"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - Ai__ApiKey=${AI_API_KEY}
+      - Sentry__Dsn=${SENTRY_DSN}
     restart: unless-stopped
