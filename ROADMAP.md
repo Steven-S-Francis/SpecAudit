@@ -1,4 +1,4 @@
-﻿# SpecAudit â€” Feature Roadmap
+﻿# SpecAudit Feature Roadmap
 
 > Maintained at `ROADMAP.md`. Update as features are completed.
 

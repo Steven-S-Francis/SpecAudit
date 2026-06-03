@@ -43,6 +43,21 @@ Added new `describe('App Keyboard Shortcuts', ...)` block with 4 test cases (tot
 - New InputPanel tests: 9
 - New App tests: 4
 
+---
+
+## Fix: Add `title` prop to Button component
+
+**Problem:** Docker build failed because `InputPanel.tsx` passes `title="..."` to `<Button>`, but `Button.tsx` didn't accept a `title` prop.
+
+**Solution:** Modified `frontend/src/components/ui/Button.tsx`:
+1. Added `title?: string` to the `Props` type definition (line 9)
+2. Destructured `title` from props (line 23)
+3. Passed `title={title}` to the underlying `<button>` element (line 28)
+
+**Verification:**
+- `npx tsc --noEmit` — passes with zero errors
+- `npx vitest run` — all 245 tests pass
+
 ## Tester Focus Areas
 
 1. **Ctrl+Enter / Cmd+Enter on textarea**: Verify it triggers `onSubmit` with same conditions as clicking "Run Audit". Verify Enter alone still inserts newlines.
