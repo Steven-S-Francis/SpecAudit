@@ -4,48 +4,64 @@
 PASS
 
 ## Frontend Tests
-- Count: 220 tests in 16 files
+- Count: 232 tests in 17 files
 - Status: ✅ Pass
 - Failures: None
 
+All 232 tests passed across 17 test files:
+1. `src/utils/__tests__/filterMarkdown.test.ts` — 14 tests
+2. `src/utils/__tests__/exportPdf.test.ts` — 37 tests
+3. `src/components/ui/__tests__/ThemeToggle.test.tsx` — 3 tests
+4. `src/components/ui/__tests__/Button.test.tsx` — 3 tests
+5. `src/utils/__tests__/splitIntoBlocks.test.ts` — 6 tests (NEW)
+6. `src/utils/__tests__/parseSSEChunks.test.ts` — 6 tests
+7. `src/api/__tests__/auditClient.test.ts` — 12 tests
+8. `src/__tests__/integration/feature-pipeline.test.ts` — 33 tests
+9. `src/components/features/__tests__/InputPanel.test.tsx` — 16 tests
+10. `src/hooks/__tests__/useAudit.test.tsx` — 10 tests
+11. `src/hooks/__tests__/useTheme.test.tsx` — 6 tests
+12. `src/hooks/__tests__/useAutoScroll.test.tsx` — 4 tests
+13. `src/components/ui/__tests__/ScrollButton.test.tsx` — 2 tests
+14. `src/components/features/__tests__/ResultPanel.test.tsx` — 30 tests (6 NEW for copy feature)
+15. `src/components/features/__tests__/App.test.tsx` — 37 tests
+16. `src/utils/__tests__/highlightText.test.ts` — 7 tests
+17. `src/utils/__tests__/parseSeverity.test.ts` — 6 tests
+
 ## Backend Tests
-- Count: 21 tests in 5 files
+- Count: 21 tests
 - Status: ✅ Pass
 - Failures: None
+
+All 21 xUnit tests passed:
+- `AiOptionsValidationTests` — 3 tests
+- `EndpointValidationTests` — 5 tests
+- `ExtractStructuredJsonTests` — 6 tests
+- `SentryStartupTests` — 2 tests
+- `UserMessageBuilderTests` — 3 tests
 
 ## TypeScript
 - Status: ✅ Zero errors
-- Errors: None
 
 ## New Tests Written
+- **`frontend/src/utils/__tests__/splitIntoBlocks.test.ts`** (6 tests):
+  1. Splits multiple severity blocks (CRITICAL, WARNING, INFO)
+  2. Returns null severity for non-finding content
+  3. Handles mixed content (non-finding followed by findings)
+  4. Handles empty string
+  5. Preserves block text content
+  6. Does not split on partial/incomplete severity headers
 
-The build agent created/modified the following test files for the "Search within results" feature:
+- **`frontend/src/components/features/__tests__/ResultPanel.test.tsx`** (6 new tests added to existing file):
+  1. Renders copy button on severity finding block
+  2. Does not render copy button on non-severity block
+  3. Clicking copy button copies the finding block text
+  4. Shows checkmark icon after copy (visual feedback)
+  5. Hides copy button when severity is filtered out
+  6. Renders copy buttons during streaming (coexists with streaming cursor)
 
-### `frontend/src/utils/__tests__/highlightText.test.ts`
-- 7 unit tests covering:
-  1. Empty query returns text unchanged
-  2. Basic matching wraps text in `<mark>` tags
-  3. Case-insensitive matching
-  4. Multiple occurrences all highlighted
-  5. Regex special character escaping (prevents ReDoS)
-  6. Empty text returns empty string
-  7. Unmatched query returns text unchanged
-
-### `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-- 8 new test cases added (total now 24 tests):
-  1. Search input renders when content is present
-  2. Search input does not render when content is empty
-  3. Highlights matching text in rendered output (async, uses `waitFor`)
-  4. Highlight is case-insensitive (async)
-  5. Clear button removes highlighting
-  6. Search works together with severity filter (async)
-  7. Empty search query shows no highlights
-  8. Unmatched search term renders normally
-
-## Verification Summary
-
-| Check | Result |
-|-------|--------|
-| `npx tsc --noEmit` | ✅ Zero errors |
-| `npx vitest run` | ✅ 220 passed (16 files) |
-| `dotnet test` | ✅ 21 passed (5 files) |
+## Verification Complete
+All test suites pass. The "Copy individual finding" feature is fully verified with:
+- TypeScript compilation: zero errors
+- Frontend unit tests: 232 passed (17 files)
+- Backend integration tests: 21 passed
+- Copy feature-specific tests: 12 new tests all passing

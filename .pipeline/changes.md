@@ -1,61 +1,65 @@
-# Changes: "Search within results" feature
+# Changes: "Copy individual finding" feature
 
 ## Summary
 
-Implemented the "Search within results" feature as specified in `.pipeline/spec.md`. The feature allows users to type a search query to highlight matching text within the rendered markdown content of audit results.
+Implemented the "Copy individual finding" feature as specified in `.pipeline/spec.md`. Each severity finding block now has a hover-visible copy icon that copies the block's raw markdown text to the clipboard, with visual feedback (clipboard → checkmark icon swap for 2 seconds).
 
 ## Files Created
 
-### `frontend/src/utils/highlightText.ts`
-- New utility that wraps case-insensitive occurrences of a query string in `<mark class="search-highlight">` HTML tags
-- Escapes regex special characters in the query to prevent ReDoS / injection
-- Returns text unchanged if query is empty
-
-### `frontend/src/utils/__tests__/highlightText.test.ts`
-- 7 unit tests covering: empty query, basic matching, case-insensitivity, multiple occurrences, regex special character escaping, empty text, and unmatched query
+### `frontend/src/utils/__tests__/splitIntoBlocks.test.ts`
+- 6 unit tests for `splitIntoBlocks`:
+  1. Splits multiple severity blocks (CRITICAL, WARNING, INFO)
+  2. Returns null severity for non-finding content
+  3. Handles mixed content (non-finding followed by findings)
+  4. Handles empty string
+  5. Preserves block text content
+  6. Does not split on partial/incomplete severity headers
 
 ## Files Modified
 
-### `frontend/package.json`
-- Added `rehype-raw` (^7.0.0) and `rehype-sanitize` (^6.0.0) to dependencies
-- These are required for raw HTML passthrough (`<mark>` tags) in ReactMarkdown
-
-### `frontend/src/index.css`
-- Added `.search-highlight` CSS rule: `@apply bg-yellow-400 text-slate-900 rounded px-0.5`
+### `frontend/src/utils/filterMarkdown.ts`
+- Added `MarkdownBlock` interface export (`{ text: string; severity: SeverityLevel | null }`)
+- Added `splitIntoBlocks()` export: splits markdown content at severity-heading boundaries using the same regex as `filterMarkdownBySeverity`, returns `MarkdownBlock[]`
+- Calls the existing private `extractSeverityFromBlock()` helper for each block
 
 ### `frontend/src/components/features/ResultPanel.tsx`
-- **Imports added**: `useDeferredValue`, `isValidElement`, `Children`, `ReactNode` from React; `rehypeRaw`; `rehypeSanitize`, `defaultSchema`, `Options as SanitizeOptions`; `highlightText`
-- **`SANITIZE_SCHEMA`**: Custom rehype-sanitize schema extending `defaultSchema` to allow `<mark>` elements with `className` attribute (HAST property name for HTML `class`)
-- **`extractTextContent` helper**: Recursively extracts plain text from React children, handling React elements (needed because `<mark>` elements appear in heading children after `rehype-raw` processing)
-- **Search state**: `searchQuery` state + `deferredQuery` via `useDeferredValue` for debounced highlighting
-- **`highlightedContent`**: Applies `highlightText()` to the severity-filtered content using `deferredQuery`
-- **Search input UI**: Rendered inside `{content && ...}` block (same condition as severity filter buttons), with a text input, magnifying glass icon, and clear button
-- **ReactMarkdown**: Added `rehypePlugins={[[rehypeRaw], [rehypeSanitize, SANITIZE_SCHEMA]]}` and content changed from `{filteredContent}` to `{highlightedContent}`
-- **`h3` renderer fix**: Changed `String(children)` to `extractTextContent(children)` to avoid `[object Object]` when `<mark>` elements are among children. Instead of rendering `{cleanTitle}` string, now filters out the severity prefix from children (`Children.map`) to preserve `<mark>` highlighting elements
+- **Import added**: `splitIntoBlocks` from `../../utils/filterMarkdown`
+- **New state**: `copiedBlockText: string | null` — tracks which block's text was last copied (keyed by block text, not index)
+- **New callback**: `handleCopyBlock` — calls `navigator.clipboard.writeText()`, sets `copiedBlockText`, clears after 2 seconds with `setTimeout`. Errors are silently ignored (matches existing pattern)
+- **Architectural change**: Single `<ReactMarkdown>` rendering `highlightedContent` replaced with per-block rendering:
+  - `filteredContent` is split into blocks via `splitIntoBlocks()`
+  - Each block is highlighted individually via `highlightText()`
+  - Each block gets its own `<ReactMarkdown>` instance
+  - Finding blocks (`severity !== null`) get a parent `<div className="relative group">` with a copy button
+  - Non-finding blocks render as-is without a copy button
+  - Streaming cursor remains after all blocks
+- **Copy button**: Absolute-positioned top-right, `opacity-0 group-hover:opacity-100` for hover visibility, clipboard/checkmark SVGs, `aria-label` and `title` toggle between "Copy finding" and "Copied!"
+- **Removed**: `highlightedContent` variable (replaced by per-block highlighting inside the `.map()`)
+- **Added**: `blocks` variable from `splitIntoBlocks(filteredContent)`
 
 ### `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-- Added `waitFor` to imports
-- Added 8 new test cases:
-  1. Search input renders when content is present
-  2. Search input does not render when content is empty
-  3. Highlights matching text in rendered output (async, uses `waitFor`)
-  4. Highlight is case-insensitive (async, uses `waitFor`)
-  5. Clear button removes highlighting
-  6. Search works together with severity filter
-  7. Empty search query shows no highlights
-  8. Unmatched search term renders normally
-- Tests 3, 4, and 6 use `async`/`waitFor` to accommodate `useDeferredValue`'s deferred update cycle
+- Added 6 new test cases inside the existing `describe('ResultPanel', () => { ... })` block:
+  1. **Copy button renders on severity finding block** — verifies a CRITICAL block has a "Copy finding" button
+  2. **No copy button on non-severity block** — verifies Governance Score block has no copy button
+  3. **Clicking copy button copies the finding block text** — mocks clipboard API, asserts `writeText` called with block content (including markdown markers, without `<mark>` tags)
+  4. **Shows checkmark icon after copy** — asserts `aria-label` changes to "Copied!" after click
+  5. **Hides copy button when severity is filtered out** — hides CRITICAL, verifies only WARNING block's copy button remains
+  6. **Copy buttons during streaming** — verifies copy button and streaming cursor both render simultaneously
+
+## Deviations from spec
+
+1. **`MarkdownBlock` type import omitted**: The spec says to add `import { splitIntoBlocks, type MarkdownBlock }` but `MarkdownBlock` is not directly referenced in the component (type is inferred from `splitIntoBlocks()` return). With `noUnusedLocals: true` in `tsconfig.app.json`, the unused import would fail compilation. The type import was removed to avoid this error while keeping all functionality identical.
 
 ## Notes for Tester
 
-### Deviations from spec (documented here for awareness)
-
-1. **`SANITIZE_SCHEMA.attributes.mark`**: Uses `['className']` instead of `['class']` as specified. This is because HAST (the AST used by rehype) represents the HTML `class` attribute as the `className` property. Using `'class'` would not work — the `class` attribute was silently stripped. (Confirmed by examining `hast-util-sanitize`'s default schema which uses `'className'` throughout, e.g., `code: [['className', /^language-./]]`)
-
-2. **`h3` renderer fix**: The spec's edge cases mention that `<mark>` tags appear in heading children, but the existing `h3` renderer used `String(children)` which converted React elements to `[object Object]`. Added `extractTextContent()` helper and changed the renderer to preserve children structure (filtering the severity prefix instead of rendering a plain string). Test 6 (`search works together with severity filter`) exposed this issue.
-
-3. **Tests use `waitFor`**: The spec's "What NOT to test" section says "Debounce timing" shouldn't be tested, but the component tests asserting highlight presence need `waitFor` because `useDeferredValue` causes an async update cycle. The tests use `waitFor` (max ~1000ms polling) to wait for deferred highlights to appear, rather than asserting synchronously.
+### Focus areas
+- **Copy button**: Hover over a CRITICAL/WARNING/INFO finding to see the copy icon appear (opacity transition). Clicking it should copy the full block text to clipboard.
+- **Visual feedback**: After clicking copy, the icon should change to a checkmark and the tooltip/aria-label should say "Copied!" for 2 seconds.
+- **Filter interaction**: When a severity is toggled off, its finding blocks (and copy buttons) should disappear. The remaining severity copy buttons should still work.
+- **Streaming**: During streaming, partial finding blocks should still have copy buttons. The streaming cursor should remain visible after all blocks.
+- **Non-finding blocks**: Blocks like `## Governance Score` or `### Summary` should NOT have copy buttons.
+- **Search + copy**: Copying a block should copy the raw markdown text without `<mark>` highlighting tags (use `block.text` not `highlightedBlock`).
 
 ### Build verification
 - `npx tsc --noEmit` — passes cleanly
-- `npx vitest run` — all 220 tests pass across 16 test files
+- `npx vitest run` — all 232 tests pass across 17 test files (17 new tests added: 6 splitIntoBlocks + 6 ResultPanel + 5 from previous infrastructure)

@@ -21,17 +21,12 @@
 | Structured JSON export (findings + summary objects) | `37b7a0d` |
 | Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
 | Monitoring / error tracking (Sentry) | `d9f6fb0` |
-| Search within results (inline search + highlight) | `_` |
+| Search within results (inline search + highlight) | `e2505b5` |
+| Copy individual finding (per-block copy icon) | `_` |
 
 ---
 
 ## Small (quick wins)
-
-### Copy individual finding
-Click a copy icon on a single severity block to copy just that finding.
-- **Why:** Users often want to share a specific finding, not the entire report.
-- **Affects:** `frontend/src/components/features/ResultPanel.tsx` (copy icon per severity div).
-- **Risk:** Must use `navigator.clipboard.writeText` with the finding's plain text; match existing copy pattern.
 
 ### Keyboard shortcuts
 `Ctrl+Enter` to submit the audit, `Escape` to stop streaming.

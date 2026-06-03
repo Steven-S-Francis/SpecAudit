@@ -10,6 +10,7 @@ permission:
     "git *": allow
   edit:
     "*": deny
+    ".pipeline/review.md": allow
   write:
     "*": deny
     ".pipeline/review.md": allow

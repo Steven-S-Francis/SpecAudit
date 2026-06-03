@@ -1,510 +1,420 @@
-# Search within results
+# Copy individual finding
 
 ## OPEN QUESTIONS
 
-1. **Minimum query length**: Should single-character searches be allowed, or require ≥2 characters? Searching for a single letter like "e" on a large report could highlight thousands of matches and degrade performance. **Recommendation**: No minimum — empty string disables highlighting, any non-empty query triggers it. The debounce handles the performance case. If rendering is still too slow, we can add a minimum later.
+1. **Copy icon visibility**: Should the copy button be always visible on each severity block, or only appear on hover? Hover-only (`group-hover:opacity-100`) keeps the UI cleaner for dense reports. **Recommendation**: hover-only, matching common patterns like GitHub code-block copy buttons.
 
-2. **Highlight in code blocks**: Should matches inside `<code>` elements (both inline and block) be highlighted? Highlighting inside block code could visually clutter the output since code often contains special characters like `/`, `.`, or `-` that users might search for. **Recommendation**: Highlight everywhere for now. The `<mark>` styling is subtle (yellow background, dark text) and won't obscure content.
+2. **Copy feedback style**: The existing full-copy button in `App.tsx` uses text change ("Copy" → "Copied!"). For the per-block icon, **recommendation**: change the icon from clipboard to checkmark for 2 seconds, with `aria-label` changing to "Copied!" to support accessibility.
 
-3. **Case sensitivity**: Should the search be case-sensitive or case-insensitive? **The spec assumes case-insensitive** (matching the user's expectation for finding text in a document). If you want case-sensitive, change the `RegExp` flag from `'gi'` to `'g'`.
+3. **Non-finding blocks**: Should `### Summary` or `## Governance Score` blocks get copy icons? The feature request says "severity block", implying only `### [CRITICAL|WARNING|INFO]` blocks. **Recommendation**: Only finding blocks get copy icons; non-finding blocks render as-is.
+
+4. **Block identity during streaming**: Using block text as the "copied" identifier (instead of array index) prevents feedback drift when new blocks stream in. **Recommendation**: Use `copiedBlockText: string | null` state keyed by the block's raw text.
 
 ---
 
 ## Architecture Overview
 
-The search feature lives entirely within the existing `ResultPanel` component. No new components, no backend changes, no markdown pipeline changes.
+The feature lives entirely within `ResultPanel.tsx` with a small addition to `filterMarkdown.ts`. No new components, no backend changes, no new dependencies.
 
 **Data flow:**
 
 ```
-raw markdown content
-  → filterMarkdownBySeverity()  (existing — removes hidden severity blocks)
-    → severity-filtered markdown string
-      → highlightTextInMarkdown()  (NEW — wraps matches with <mark> tags)
-        → markdown with injected <mark> HTML
-          → ReactMarkdown with rehype-raw + rehype-sanitize
-            → rendered DOM with highlighted matches
+raw markdown content (from App.tsx)
+  → filterMarkdownBySeverity()          (existing — removes hidden severity blocks)
+    → splitIntoBlocks()                 (NEW — splits filtered content by severity headings)
+      → blocks: [{ text, severity }]
+        → per-block: highlightText()    (existing — wraps search matches in <mark>)
+          → per-block: <ReactMarkdown>  (one instance per block)
+            → finding blocks get an extra wrapper div + copy icon button
+              → onClick → navigator.clipboard.writeText(block.text)
 ```
 
-**Why inject `<mark>` HTML tags into the markdown string instead of modifying ReactMarkdown renderers?**
-- Simpler: only one new utility function + two remark plugin additions, vs. modifying every custom renderer
-- Works for ALL markdown elements, not just the ones with custom overrides
-- The `<mark>` HTML tag passes through `rehype-raw` and renders as a native `<mark>` element
+**Why split into per-block ReactMarkdown instances instead of keeping a single ReactMarkdown?**
 
-**Why use `rehype-raw`?**
-- `react-markdown` v10 strips raw HTML by default for security. `rehype-raw` enables HTML passthrough.
-- `rehype-sanitize` ensures only safe HTML tags pass through (we configure it to allow `<mark>`).
-- Without this, `<mark>` tags in the markdown string would be rendered as literal text.
+- The `h3` custom renderer only has access to the heading's own children. It cannot know the full block text (heading + body paragraphs).
+- By splitting blocks in the component, each finding block becomes a self-contained unit that can carry its own copy button with the full block's plain text readily available.
+- Each block's text is also available *unhighlighted* for the copy action, so search `<mark>` tags never leak into clipboard content.
 
-**Debounce approach:**
-- Use `useDeferredValue` (React 19 built-in) to defer search highlighting re-renders
-- The search input state updates immediately (responsive typing)
-- The `deferredQuery` value lags behind, so markdown re-processing (splitting + highlighting + ReactMarkdown render) happens at lower priority
-- No explicit timeout needed — React schedules the deferred work during idle periods
+---
 
 ## Files to Create or Modify
 
 | Action | Path | Description |
 |--------|------|-------------|
-| CREATE | `frontend/src/utils/highlightText.ts` | Utility to inject `<mark>` tags into markdown text |
-| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Add search input, deferred query state, wire up highlighting |
-| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Add `rehype-raw` + `rehype-sanitize` plugins to ReactMarkdown |
-| MODIFY | `frontend/package.json` | Add `rehype-raw` and `rehype-sanitize` dependencies |
-| MODIFY | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` | Add search + highlight test cases |
+| MODIFY | `frontend/src/utils/filterMarkdown.ts` | Export `splitIntoBlocks` + `MarkdownBlock` type |
+| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Split blocks, render per-block ReactMarkdown, add copy icon + handler |
+| MODIFY | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` | Add 5+ new test cases for individual copy |
+| CREATE | `frontend/src/utils/__tests__/splitIntoBlocks.test.ts` | Unit tests for `splitIntoBlocks` |
 
 ---
 
-## 1. New file: `frontend/src/utils/highlightText.ts`
+## 1. Modify `frontend/src/utils/filterMarkdown.ts`
 
-### Purpose
+### Add exports
 
-Injects `<mark>` HTML tags around case-insensitive matches of `query` in plain text. Operates on the **raw markdown string** before it enters ReactMarkdown.
-
-### Signature
+After `filterMarkdownBySeverity`, add:
 
 ```ts
+export interface MarkdownBlock {
+  text: string;
+  severity: SeverityLevel | null;
+}
+
 /**
- * Wraps all case-insensitive occurrences of `query` in `<mark>` tags.
- * Returns the original string unchanged if query is empty.
- * Escapes special regex characters in query to prevent ReDoS.
+ * Splits markdown content into blocks at severity-heading boundaries.
+ * Each block is either a finding (has a severity header) or non-finding content.
+ * Uses the same splitter regex as filterMarkdownBySeverity.
  */
-export function highlightText(text: string, query: string): string;
-```
+export function splitIntoBlocks(content: string): MarkdownBlock[] {
+  if (!content) return [{ text: '', severity: null }];
 
-### Implementation
-
-```ts
-/**
- * Wraps all case-insensitive occurrences of `query` in `<mark>` tags.
- * Returns the original string unchanged if query is empty.
- * Escapes special regex characters in query to prevent ReDoS / injection.
- */
-export function highlightText(text: string, query: string): string {
-  if (!query || !text) return text;
-
-  // Escape special regex characters
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  // Split and rejoin with <mark> tags — avoids re-entrant matching
-  return text.replace(
-    new RegExp(escaped, 'gi'),
-    (match) => `<mark class="search-highlight">${match}</mark>`,
-  );
+  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
+  const blocks = content.split(blockSplitter);
+  return blocks.map((block) => ({
+    text: block,
+    severity: extractSeverityFromBlock(block),
+  }));
 }
 ```
 
-**Edge cases handled:**
-- Empty query → returns text unchanged (no-op)
-- Empty text → returns empty string
-- Query not found → text unchanged
-- Query with regex special chars (`(`, `)`, `*`, `+`, etc.) → escaped before building RegExp
-- Overlapping matches → `String.replace` handles non-overlapping matches; overlapping (e.g., "aaa" searching for "aa") is rare and `replace` only replaces the first match in each overlap group, which is acceptable
-- Matches spanning markdown syntax characters (e.g., `###`) → `<mark>` is injected around the match; since markdown headings are defined by leading `###`, the `###` is still at the start of the line, so markdown parsing is unaffected
+`extractSeverityFromBlock` is already a module-private function in the same file — `splitIntoBlocks` can call it directly.
+
+### Edge cases handled
+
+- Empty string → returns a single block with `{ text: '', severity: null }`
+- Content with no severity headings → single block, `severity: null`
+- Malformed/incomplete severity headers (e.g. `### [CRITI`) → `severity: null`, text passes through
 
 ---
 
 ## 2. Modify `frontend/src/components/features/ResultPanel.tsx`
 
-### 2.1 Add imports
+### 2.1 Import additions
 
-Add these imports at the top:
-
-```ts
-import { useDeferredValue } from 'react';
-import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { type Options as SanitizeOptions } from 'rehype-sanitize';
-import { highlightText } from '../../utils/highlightText';
-```
-
-### 2.2 Allow `<mark>` in rehype-sanitize
-
-Define a custom sanitize schema that permits `<mark>` elements:
+At the top of the file, add to existing imports:
 
 ```ts
-const SANITIZE_SCHEMA: SanitizeOptions = {
-  ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],
-  attributes: {
-    ...defaultSchema.attributes,
-    mark: ['class'],
-  },
-};
+import { splitIntoBlocks, type MarkdownBlock } from '../../utils/filterMarkdown';
 ```
 
-(The exact import of `defaultSchema` needs verification — it may be `defaultSchema` or a named export from `rehype-sanitize`. The Coder should check the actual export.)
+### 2.2 New state and callback
 
-### 2.3 Add search state and deferred query
-
-Inside the `ResultPanel` function, after existing state:
+Inside the `ResultPanel` function, after existing state declarations:
 
 ```ts
-const [searchQuery, setSearchQuery] = useState('');
-const deferredQuery = useDeferredValue(searchQuery);
+const [copiedBlockText, setCopiedBlockText] = useState<string | null>(null);
+
+const handleCopyBlock = useCallback(async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    setCopiedBlockText(text);
+    setTimeout(() => setCopiedBlockText(null), 2000);
+  } catch {
+    // Clipboard API unavailable — silently ignore (matches existing pattern)
+  }
+}, []);
 ```
 
-### 2.4 Add search input UI
+### 2.3 Replace the markdown rendering section
 
-Add the search input between the `{content && ...}` severity filter group and the `<div className="font-mono ...">` markdown area.
+Remove the existing `highlightedContent` variable assignment and the single `<ReactMarkdown>` block. Replace them with:
 
-Place it after the severity filter buttons (line 99) and before the markdown content div (line 101):
+```ts
+const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
+const blocks = splitIntoBlocks(filteredContent);
+```
+
+Then replace the entire `<div className="font-mono text-sm text-slate-200 light:text-slate-800">` block with:
 
 ```tsx
-{/* Search input */}
-<div className="relative mb-3">
-  <input
-    type="text"
-    value={searchQuery}
-    onChange={(e) => setSearchQuery(e.target.value)}
-    placeholder="Search results…"
-    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 pl-8 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
-    aria-label="Search within results"
-  />
-  {/* Search icon (magnifying glass) */}
-  <svg
-    className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none"
-    xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
-    fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-  >
-    <circle cx="11" cy="11" r="8" />
-    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-  </svg>
-  {/* Clear button — only visible when query is non-empty */}
-  {searchQuery && (
-    <button
-      onClick={() => setSearchQuery('')}
-      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 light:hover:text-slate-600"
-      aria-label="Clear search"
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
-        fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      >
-        <line x1="18" y1="6" x2="6" y2="18" />
-        <line x1="6" y1="6" x2="18" y2="18" />
-      </svg>
-    </button>
+<div className="font-mono text-sm text-slate-200 light:text-slate-800">
+  {blocks.map((block, index) => {
+    const highlightedBlock = highlightText(block.text, deferredQuery);
+    const isFinding = block.severity !== null;
+
+    return (
+      <div key={index} className={isFinding ? 'relative group' : ''}>
+        {isFinding && (
+          <button
+            onClick={() => handleCopyBlock(block.text)}
+            className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 light:bg-slate-200 light:hover:bg-slate-300 light:border-slate-300 text-slate-400 hover:text-slate-200 light:text-slate-500 light:hover:text-slate-700"
+            aria-label={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
+            title={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
+          >
+            {copiedBlockText === block.text ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            )}
+          </button>
+        )}
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[
+            [rehypeRaw],
+            [rehypeSanitize, SANITIZE_SCHEMA],
+          ]}
+          components={{
+            h3({ children }: HeadingProps) {
+              const text = extractTextContent(children);
+              const severity = parseSeverity(text);
+              if (severity) {
+                const styles = SEVERITY_STYLES[severity];
+                const prefix = `[${severity}]`;
+                const contentChildren = Children.map(children, (child) => {
+                  if (typeof child === 'string' && child.startsWith(prefix)) {
+                    const rest = child.slice(prefix.length).trimStart();
+                    return rest || undefined;
+                  }
+                  return child;
+                });
+                return (
+                  <div className={styles.wrapper}>
+                    <span className={styles.badge}>{severity}</span>
+                    <span className={`font-semibold ${styles.label}`}>{contentChildren}</span>
+                  </div>
+                );
+              }
+              return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
+            },
+            code({ children, className }: CodeProps) {
+              const isBlock = className?.includes('language-');
+              return isBlock
+                ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
+                : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
+            },
+            hr(_props: HrProps) {
+              return <hr className="border-slate-700 my-4 light:border-slate-300" />;
+            },
+            strong({ children }: StrongProps) {
+              return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
+            },
+            p({ children }: ParaProps) {
+              return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
+            },
+          }}
+        >
+          {highlightedBlock}
+        </ReactMarkdown>
+      </div>
+    );
+  })}
+  {isStreaming && (
+    <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
   )}
 </div>
 ```
 
-### 2.5 Apply highlighting to content
+### 2.4 Remove obsolete variable
 
-Replace the `filteredContent` variable assignment (line 62) with:
-
+Remove the `highlightedContent` variable declaration:
 ```ts
-const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
 const highlightedContent = highlightText(filteredContent, deferredQuery);
 ```
-
-### 2.6 Pass highlighted content and add rehype plugins
-
-Replace the ReactMarkdown invocation (lines 102–143) with:
-
-```tsx
-<ReactMarkdown
-  remarkPlugins={[remarkGfm]}
-  rehypePlugins={[
-    [rehypeRaw],
-    [rehypeSanitize, SANITIZE_SCHEMA],
-  ]}
-  components={{ /* … unchanged … */ }}
->
-  {highlightedContent}
-</ReactMarkdown>
-```
-
-**Note on component ordering:** If the rehype plugin declaration format differs from the above (e.g., flat array vs. nested), the Coder should refer to the `react-markdown` v10 documentation for the exact plugin array shape.
-
-### 2.7 Search input visibility
-
-The search input should only render when `content` is present (same condition as the severity filter buttons). Wrap the search input block in the same `{content && (...)}` condition that wraps the severity buttons.
-
-### 2.8 Full renderer changes summary
-
-The modified component flow (inside the `!showSkeleton` branch):
-
-```
-{content && (
-  <>
-    <Severity filter buttons />       (existing, unchanged)
-    <Search input />                  (NEW)
-  </>
-)}
-<div className="font-mono text-sm …">
-  <ReactMarkdown
-    remarkPlugins={[remarkGfm]}
-    rehypePlugins={[[rehypeRaw], [rehypeSanitize, SANITIZE_SCHEMA]]}
-    components={{ /* same custom renderers */ }}
-  >
-    {highlightedContent}
-  </ReactMarkdown>
-  {isStreaming && <Blinking cursor />}  (existing, unchanged)
-</div>
-{content && <ScrollButton … />}        (existing, unchanged)
-```
+This is replaced by per-block highlighting inside the map.
 
 ---
 
-## 3. Modify `frontend/package.json`
+## 3. Modify `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
 
-Add these to `dependencies`:
+Add these test cases inside the existing `describe('ResultPanel', () => { … })` block, after the search tests.
 
-```json
-"rehype-raw": "^7.0.0",
-"rehype-sanitize": "^6.0.0"
-```
-
-These versions are compatible with `react-markdown ^10.1.0`. Verify exact latest versions with `npm info rehype-raw versions --json` and `npm info rehype-sanitize versions --json`.
-
----
-
-## 4. Add test file entries to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-
-Add the following test cases inside the existing `describe('ResultPanel', () => { … })` block.
-
-### 4.1 Search input renders when content is present
+### 3.1 Copy button renders on severity blocks
 
 ```ts
-it('renders search input when content is present', () => {
-  render(<ResultPanel content="# Test" isStreaming={false} />);
-  expect(screen.getByPlaceholderText('Search results…')).toBeInTheDocument();
+it('renders copy button on severity finding block', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n\nDetails about the issue.';
+  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+  const markdownArea = container.querySelector<HTMLElement>('.font-mono');
+  const copyBtn = within(markdownArea!).getByLabelText('Copy finding');
+  expect(copyBtn).toBeInTheDocument();
 });
 
-it('does not render search input when content is empty', () => {
-  render(<ResultPanel content="" isStreaming={false} />);
-  expect(screen.queryByPlaceholderText('Search results…')).not.toBeInTheDocument();
-});
-```
-
-### 4.2 Search highlighting in rendered output
-
-```ts
-it('highlights matching text in rendered output', () => {
+it('does not render copy button on non-severity block', () => {
   const markdown = '## Governance Score\nScore: 8.5';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  const input = screen.getByPlaceholderText('Search results…');
-  fireEvent.change(input, { target: { value: 'Governance' } });
-  // The <mark> element should contain 'Governance'
-  const highlights = container.querySelectorAll('mark.search-highlight');
-  expect(highlights.length).toBeGreaterThanOrEqual(1);
-  expect(highlights[0]).toHaveTextContent('Governance');
-  expect(highlights[0].className).toContain('search-highlight');
+  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+  const markdownArea = container.querySelector<HTMLElement>('.font-mono');
+  expect(within(markdownArea!).queryByLabelText('Copy finding')).not.toBeInTheDocument();
 });
+```
 
-it('highlight is case-insensitive', () => {
+### 3.2 Clicking copy button copies block text
+
+```ts
+it('clicking copy button copies the finding block text', async () => {
+  // Mock clipboard API
+  const writeText = vi.fn(() => Promise.resolve());
+  Object.assign(navigator, { clipboard: { writeText } });
+
+  const markdown = '### [CRITICAL] Missing Auth\n\n**Issue:** No authentication.';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const copyBtn = screen.getByLabelText('Copy finding');
+  fireEvent.click(copyBtn);
+  await waitFor(() => {
+    expect(writeText).toHaveBeenCalledTimes(1);
+    // The copied text should be the block without <mark> tags
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('### [CRITICAL] Missing Auth'));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('**Issue:** No authentication.'));
+  });
+});
+```
+
+### 3.3 Copy visual feedback
+
+```ts
+it('shows checkmark icon after copy', async () => {
+  Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.resolve()) } });
+
   const markdown = '### [CRITICAL] Missing Auth';
   render(<ResultPanel content={markdown} isStreaming={false} />);
-  const input = screen.getByPlaceholderText('Search results…');
-  fireEvent.change(input, { target: { value: 'missing' } });
-  const highlights = container.querySelectorAll('mark.search-highlight');
-  expect(highlights.length).toBeGreaterThanOrEqual(1);
-  expect(highlights[0]).toHaveTextContent('Missing');
+  const copyBtn = screen.getByLabelText('Copy finding');
+  fireEvent.click(copyBtn);
+  await waitFor(() => {
+    // After copy, label changes to "Copied!"
+    expect(screen.getByLabelText('Copied!')).toBeInTheDocument();
+  });
 });
 ```
 
-### 4.3 Clear button resets highlights
+### 3.4 No copy button when severity is filtered out
 
 ```ts
-it('clear button removes highlighting', () => {
-  const markdown = '## Governance Score\nScore: 8.5';
+it('hides copy button when severity is filtered out', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n\n---\n### [WARNING] Missing 404';
   render(<ResultPanel content={markdown} isStreaming={false} />);
-  const input = screen.getByPlaceholderText('Search results…');
-  fireEvent.change(input, { target: { value: 'Governance' } });
-  expect(screen.getByLabelText('Clear search')).toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText('Clear search'));
-  expect(input).toHaveValue('');
-  const highlights = container.querySelectorAll('mark.search-highlight');
-  expect(highlights.length).toBe(0);
-});
-```
-
-### 4.4 Search + severity filter interaction
-
-```ts
-it('search works together with severity filter', () => {
-  const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  // Hide CRITICAL
+  // Click CRITICAL toggle to hide CRITICAL findings
   fireEvent.click(screen.getByRole('button', { name: 'CRITICAL' }));
-  // Search for 'Missing'
-  const input = screen.getByPlaceholderText('Search results…');
-  fireEvent.change(input, { target: { value: 'Missing' } });
-  // Only WARNING finding should be visible and highlighted
-  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+  // The CRITICAL finding's copy button should not exist
+  // Only the WARNING block should have a copy button
+  const copyButtons = screen.getAllByLabelText('Copy finding');
+  expect(copyButtons).toHaveLength(1);
+  // The remaining copy button should be on the WARNING block
   expect(screen.getByText('Missing 404')).toBeInTheDocument();
 });
 ```
 
-### 4.5 Empty search shows no highlights
+### 3.5 Copy works during streaming
 
 ```ts
-it('empty search query shows no highlights', () => {
-  const markdown = '## Governance Score\nScore: 8.5';
-  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-  const highlights = container.querySelectorAll('mark.search-highlight');
-  expect(highlights.length).toBe(0);
-});
-```
-
-### 4.6 Search term not found renders normally
-
-```ts
-it('unmatched search term renders normally', () => {
-  const markdown = '## Governance Score\nScore: 8.5';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  const input = screen.getByPlaceholderText('Search results…');
-  fireEvent.change(input, { target: { value: 'ZZZNOTFOUND' } });
-  const highlights = container.querySelectorAll('mark.search-highlight');
-  expect(highlights.length).toBe(0);
-  expect(screen.getByText('Governance Score')).toBeInTheDocument();
+it('renders copy buttons during streaming', () => {
+  const markdown = '### [WARNING] Incomplete spec';
+  render(<ResultPanel content={markdown} isStreaming={true} />);
+  expect(screen.getByLabelText('Copy finding')).toBeInTheDocument();
+  // Streaming cursor should still be present
+  expect(document.querySelector('.animate-pulse')).toBeInTheDocument();
 });
 ```
 
 ---
 
-## 5. CSS for `<mark>` highlights
-
-Add to `frontend/src/index.css` or a CSS module. Since Tailwind v4 is used with `@import "tailwindcss"`, add a custom utility. The `<mark>` tag uses the `search-highlight` class.
-
-Add this to `frontend/src/index.css`:
-
-```css
-mark.search-highlight {
-  @apply bg-yellow-400 text-slate-900 rounded px-0.5;
-}
-```
-
-**Light mode compatibility:** The yellow background is equally visible in both dark and light mode. The `text-slate-900` ensures contrast against the yellow background.
-
----
-
-## Edge Cases
-
-### 5.1 Empty search query
-- `highlightText` returns text unchanged.
-- No `<mark>` tags injected.
-- No performance impact.
-
-### 5.2 Search term not found
-- `String.replace` returns the original string unchanged.
-- No `<mark>` tags injected.
-- Content renders normally.
-
-### 5.3 Special regex characters in query
-- `.*+?^${}()|[]\` are all escaped before constructing the RegExp.
-- Searching for `(CRITICAL)` will match the literal string `(CRITICAL)` in the markdown.
-
-### 5.4 Query appears inside markdown formatting (e.g., searching for `CRITICAL`)
-- The match `CRITICAL` appears inside `[CRITICAL]` in the raw markdown heading `### [CRITICAL] Missing Auth`.
-- `highlightText` replaces it with `<mark class="search-highlight">CRITICAL</mark>`, resulting in:
-  `### [<mark class="search-highlight">CRITICAL</mark>] Missing Auth`
-- ReactMarkdown parses this as a heading (`###`) with inline content containing `<mark>`. This works correctly.
-
-### 5.5 Query appears inside severity filter badges
-- The severity filter buttons (CRITICAL / WARNING / INFO) are outside the markdown area and are NOT affected by highlighting.
-- The badge text inside the markdown content (the `<span className={styles.badge}>` in the h3 renderer) IS highlighted because the `<mark>` tag is in the raw markdown before ReactMarkdown renders it.
-
-### 5.6 Streaming content
-- The search input state persists across content updates.
-- `deferredQuery` updates asynchronously, so rapid streaming chunks don't trigger re-highlighting on every chunk.
-- The user can continue typing search terms while content streams in.
-
-### 5.7 Very large reports (>10k lines)
-- `highlightText` uses a single `String.replace` call — O(n) in content length.
-- ReactMarkdown parsing is the bottleneck. `useDeferredValue` ensures this work is deferred.
-- If performance is still poor, the search input could be disabled during streaming (`isStreaming` prop), but this is NOT in scope.
-
-### 5.8 Copy / Export / Download
-- All export functions (`handleCopy`, `handleDownload`, `handleExportPdf`, `handleExportJson`) use the raw `strippedResult` string from `App.tsx` — they NEVER see the highlighted HTML.
-- No search artifacts leak into exports.
-
-### 5.9 Multiple matches in the same line
-- `String.replace` with `g` flag replaces all matches in the string.
-- Overlapping matches (e.g., text `"aaaa"` searching for `"aa"`) result in two non-overlapping `<mark>` tags: `<mark>aa</mark><mark>aa</mark>`. This is acceptable behavior.
-
-### 5.10 Null/undefined content
-- `highlightText` handles empty/falsy text by returning it unchanged.
-- The `{content && ...}` guard ensures the search input is not rendered when content is empty.
-
----
-
-## Testing Strategy
-
-### Unit tests for `highlightText.ts`
-
-Create `frontend/src/utils/__tests__/highlightText.test.ts`:
+## 4. Create `frontend/src/utils/__tests__/splitIntoBlocks.test.ts`
 
 ```ts
 import { describe, it, expect } from 'vitest';
-import { highlightText } from '../highlightText';
+import { splitIntoBlocks } from '../filterMarkdown';
 
-describe('highlightText', () => {
-  it('returns text unchanged for empty query', () => {
-    expect(highlightText('hello world', '')).toBe('hello world');
+const CRITICAL_BLOCK = '### [CRITICAL] Missing Auth\n\nDetails.';
+const WARNING_BLOCK  = '### [WARNING] Missing 404\n\nDetails.';
+const INFO_BLOCK     = '### [INFO] Missing Contact\n\nDetails.';
+const NON_FINDING    = '## Governance Score\nScore: 8.5';
+
+describe('splitIntoBlocks', () => {
+  it('splits multiple severity blocks', () => {
+    const content = [CRITICAL_BLOCK, WARNING_BLOCK, INFO_BLOCK].join('\n---\n');
+    const blocks = splitIntoBlocks(content);
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0].severity).toBe('CRITICAL');
+    expect(blocks[1].severity).toBe('WARNING');
+    expect(blocks[2].severity).toBe('INFO');
   });
 
-  it('wraps matching text in <mark> tags', () => {
-    expect(highlightText('hello world', 'world'))
-      .toBe('hello <mark class="search-highlight">world</mark>');
+  it('returns null severity for non-finding content', () => {
+    const blocks = splitIntoBlocks(NON_FINDING);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].severity).toBeNull();
   });
 
-  it('is case-insensitive', () => {
-    expect(highlightText('Hello World', 'world'))
-      .toBe('Hello <mark class="search-highlight">World</mark>');
+  it('handles mixed content: non-finding followed by findings', () => {
+    const content = [NON_FINDING, CRITICAL_BLOCK, WARNING_BLOCK].join('\n---\n');
+    const blocks = splitIntoBlocks(content);
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0].severity).toBeNull();
+    expect(blocks[1].severity).toBe('CRITICAL');
+    expect(blocks[2].severity).toBe('WARNING');
   });
 
-  it('highlights all occurrences', () => {
-    expect(highlightText('test test test', 'test'))
-      .toBe(
-        '<mark class="search-highlight">test</mark> '
-        + '<mark class="search-highlight">test</mark> '
-        + '<mark class="search-highlight">test</mark>'
-      );
+  it('handles empty string', () => {
+    const blocks = splitIntoBlocks('');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toBe('');
+    expect(blocks[0].severity).toBeNull();
   });
 
-  it('escapes regex special characters', () => {
-    expect(highlightText('cost (total)', '(total)'))
-      .toBe('cost <mark class="search-highlight">(total)</mark>');
+  it('preserves block text content', () => {
+    const blocks = splitIntoBlocks(CRITICAL_BLOCK);
+    expect(blocks[0].text).toBe(CRITICAL_BLOCK);
   });
 
-  it('returns empty string for empty text', () => {
-    expect(highlightText('', 'test')).toBe('');
-  });
-
-  it('returns text unchanged when query not found', () => {
-    expect(highlightText('hello world', 'xyz')).toBe('hello world');
+  it('does not split on partial/incomplete severity headers', () => {
+    const content = '### [CRITI\nSome content\n### [WARNING] Real warning';
+    const blocks = splitIntoBlocks(content);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].severity).toBeNull();  // Not matched
+    expect(blocks[1].severity).toBe('WARNING');
   });
 });
 ```
 
-### Component tests (in `ResultPanel.test.tsx`)
+---
 
-Already listed in Section 4 above. Follow the existing test patterns:
-- Render with `@testing-library/react`
-- Use `fireEvent` for interactions
-- Use `container.querySelectorAll` for checking `<mark>` elements
-- Use `screen.getByText` / `screen.queryByText` for visible content assertions
+## 5. Test considerations
+
+### Which existing tests might break?
+
+The structural change from a single ReactMarkdown to per-block ReactMarkdown instances **does not break any existing tests** because:
+
+- All text content is still in the DOM at the same positions relative to parent elements like `.font-mono`.
+- `screen.getByText()` queries the entire document and still works.
+- `container.querySelectorAll('mark.search-highlight')` still finds `<mark>` elements regardless of DOM nesting.
+- The streaming cursor is still after all blocks.
+- The ScrollButton is still after all blocks.
 
 ### What NOT to test
 
-- **Debounce timing**: `useDeferredValue` is a React 19 primitive — we test behavior, not timing. The component tests verify that highlights appear after changing the search value, which is sufficient.
-- **rehype plugin integration**: This is `react-markdown` internals. Trust that `rehype-raw` + `rehype-sanitize` works as documented.
-- **Performance under load**: Manual testing during review.
+- **Clipboard API failure case**: The existing pattern silently ignores errors. Trust that `navigator.clipboard.writeText` either resolves or throws.
+- **Per-block ReactMarkdown rendering details**: Trust that each block is valid markdown and renders correctly through ReactMarkdown, just as the single-string version did.
+- **CSS hover visibility**: The `opacity-0 group-hover:opacity-100` pattern is a visual concern; tests access the button directly via `getByLabelText`.
 
 ---
 
-## Implementation Order
+## 6. Edge cases
 
-1. `npm install rehype-raw rehype-sanitize` in `frontend/`
-2. Create `frontend/src/utils/highlightText.ts`
-3. Create `frontend/src/utils/__tests__/highlightText.test.ts`
-4. Add `.search-highlight` CSS rule to `frontend/src/index.css`
-5. Modify `frontend/src/components/features/ResultPanel.tsx`:
-   - Add imports
-   - Add `SANITIZE_SCHEMA`
-   - Add search state + deferred query
-   - Add search input UI (conditionally rendered)
-   - Apply `highlightText` to filtered content
-   - Add `rehypePlugins` to ReactMarkdown
-6. Add test cases to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-7. `npx tsc --noEmit && npx vitest run` — ensure all tests pass
-8. Manual smoke test: open the app, run an audit, type in the search input, verify highlights appear
+| Edge case | Handling |
+|-----------|----------|
+| Empty content | `filteredContent` is empty, `splitIntoBlocks('')` returns `[{ text: '', severity: null }]`, one block rendered with no copy button |
+| Only non-finding content | Single block with `severity: null`, no copy button rendered |
+| One finding block | Single block with severity, copy button rendered on that block |
+| Search active when copying | `block.text` is the raw (unhighlighted) text; clipboard gets clean text, no `<mark>` tags |
+| Streaming new blocks | Blocks are recomputed on each render; `copiedBlockText` uses text content (not index) so visual feedback stays on the correct block |
+| Two blocks with identical text | Both show copied feedback simultaneously — acceptable, and vanishingly unlikely for audit findings |
+| Very many blocks (>50) | Each block gets a ReactMarkdown instance; negligible overhead for typical report sizes (usually <50 findings) |
+| Copy during streaming | Button renders immediately; if block text is partial (streaming chunk in middle) the user can copy partial content — same as copy-all behavior |
+
+---
+
+## 7. Implementation Order
+
+1. Add `splitIntoBlocks` export to `frontend/src/utils/filterMarkdown.ts`
+2. Create `frontend/src/utils/__tests__/splitIntoBlocks.test.ts`
+3. Modify `frontend/src/components/features/ResultPanel.tsx`:
+   - Add imports for `splitIntoBlocks`
+   - Add `copiedBlockText` state and `handleCopyBlock` callback
+   - Replace single ReactMarkdown with per-block rendering including copy icon
+4. Add test cases to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+5. Run `npx tsc --noEmit && npx vitest run` — ensure all tests pass (existing + new)
+6. Manual smoke test: run an audit, hover over a finding, click copy icon, verify clipboard content, verify checkmark feedback

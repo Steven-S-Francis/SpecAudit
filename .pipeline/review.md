@@ -1,74 +1,78 @@
-# Review: Search within results
+# Review: Copy individual finding
 
 ## VERDICT: SHIP
 
-## Findings
+## Summary
 
-### Spec Conformance: ✅ PASS
-- All specified files were created/modified correctly:
-  - `frontend/src/utils/highlightText.ts` — created with regex escaping, matches spec signature and implementation exactly
-  - `frontend/src/components/features/ResultPanel.tsx` — search input, deferred query, rehype plugins, h3 renderer fix, SANITIZE_SCHEMA
-  - `frontend/package.json` — rehype-raw ^7.0.0, rehype-sanitize ^6.0.0 added
-  - `frontend/src/index.css` — `.search-highlight` CSS rule added matching spec
-  - `frontend/src/utils/__tests__/highlightText.test.ts` — 7 unit tests covering all edge cases
-  - `frontend/src/components/features/__tests__/ResultPanel.test.tsx` — 8 new tests added
+The "Copy individual finding" feature is fully and correctly implemented. The implementation matches the specification exactly, all 232 frontend tests pass, all 21 backend tests pass, and TypeScript compilation produces zero errors.
 
-### Documented Deviations (acceptable)
-1. **`className` vs `class`** — Schema uses `['className']` (HAST property name) instead of `['class']`. Necessary for `hast-util-sanitize` to work. Correct fix.
-2. **h3 renderer restructured** — Added `extractTextContent()` helper and `Children.map` to preserve `<mark>` elements in headings. Fixes `[object Object]` bug that the spec didn't anticipate.
-3. **Tests use `waitFor`** — Three tests use `async`/`waitFor` because `useDeferredValue` defers highlight updates. Necessary accommodation.
+## Spec Conformance
 
-### Security Review: ✅ PASS (no findings)
-- **Query escaping**: All regex special characters (`.*+?^${}()|[]\`) are escaped before RegExp construction — prevents ReDoS and injection.
-- **rehype-sanitize protection**: Only `<mark>` elements with `className` are allowed in the schema. XSS via query text is prevented because rehype-sanitize runs after rehype-raw and strips disallowed HTML tags.
-- **No information disclosure**: No exception messages forwarded to client.
-- **No new endpoints**: Search is entirely client-side. No auth concerns.
-- **No secrets exposure**: No credentials in source files.
+| Requirement | Status | Notes |
+|-------------|--------|-------|
+| `filterMarkdown.ts` — export `splitIntoBlocks` + `MarkdownBlock` | ✅ | Both exported exactly as specified |
+| `ResultPanel.tsx` — per-block rendering with copy icon | ✅ | Matches spec: split by severity, each finding block gets `relative group` wrapper with hover-visible copy button |
+| `ResultPanel.tsx` — `copiedBlockText` state + `handleCopyBlock` | ✅ | State keyed by block text (not index), 2s timeout, silent error catch |
+| `ResultPanel.tsx` — replace single ReactMarkdown | ✅ | Per-block `ReactMarkdown` instances with individual `highlightText()` calls |
+| `ResultPanel.tsx` — remove `highlightedContent` variable | ✅ | No longer exists |
+| Test: `splitIntoBlocks.test.ts` — 6 tests | ✅ | All 6 test cases match spec exactly |
+| Test: `ResultPanel.test.tsx` — 6 new copy tests | ✅ | All 6 test cases match spec exactly |
+| No `MarkdownBlock` type import in component | ⚠️ Accepted deviation | `type MarkdownBlock` omitted because it's unreferenced in the component; type is inferred from `splitIntoBlocks()` return. Prevents `noUnusedLocals` compilation error. |
 
-### Correctness Review: ✅ PASS (no findings)
-- **Async discipline**: `useDeferredValue` used correctly. No fire-and-forget patterns.
-- **State management**: No race conditions. `searchQuery` and `deferredQuery` properly separated.
-- **Runtime type safety**: No `JSON.parse` casts, no `as unknown as T` patterns.
-- **Error handling**: No empty catch blocks. `extractTextContent` gracefully handles all node types.
-- **Edge case coverage**:
-  - Empty query → no highlighting (tested) ✅
-  - Empty content → search input hidden (tested) ✅
-  - Case-insensitive matching (tested) ✅
-  - Regex special chars escaped (tested) ✅
-  - Clear button removes highlights (tested) ✅
-  - Search + severity filter interaction (tested) ✅
-  - Unmatched query → normal rendering (tested) ✅
-  - All nine edge cases from spec Section 5 are handled ✅
+## Security Review
 
-### Code Quality: ✅ Good
-- No dead code or unused imports
-- No cross-platform issues
-- `useDeferredValue` for debounced re-rendering (no setTimeout-based debounce)
-- Single `String.replace` — O(n) performance, no ReDoS risk
-- CSS uses Tailwind v4 `@apply` correctly
-- `extractTextContent` recursion handles all React node types (string, number, array, element, falsy)
+No security findings. This feature:
+- Does not expose raw exceptions, stack traces, or internals to users (empty `catch` block)
+- Does not introduce new endpoints or routes
+- Does not process user-supplied content (clipboard content is pre-existing markdown)
+- Does not interpolate user strings into HTML, SQL, or shell commands
+- Contains no secrets, API keys, or credentials
 
-### Test Quality: ✅ Strong
-- **`highlightText` unit tests**: 7 tests covering empty query, basic matching, case-insensitivity, multiple occurrences, regex escaping, empty text, unmatched query
-- **`ResultPanel` component tests**: 8 new tests covering visibility, highlighting, case-insensitivity, clear behavior, severity+search interaction, empty query, unmatched term
-- Tests verify DOM behavior (user-visible output), not implementation details
-- Both happy paths and edge cases are covered
+## Correctness Review
 
-### Backend Tests: ✅ Verified
-Both test suites confirmed passing: frontend 220 tests (16 files), backend 21 tests (5 files). Zero failures.
+| Check | Status | Notes |
+|-------|--------|-------|
+| Async discipline | ✅ | `handleCopyBlock` properly uses `async/await` with `try/catch`. No fire-and-forget issues. |
+| State race conditions | ✅ | `copiedBlockText` keyed by block text (not index) prevents feedback drift during streaming. Multiple rapid clicks on the same or different blocks are handled correctly. |
+| Runtime type safety | ✅ | No `JSON.parse()`, no `as unknown as T` casts, no unguarded property access. `block.text` is a string derived from splitting the markdown string. |
+| Error swallowing | ✅ | Empty `catch` is intentional — matches existing pattern in the codebase. Non-critical feature; clipboard API unavailability is acceptable to silence. |
+| Clipboard uses raw text | ✅ | `handleCopyBlock(block.text)` passes the original unhighlighted text, not `highlightedBlock` which contains `<mark>` tags. |
 
-## Required Actions
-None for the search feature. The implementation is complete, spec-conformant, correct, and well-tested.
+## Code Quality (NON-BLOCKING)
 
-## Suggested Commit Message
+- **`onClick` inline arrow function** (ResultPanel.tsx:193): `onClick={() => handleCopyBlock(block.text)}` creates a new function on every render. Acceptable — the button is a simple `<button>` with no expensive children, and `handleCopyBlock` is memoized with `useCallback`.
+- **`key={index}`** (ResultPanel.tsx:190): Using array index as React key. Acceptable — blocks are in a stable sequential order for markdown content.
+- **Test: global `navigator.clipboard` mutation**: Tests mutate the global `navigator.clipboard` object. This is an acceptable pattern for jsdom tests (isolated to the test file), but is worth noting as a minor concern if tests were ever shared across files.
+
+## Edge Cases
+
+| Edge Case | Handling | Status |
+|-----------|----------|--------|
+| Empty content | `splitIntoBlocks('')` → `[{ text: '', severity: null }]`, no copy button | ✅ |
+| Only non-finding content | Single null-severity block, no copy button | ✅ |
+| One finding block | Copy button rendered on that block | ✅ |
+| Search active when copying | Uses `block.text` (raw), no `<mark>` in clipboard | ✅ |
+| Streaming new blocks | `copiedBlockText` uses text (not index) → feedback stays on correct block | ✅ |
+| Two blocks with identical text | Both show copied feedback simultaneously (acceptable) | ✅ |
+| Copy during streaming | Button renders immediately, copies partial content | ✅ |
+| Partial/incomplete severity headers | Not split, `severity: null` | ✅ (tested) |
+
+## Test Verification
+
+All backend tests were run and passed (21/21 xUnit tests). No backend changes were made by this feature, but the pipeline confirms continued backend health.
+
+---
+
+**Suggested commit message:**
 ```
-feat: add search-within-results highlighting for audit output
+feat: add per-finding copy button to severity blocks
 
-- Add highlightText() utility that injects <mark> tags with regex escaping
-- Add search input with deferred query via useDeferredValue (React 19)
-- Add rehype-raw + rehype-sanitize plugins for <mark> HTML passthrough
-- Fix h3 renderer to preserve <mark> elements when stripping severity prefix
-- Add .search-highlight CSS rule (bg-yellow-400, text-slate-900)
-- 15 new tests: 7 highlightText unit tests + 8 ResultPanel component tests
-- 220 frontend + 21 backend tests passing, zero TypeScript errors
+- Export splitIntoBlocks() and MarkdownBlock from filterMarkdown.ts
+- Replace single ReactMarkdown with per-block ReactMarkdown instances
+- Add hover-visible copy icon on severity finding blocks (CRITICAL/WARNING/INFO)
+- Copy raw block text (without search <mark> tags) to clipboard
+- Swap clipboard icon to checkmark with "Copied!" label for 2 seconds
+- Non-finding blocks render as-is without copy buttons
+- 12 new tests: 6 for splitIntoBlocks, 6 for ResultPanel copy feature
+- 232 frontend tests + 21 backend tests passing, zero TS errors
 ```

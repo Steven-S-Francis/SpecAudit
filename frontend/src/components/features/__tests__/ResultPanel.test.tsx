@@ -254,4 +254,72 @@ describe('ResultPanel', () => {
     expect(highlights.length).toBe(0);
     expect(screen.getByText('Governance Score')).toBeInTheDocument();
   });
+
+  // --- Individual copy feature tests ---
+
+  it('renders copy button on severity finding block', () => {
+    const markdown = '### [CRITICAL] Missing Auth\n\nDetails about the issue.';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
+    const copyBtn = within(markdownArea!).getByLabelText('Copy finding');
+    expect(copyBtn).toBeInTheDocument();
+  });
+
+  it('does not render copy button on non-severity block', () => {
+    const markdown = '## Governance Score\nScore: 8.5';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const markdownArea = container.querySelector<HTMLElement>('.font-mono');
+    expect(within(markdownArea!).queryByLabelText('Copy finding')).not.toBeInTheDocument();
+  });
+
+  it('clicking copy button copies the finding block text', async () => {
+    // Mock clipboard API
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    const markdown = '### [CRITICAL] Missing Auth\n\n**Issue:** No authentication.';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const copyBtn = screen.getByLabelText('Copy finding');
+    fireEvent.click(copyBtn);
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+      // The copied text should be the block without <mark> tags
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining('### [CRITICAL] Missing Auth'));
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining('**Issue:** No authentication.'));
+    });
+  });
+
+  it('shows checkmark icon after copy', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.resolve()) } });
+
+    const markdown = '### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const copyBtn = screen.getByLabelText('Copy finding');
+    fireEvent.click(copyBtn);
+    await waitFor(() => {
+      // After copy, label changes to "Copied!"
+      expect(screen.getByLabelText('Copied!')).toBeInTheDocument();
+    });
+  });
+
+  it('hides copy button when severity is filtered out', () => {
+    const markdown = '### [CRITICAL] Missing Auth\n\n---\n### [WARNING] Missing 404';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    // Click CRITICAL toggle to hide CRITICAL findings
+    fireEvent.click(screen.getByRole('button', { name: 'CRITICAL' }));
+    // The CRITICAL finding's copy button should not exist
+    // Only the WARNING block should have a copy button
+    const copyButtons = screen.getAllByLabelText('Copy finding');
+    expect(copyButtons).toHaveLength(1);
+    // The remaining copy button should be on the WARNING block
+    expect(screen.getByText('Missing 404')).toBeInTheDocument();
+  });
+
+  it('renders copy buttons during streaming', () => {
+    const markdown = '### [WARNING] Incomplete spec';
+    render(<ResultPanel content={markdown} isStreaming={true} />);
+    expect(screen.getByLabelText('Copy finding')).toBeInTheDocument();
+    // Streaming cursor should still be present
+    expect(document.querySelector('.animate-pulse')).toBeInTheDocument();
+  });
 });

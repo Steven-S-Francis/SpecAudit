@@ -32,3 +32,24 @@ function extractSeverityFromBlock(block: string): SeverityLevel | null {
   if (/^### \[INFO\]/m.test(block))     return 'INFO';
   return null;
 }
+
+export interface MarkdownBlock {
+  text: string;
+  severity: SeverityLevel | null;
+}
+
+/**
+ * Splits markdown content into blocks at severity-heading boundaries.
+ * Each block is either a finding (has a severity header) or non-finding content.
+ * Uses the same splitter regex as filterMarkdownBySeverity.
+ */
+export function splitIntoBlocks(content: string): MarkdownBlock[] {
+  if (!content) return [{ text: '', severity: null }];
+
+  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
+  const blocks = content.split(blockSplitter);
+  return blocks.map((block) => ({
+    text: block,
+    severity: extractSeverityFromBlock(block),
+  }));
+}
