@@ -47,7 +47,7 @@ public static class AuditEndpoints
             {
                 var message = ex.Message.Contains("429")
                     ? "Rate limit reached. Please wait a moment and try again, or switch to a provider with higher limits."
-                    : ex.Message;
+                    : "An error occurred. Please try again.";
                 var sentinel = JsonSerializer.Serialize($"[SPECAUDIT_ERROR] {message}");
                 await httpContext.Response.WriteAsync($"data: {sentinel}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);

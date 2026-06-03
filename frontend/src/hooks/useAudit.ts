@@ -50,7 +50,7 @@ export function useAudit() {
         setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
         const delay = 1000 * Math.pow(2, retryCount.current - 1);
         await new Promise(resolve => setTimeout(resolve, delay));
-        audit(payload, true);
+        await audit(payload, true);
       } else {
         retryCount.current = 0;
         setState(s => ({

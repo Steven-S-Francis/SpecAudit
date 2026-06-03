@@ -180,7 +180,11 @@ describe('auditStream', () => {
     });
 
     it('does not pass structured chunk to onChunk', async () => {
-      const dataValue = JSON.stringify('[SPECAUDIT_STRUCTURED]{"findings":[]}');
+      const structuredPayload = {
+        findings: [{ severity: 'CRITICAL', title: 'Test', category: 'Security', location: '/test', issue: 'Issue', recommendation: 'Fix' }],
+        summary: { totalFindings: 1, critical: 1, warnings: 0, info: 0, verdict: 'FAIL', governanceScore: 50, endpointsAnalyzed: 1, dimensions: { security: 10, restConformance: 10, schemaCompleteness: 10, documentationQuality: 20 } },
+      };
+      const dataValue = JSON.stringify(`[SPECAUDIT_STRUCTURED]${JSON.stringify(structuredPayload)}`);
       const sseBody = `data: "normal"\n\ndata: ${dataValue}\n\n`;
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         createMockResponse(true, 200, sseBody)

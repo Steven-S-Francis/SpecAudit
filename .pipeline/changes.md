@@ -1,50 +1,32 @@
-# Changes: Severity Filter
+# Group 1 Changes — Critical bugs (A, G, H)
 
-## Files changed
+## Files Changed
 
-| Action | Path |
-|--------|------|
-| **MODIFY** | `frontend/src/utils/filterMarkdown.ts` |
-| **MODIFY** | `frontend/src/utils/__tests__/filterMarkdown.test.ts` |
+### `backend/src/Endpoints/AuditEndpoints.cs` (Fix A)
+- **Line 50:** Changed `ex.Message` to `"An error occurred. Please try again."` for all non-429 exceptions.
+- The 429 rate-limit message is unchanged. Only non-429 exceptions now get a generic sanitized message instead of leaking the raw exception text.
 
-## What each change does
+### `frontend/src/hooks/useAudit.ts` (Fix G)
+- **Line 53:** Added `await` before `audit(payload, true)` so the recursive retry call is awaited instead of fire-and-forget.
+- This ensures the outer Promise does not resolve while retry work is still in flight, and prevents AbortController leaks.
 
-### Bug fix: `frontend/src/utils/filterMarkdown.ts` — block splitting strategy
+### `frontend/src/api/auditClient.ts` (Fix H)
+- Added `isValidStructuredData` type guard function (lines 4–28) that validates the shape of parsed structured JSON before passing it to `onStructured`.
+- Updated the `[SPECAUDIT_STRUCTURED]` handler (lines 79–92) to wrap `onStructured` call in an `if (isValidStructuredData(data))` check.
 
-The **root cause** was that `filterMarkdown.ts` split finding blocks on `\n---\n`, but the real AI output in `fraudlabs-audit-result.md` has **no** `---` between findings — findings are only separated by blank lines (`\n\n`). The only `---` is between Summary and Findings sections.
+### `frontend/src/api/__tests__/auditClient.test.ts` (Test fix)
+- Updated the "does not pass structured chunk to onChunk" test to use valid structured payload (with proper `summary` and `findings` fields), since the new type guard requires a valid shape.
 
-When splitting on `\n---\n`:
-- Block 0 = Summary (no severity → always kept)
-- Block 1 = ALL 14 findings as one giant block
-- First severity in Block 1 is `CRITICAL`, so `extractSeverityFromBlock` always returned `CRITICAL`
-- Result: WARNING/INFO toggles never matched, CRITICAL toggle showed/hid EVERYTHING
+## Verification Results
 
-**Fix**: Changed block-splitting from `\n---\n` to splitting before each `### [SEVERITY]` header using the regex `/\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/`. This splits the content before each finding header, making each finding its own block regardless of whether findings are separated by `---` or blank lines.
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` (frontend) | ✅ Passed (no errors) |
+| `dotnet build` (backend) | ✅ Passed (0 warnings, 0 errors) |
+| `npx vitest run --reporter=verbose` | ✅ **199 passed** (15 files, 0 failures) |
 
-Specific changes:
-1. JSDoc updated to reflect new splitting strategy
-2. `const separator = '\n---\n'` → `const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/`
-3. `content.split(separator)` → `content.split(blockSplitter)`
-4. `filtered.join(separator)` → `filtered.join('\n')`
+## Notes for Tester
 
-### Test updates: `frontend/src/utils/__tests__/filterMarkdown.test.ts`
-
-- All test data `.join('\n---\n')` → `.join('\n\n')` to match the real AI output format
-- Updated "keeps non-finding sections" test to position non-finding blocks before findings (since trailing content after the last finding header is in the same block with the new splitter)
-- Updated "plain h3 headings without severity" test to use `\n\n` separator instead of `\n---\n`
-- Updated "handles --- in Governance Score section" test to use proper block structure with the new splitter (findings separated by `\n\n`, `---` inside text to verify it doesn't interfere)
-- **New test**: "correctly filters real audit report fixture by severity" — loads the full `fraudlabs-audit-result.md` fixture via `?raw` import and verifies each severity toggle correctly shows/hides only findings of that severity
-- Added `declare module '*.md?raw'` for TypeScript type support of the raw import
-
-### Verification
-
-- `npx tsc --noEmit` — zero errors ✅
-- `npx vitest run --reporter=verbose src/utils/__tests__/filterMarkdown.test.ts` — all **14/14** filter tests pass ✅
-- Full test suite: **199/199** tests pass (15 files) ✅
-
-## Tester focus
-
-- Manually verify that CRITICAL toggle still works (only CRITICAL findings hidden)
-- Manually verify that WARNING toggle now works (only WARNING findings hidden — this was broken before)
-- Manually verify that INFO toggle now works (only INFO findings hidden — this was broken before)
-- Manually verify that Governance Score section appears regardless of which severity toggle is active (it's attached to the last finding block; if the last finding is INFO and INFO is hidden, Governance Score will also be hidden — this is the current behavior with the regex splitter)
+- **Fix A**: The catch block now sends the generic message for any non-429 exception. To verify: mock the service to throw `new InvalidOperationException("some internal detail")` and confirm the SSE output contains `"An error occurred. Please try again."` rather than `"some internal detail"`.
+- **Fix G**: The `await` makes the retry serial. The existing "retries and succeeds after RateLimitError" test still passes, confirming the retry logic works with `await`.
+- **Fix H**: The type guard rejects malformed payloads. Existing test "calls onStructured when chunk contains [SPECAUDIT_STRUCTURED] prefix" (valid data) passes. New edge cases (missing `summary`, wrong field types) are now silently ignored rather than calling `onStructured` with garbage.

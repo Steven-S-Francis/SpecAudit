@@ -1,6 +1,32 @@
 import type { AuditRequest, Finding, AuditSummary } from '../types/audit';
 import { parseSSEChunks } from '../utils/parseSSEChunks';
 
+function isValidStructuredData(data: unknown): data is { findings: Finding[]; summary: AuditSummary } {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  if (!Array.isArray(obj.findings)) return false;
+  if (typeof obj.summary !== 'object' || obj.summary === null) return false;
+  // Verify each finding has required fields (optional but defensive)
+  for (const f of obj.findings) {
+    if (typeof f !== 'object' || f === null) return false;
+    const finding = f as Record<string, unknown>;
+    if (typeof finding.severity !== 'string') return false;
+    if (typeof finding.title !== 'string') return false;
+    if (typeof finding.category !== 'string') return false;
+    if (typeof finding.location !== 'string') return false;
+    if (typeof finding.issue !== 'string') return false;
+    if (typeof finding.recommendation !== 'string') return false;
+  }
+  // Verify summary has required numeric fields
+  const summary = obj.summary as Record<string, unknown>;
+  if (typeof summary.totalFindings !== 'number') return false;
+  if (typeof summary.critical !== 'number') return false;
+  if (typeof summary.warnings !== 'number') return false;
+  if (typeof summary.info !== 'number') return false;
+  if (typeof summary.verdict !== 'string') return false;
+  return true;
+}
+
 export async function auditStream(
   payload: AuditRequest,
   onChunk: (chunk: string) => void,
@@ -55,7 +81,10 @@ export async function auditStream(
           try {
             const jsonStr = chunk.slice(STRUCTURED_PREFIX.length);
             const data = JSON.parse(jsonStr);
-            onStructured(data);
+            if (isValidStructuredData(data)) {
+              onStructured(data);
+            }
+            // If validation fails, silently ignore (same as invalid JSON)
           } catch {
             // Ignore invalid JSON in structured sentinel
           }
