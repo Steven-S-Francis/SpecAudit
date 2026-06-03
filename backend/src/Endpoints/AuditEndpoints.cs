@@ -54,7 +54,7 @@ public static class AuditEndpoints
             }
 
             return Results.Empty;
-        });
+        }).RequireRateLimiting("AuditPolicy");
 
         app.MapGet("/api/config", (IOptions<AiOptions> options) =>
             Results.Ok(new { providerName = options.Value.ProviderName }));

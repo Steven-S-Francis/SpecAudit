@@ -1,74 +1,55 @@
-﻿# Review: Severity Filter
+# Review: Group 3 - Code quality (C, D, E, J)
 
 ## VERDICT: SHIP
 
-Ready to commit. The implementation fully matches the updated spec, all 198 tests pass, TypeScript compiles with zero errors, and the code quality is clean.
+## Findings
 
----
+### C: CRLF breaks PDF code fence detection (PASS)
 
-## Spec Conformance
+- **File:** frontend/src/utils/exportPdf.ts
+- **Line 146:** line.trimEnd().match(/^`(\w*)$/) trims CR before regex
+- **Line 158:** codeBuffer.push(line) uses original un-trimmed line
+- **Tests:** CRLF and trailing spaces tests both pass
 
-| Requirement | Status | Notes |
-|-------------|--------|-------|
-| Filter state in ResultPanel (not App) | OK | useState inside ResultPanel, no prop/state changes to App.tsx |
-| Block splitting on \n---\n | OK | filterMarkdownBySeverity splits on '\n---\n', matches spec S 1.2 |
-| Three toggle buttons using SEVERITY_STYLES | OK | CRITICAL/WARNING/INFO buttons using SEVERITY_STYLES[severity].badge |
-| Always-on dynamic filtering | OK | Toggles never disabled, all-off state shows only non-finding blocks |
-| Utility function signature | OK | Matches spec S 2.2 exactly |
-| No new shared types | OK | Uses existing SeverityLevel from types/audit.ts |
-| No App.tsx changes | OK | Confirmed via git diff - zero changes to App.tsx |
+### D: Regex to LastIndexOf (PASS)
 
-## Filter Correctness
+- **File:** backend/src/Services/SpecAuditService.cs
+- partial keyword removed from class declaration
+- using System.Text.RegularExpressions removed
+- [GeneratedRegex] method removed
+- Uses LastIndexOf + IndexOf for JSON extraction
+- Text after JSON block now allowed (intentional behavior change)
+- All 7 existing tests pass; renamed test passes
 
-- **Block identification**: extractSeverityFromBlock correctly uses multiline regex /^### \[(CRITICAL|WARNING|INFO)\]/m to detect finding block headers.
-- **Filtering logic**: !severity || !hiddenSeverities.has(severity) correctly keeps non-finding blocks and visible-severity blocks while dropping hidden-severity blocks.
-- **Non-finding preservation**: Blocks without matching severity headers always pass through.
-- **Consistency with parseSeverity**: Both agree on standard ### [SEVERITY] Title format. extractSeverityFromBlock is slightly stricter (requires ### prefix), which is correct for block-level filtering, while parseSeverity (used in the h3 component) operates on already-stripped heading text.
+### E: Smooth scroll during streaming (PASS)
 
-## Edge Cases
+- **File:** frontend/src/hooks/useAutoScroll.ts
+- isStreaming added to interface and function signature (default false)
+- Behavior switches between auto (streaming) and smooth (stopped)
+- **File:** frontend/src/components/features/ResultPanel.tsx
+- Passes isStreaming prop to useAutoScroll
+- Tests updated; new test verifies behavior: auto when streaming
 
-| Case | Status | How handled |
-|------|--------|-------------|
-| Empty content | OK | Returns ''; skeleton shown, no toggle buttons |
-| Partial streaming (malformed header) | OK | ### [CRITI doesn't match regex -> block passes through harmlessly |
-| All severities off | OK | Non-finding sections (Summary, Governance) remain visible |
-| Toggle back on | OK | Original content preserved, block reappears |
-| --- inside non-finding sections | OK | Split on \n---\n only, not bare ---; verified by test |
-| Block order preservation | OK | filter() preserves array order; verified by test |
-| Leading/trailing whitespace around separators | OK | Split on exact separator; whitespace handled naturally by regex |
+### J: Dead response model types (PASS)
 
-## Test Coverage
+- **File:** backend/src/Models/Responses/AuditResponse.cs - DELETED
+- Types StructuredFinding, StructuredDimensions, etc. removed
+- No compilation errors (build passes with 0 warnings, 0 errors)
+- All 19 backend tests pass
 
-- **filterMarkdown.test.ts**: 13 unit tests covering all specified scenarios (spec S 5.1). Tests are meaningful - they verify actual content filtering, not just trivial pass-through.
-- **ResultPanel.test.tsx**: 8 new component tests + modifications to 4 existing badge tests to scope within .font-mono. Tests verify toggle presence, hide/show behavior, all-severities-off, and streaming interaction.
-- **Existing tests**: All pass unchanged (confirmed by test run output: 198 tests, 15 files).
+## Security Review (PASS)
+- No information disclosure, missing auth, injection, or secrets in Group 3 files
 
-## Code Quality
+## Correctness Review (PASS)
+- No async, state race, type safety, or error-swallowing issues in Group 3 files
 
-- **Clean separation of concerns**: Pure utility function filterMarkdownBySeverity handles filtering logic; ResultPanel handles UI state and rendering.
-- **Efficient fast path**: if (hiddenSeverities.size === 0) return content avoids unnecessary work.
-- **Derived state pattern**: filteredContent is a derived value (not stored in state), avoiding stale data issues.
-- **Safe useCallback**: toggleSeverity uses functional updater prev => ({...prev, [severity]: !prev[severity]}) with empty deps - correct because it only closes over the stable setState function.
-- **No code smells**: No mutations, no fragile selectors, no implicit dependencies.
+## Code Quality Notes (Non-blocking)
+- useAutoScroll.ts uses eslint-disable for isStreaming dep - intentional per spec
 
-## Minor Notes (non-blocking)
+## Test Verification
+- Frontend: 203 passed (15 files, 0 failures)
+- Backend: 19 passed (4 test classes, 0 failures)
+- Both suites run: YES
 
-1. **Spec/test-count discrepancy**: The spec and changes.md both mention "10 new tests" for ResultPanel but the actual spec table (S 5.2) lists only 8, and 8 were implemented. This is a documentation typo in the spec/changes.md, not a code issue.
-
-2. **Multiple findings without \n---\n separators**: If AI output places two ### [SEVERITY] headers in the same block (without a \n---\n separator), filtering one severity would remove the entire combined block. This is correct per the spec's block-splitting design and would only occur if AI output deviates from the expected format.
-
-Neither issue rises to the level of blocking a SHIP verdict.
-
----
-
-## Summary
-
-The implementation:
-- Exactly matches the updated spec
-- Correctly filters finding blocks by severity
-- Handles all specified edge cases
-- Is fully self-contained in ResultPanel (no App.tsx changes)
-- Has meaningful, thorough test coverage
-- Is clean, well-structured code
-
-**SHIP**
+## Required Actions
+None. All Group 3 items (C, D, E, J) correctly implemented and verified.
