@@ -1,4 +1,4 @@
-# Structured AI Output for Practical JSON Export — Spec
+# Severity Filter — Spec
 
 ## OPEN QUESTIONS
 
@@ -8,457 +8,255 @@ None. All design decisions resolved below.
 
 ## 1. Design Decisions & Rationale
 
-### 1.1 SSE event format: sentinel prefix, not `event:` type
-The user suggested `event: structured` SSE events. However, the existing `parseSSEChunks` utility only extracts `data:` lines and silently discards non-data lines. Changing the parser for a single event type adds complexity and breaks the existing interface.  
+### 1.1 Filter state lives in ResultPanel (not App)
 
-**Decision**: Reuse the existing sentinel pattern (`[SPECAUDIT_ERROR]`) by defining `[SPECAUDIT_STRUCTURED]` as a prefix in a `data:` line. This is consistent, requires zero changes to `parseSSEChunks`, and is already proven by the error sentinel.
+The severity filter is a pure display concern — it controls which rendered findings are visible in the result panel. Keeping the state inside `ResultPanel.tsx` avoids unnecessary re-renders of `App.tsx` and its other children (input panel, export buttons) when toggling filters.
 
-### 1.2 JSON extraction location: backend vs frontend
-The full markdown is streamed chunk-by-chunk from backend to frontend. The frontend accumulates it in `state.result`.  
+### 1.2 Block splitting on `\n---\n` before ReactMarkdown
 
-**Decision**: Extract the JSON block in the **backend** after streaming completes. The backend has the complete text, can regex-extract the JSON block, validate it, and send it as a final sentinel event. No frontend regex parsing needed. The backend already accumulates chunks during streaming (via `StringBuilder`) — we just add extraction after the loop.
+The AI-generated markdown uses `\n---\n` (horizontal rules) to separate individual finding blocks. Each block is a section starting with `### [SEVERITY] Title`. The utility `filterMarkdownBySeverity` splits on this separator, filters out blocks whose severity is hidden, then rejoins. Non-finding blocks (Summary, Governance Score) pass through because they lack a `### [SEVERITY]` header.
 
-### 1.3 Non-breaking markdown display
-The AI's human-readable markdown must be rendered identically. The JSON block is embedded in a fenced code block at the very end of the AI response. The markdown renderer (`ReactMarkdown`) will render it as a code block — this is acceptable for display (users see the JSON at the bottom) and trivial to strip if desired later.
+### 1.3 Three severity toggle buttons using SEVERITY_STYLES
 
-### 1.4 Fallback when AI omits JSON block
-If the AI response contains no ` ```json ... ``` ` block at the end, the backend omits the structured sentinel. The frontend defaults `findings` to `[]` and `summary` to `null`. The JSON export falls back to including the full `result` field (current format).
+Three buttons (CRITICAL / WARNING / INFO) are rendered above the markdown content. They use the existing `SEVERITY_STYLES` constants:
+- **Active** (visible): Filled badge style from `SEVERITY_STYLES[severity].badge` (red/amber/blue backgrounds)
+- **Inactive** (hidden): Muted border with `opacity-50`, no background color
 
-### 1.5 AuditResult type shape
-The `AuditResult` type gains optional `findings` and `summary` fields. When structured data is present, the JSON export omits `result` (since findings/summary are more useful). When absent, `result` is included as before. This keeps backward compatibility.
+### 1.4 Always-on dynamic filtering
+
+Toggles are never disabled. If all three are turned off, only non-finding content (Summary, Governance Score, plain headings) remains visible. Partial streaming content that hasn't yet formed a complete `### [SEVERITY]` header passes through harmlessly — the utility's `extractSeverityFromBlock` regex simply won't match, so the block is kept.
 
 ---
 
 ## 2. Data Structures (Types/Interfaces)
 
-### 2.1 Frontend Types (`frontend/src/types/audit.ts`)
+### 2.1 Filter state type (internal to ResultPanel)
 
 ```typescript
-export type SeverityLevel = 'CRITICAL' | 'WARNING' | 'INFO';
-
-export interface Finding {
-  severity: SeverityLevel;
-  title: string;
-  category: string;    // e.g. "Security", "REST Violation", "Schema", "Naming", "Consistency"
-  location: string;    // path/method or "Global"
-  issue: string;
-  recommendation: string;
-}
-
-export interface AuditDimensions {
-  security: number;
-  restConformance: number;
-  schemaCompleteness: number;
-  documentationQuality: number;
-}
-
-export interface AuditSummary {
-  totalFindings: number;
-  critical: number;
-  warnings: number;
-  info: number;
-  verdict: string;            // "FAIL" | "PASS WITH WARNINGS" | "PASS"
-  governanceScore: number;
-  endpointsAnalyzed: number;
-  dimensions: AuditDimensions;
-}
-
-// --- New AuditState (added fields) ---
-export interface AuditState {
-  status: AuditStatus;
-  result: string;
-  findings: Finding[];        // NEW
-  summary: AuditSummary | null; // NEW
-  error: string | null;
-  specFormat: string | null;
-}
-
-// --- New AuditResult (for export) ---
-export interface AuditResult {
-  version: 1;
-  result?: string;            // present only when no structured data (fallback)
-  findings: Finding[];         // may be empty if AI didn't include JSON
-  summary: AuditSummary | null; // null if AI didn't include JSON
-  exportedAt: string;
-  specFormat: string | null;
-}
-```
-
-### 2.2 Backend C# Types (`backend/src/Models/Responses/AuditResponse.cs`)
-
-```csharp
-// New model for the structured data extracted from AI response
-namespace SpecAudit.Models.Responses;
-
-public sealed record StructuredFinding(
-    string Severity,      // "CRITICAL" | "WARNING" | "INFO"
-    string Title,
-    string Category,
-    string Location,
-    string Issue,
-    string Recommendation
-);
-
-public sealed record StructuredDimensions(
-    int Security,
-    int RestConformance,
-    int SchemaCompleteness,
-    int DocumentationQuality
-);
-
-public sealed record StructuredSummary(
-    int TotalFindings,
-    int Critical,
-    int Warnings,
-    int Info,
-    string Verdict,
-    int GovernanceScore,
-    int EndpointsAnalyzed,
-    StructuredDimensions Dimensions
-);
-
-public sealed record StructuredData(
-    List<StructuredFinding> Findings,
-    StructuredSummary Summary
-);
-```
-
----
-
-## 3. Data Flow Diagram (Text)
-
-```
-AI (LLM)
-│
-│  Returns streaming markdown with `\`\`\`json...\`\`\`` at end
-│
-▼
-SpecAuditService.AuditAsync()
-│
-│  For each AI content chunk:
-│    ├─ Append to StringBuilder (accumulate)
-│    └─ yield return chunk (stream to endpoint)
-│
-│  After streaming loop completes:
-│    ├─ Regex-extract JSON block from full StringBuilder
-│    ├─ Validate JSON parses
-│    └─ If valid: yield return "[SPECAUDIT_STRUCTURED]" + json
-│
-▼
-AuditEndpoints (SSE stream)
-│
-│  data: "chunk1"       ← same as before (markdown)
-│  data: "chunk2"
-│  data: "[SPECAUDIT_STRUCTURED]{...}"   ← NEW sentinel at end
-│
-▼
-Frontend auditClient.ts
-│
-│  For each data chunk:
-│    ├─ [SPECAUDIT_ERROR]? → throw error
-│    ├─ [SPECAUDIT_STRUCTURED]? → parse JSON, call onStructured()
-│    └─ Otherwise → call onChunk() (markdown text)
-│
-▼
-useAudit.ts hook
-│
-│  onChunk: append to state.result (unchanged)
-│  onStructured: set state.findings, state.summary
-│
-▼
-App.tsx / ResultPanel.tsx
-│
-│  Render: markdown from state.result (unchanged)
-│  Copy:   state.result (unchanged)
-│  PDF:    state.result (unchanged)
-│  JSON:   exports { version, findings, summary (or result fallback), exportedAt, specFormat }
-│
-▼
-Downloaded JSON file
-  {
-    "version": 1,
-    "findings": [...],        ← clean, queryable
-    "summary": {...},
-    "exportedAt": "...",
-    "specFormat": null
-  }
-```
-
----
-
-## 4. Changes Needed Per File
-
-### 4.1 Backend: `backend/src/Services/SpecAuditService.cs`
-
-**What**: Modify `AuditAsync()` to:
-1. Accumulate all chunk text in a `StringBuilder` during streaming
-2. After the streaming loop, extract the ` ```json ... ``` ` block from the full text
-3. Validate the JSON parses successfully
-4. Yield a `[SPECAUDIT_STRUCTURED]` sentinel with the JSON payload
-
-**What**: Add a new `internal static` method `ExtractStructuredJson(string markdown)`:
-- Regex: `@"```json\s*([\s\S]*?)\s*```\s*$"` (match last fenced json block at end of string)
-- Return the trimmed JSON string, or `null` if no match
-- Validate using `JsonDocument.Parse()` before returning
-
-**What**: Append instruction to `SystemPrompt` constant (lines 13–111):
-- At the very end of the prompt (after the Governance Score section), add:
-
-```
-AFTER your complete markdown report, append a JSON code block at the very end with the structured findings summary. The JSON block must be the very last content — no text after it.
-
-```json
-{
-  "findings": [
-    {
-      "severity": "CRITICAL",
-      "title": "Missing Security Scheme Definition",
-      "category": "Security",
-      "location": "Global",
-      "issue": "description...",
-      "recommendation": "fix..."
-    }
-  ],
-  "summary": {
-    "totalFindings": 14,
-    "critical": 6,
-    "warnings": 4,
-    "info": 4,
-    "verdict": "FAIL",
-    "governanceScore": 60,
-    "endpointsAnalyzed": 2,
-    "dimensions": {
-      "security": 15,
-      "restConformance": 15,
-      "schemaCompleteness": 10,
-      "documentationQuality": 20
-    }
-  }
-}
-```
-
-The `findings` array must contain one entry per finding block in the report, in the same order. The `summary` must reflect the same numbers as the human-readable report summary. Ensure severity values match exactly: "CRITICAL", "WARNING", or "INFO".
-```
-
-**Pattern to follow**: The existing `SystemPrompt` string constant (indentation, raw string literal).
-
-**Edge cases**:
-- AI omits the JSON block → `ExtractStructuredJson` returns `null`, no sentinel sent
-- AI includes invalid JSON → `JsonDocument.Parse` throws, caught, returns `null`, no sentinel
-- AI includes JSON that doesn't match expected schema → only basic parse validation (structural), schema validation is deferred to frontend runtime
-- Multiple ` ```json ``` ` blocks → regex uses `\s*$` anchor to match only the last one
-
-### 4.2 Backend: `backend/src/Endpoints/AuditEndpoints.cs`
-
-**What**: No changes needed. The `[SPECAUDIT_STRUCTURED]` sentinel is yielded as a normal chunk from `AuditAsync()`, encoded as JSON inside the `data:` line, and streamed. The existing infrastructure handles it.
-
-Exception: If we want to clean up tests, but the endpoint code itself is unchanged.
-
-### 4.3 Backend: `backend/src/Models/Responses/AuditResponse.cs`
-
-**What**: Replace the single `AuditResponse` record with the new structured types (`StructuredFinding`, `StructuredDimensions`, `StructuredSummary`, `StructuredData`). Keep `AuditResponse` for backward compat if needed, but remove if unused.
-
-### 4.4 Frontend: `frontend/src/types/audit.ts`
-
-**What**: Add `Finding`, `AuditDimensions`, `AuditSummary` interfaces. Add `findings` (Finding[]) and `summary` (AuditSummary | null) to both `AuditState` and `AuditResult`. Keep `AuditRequest`, `AuditStatus`, `SeverityLevel` as-is.
-
-**Edge cases**:
-- `summary` may be `null` when AI didn't provide structured data
-- `findings` is always an array (possibly empty `[]`)
-
-### 4.5 Frontend: `frontend/src/api/auditClient.ts`
-
-**What**: Add new `onStructured` callback parameter to `auditStream()`:
-```typescript
-export async function auditStream(
-  payload: AuditRequest,
-  onChunk: (chunk: string) => void,
-  signal: AbortSignal,
-  onStructured?: (data: { findings: Finding[]; summary: AuditSummary }) => void
-): Promise<void>
-```
-
-In the data processing loop, add a check after the `[SPECAUDIT_ERROR]` check:
-```typescript
-const STRUCTURED_PREFIX = '[SPECAUDIT_STRUCTURED]';
-if (chunk.startsWith(STRUCTURED_PREFIX)) {
-  if (onStructured) {
-    const jsonStr = chunk.slice(STRUCTURED_PREFIX.length);
-    const data = JSON.parse(jsonStr);
-    onStructured(data);
-  }
-  continue; // don't pass to onChunk
-}
-```
-
-**Edge cases**:
-- No `onStructured` callback provided → ignore structured data silently
-- JSON parse failure → silently ignore (don't break the stream)
-- Multiple structured events → only the first is processed (defensive)
-
-### 4.6 Frontend: `frontend/src/hooks/useAudit.ts`
-
-**What**: Add `findings` and `summary` to initial state and all `setState` calls. Pass `onStructured` callback to `auditStream()`:
-
-```typescript
-const [state, setState] = useState<AuditState>({
-  status: 'idle',
-  result: '',
-  findings: [],
-  summary: null,
-  error: null,
-  specFormat: null,
+// No new shared type needed. Inline type in ResultPanel.tsx:
+const [severityFilter, setSeverityFilter] = useState<Record<SeverityLevel, boolean>>({
+  CRITICAL: true,
+  WARNING: true,
+  INFO: true,
 });
 ```
 
-In the `audit` callback:
+### 2.2 Utility function signature
+
 ```typescript
-await auditStream(
-  payload,
-  (chunk) => setState(s => ({ ...s, result: s.result + chunk })),
-  abortRef.current!.signal,
-  (data) => setState(s => ({
-    ...s,
-    findings: data.findings,
-    summary: data.summary,
-  }))
-);
+// frontend/src/utils/filterMarkdown.ts
+export function filterMarkdownBySeverity(
+  content: string,
+  hiddenSeverities: Set<SeverityLevel>
+): string;
 ```
+
+### 2.3 Helper (private, not exported)
+
+```typescript
+// extractSeverityFromBlock — regex-based detection of finding block headers
+function extractSeverityFromBlock(block: string): SeverityLevel | null;
+// Matches: /^### \[CRITICAL\]/m, /^### \[WARNING\]/m, /^### \[INFO\]/m
+```
+
+---
+
+## 3. Data Flow
+
+```
+User clicks toggle button (e.g. "CRITICAL")
+│
+▼
+toggleSeverity('CRITICAL')
+  → setSeverityFilter(prev => ({ ...prev, CRITICAL: !prev.CRITICAL }))
+│
+▼
+Derived: hiddenSeverities = Set of keys where value is false
+│
+▼
+filteredContent = filterMarkdownBySeverity(content, hiddenSeverities)
+│
+▼
+ReactMarkdown receives filteredContent instead of raw content
+│
+▼
+Findings with hidden severity are absent from rendered output
+Non-finding blocks (Summary, Governance) always pass through
+```
+
+**Key invariant**: The filter never mutates `content` (the prop). It creates a derived `filteredContent` string on every render. ReactMarkdown re-renders only when `filteredContent` changes.
+
+---
+
+## 4. Changes Per File
+
+### 4.1 CREATE: `frontend/src/utils/filterMarkdown.ts`
+
+**What**: Pure utility function.
+
+```
+export function filterMarkdownBySeverity(
+  content: string,
+  hiddenSeverities: Set<SeverityLevel>
+): string
+```
+
+- If `hiddenSeverities.size === 0`, return `content` unchanged (fast path)
+- Split content on `\n---\n`
+- For each block, check if the block starts with `### [CRITICAL]`, `### [WARNING]`, or `### [INFO]` (multiline regex `^### \[SEVERITY\]/m`)
+- If a severity is matched AND is in `hiddenSeverities`, drop the block
+- All other blocks (non-finding) are kept
+- Rejoin remaining blocks with `\n---\n`
 
 **Edge cases**:
-- Structured data arrives after stream is complete → state updates correctly
-- No structured data → `findings` stays `[]`, `summary` stays `null`
-- Reset () also clears findings/summary
+- Empty content → returns `''`
+- No findings at all → returns content unchanged
+- Malformed severity header (`### [CRITI`) → regex doesn't match, block passes through (handles partial streaming)
+- `---` appearing inside non-finding sections (e.g. Governance Score body text) → split by `\n---\n` only, not arbitrary `---`
+- All severities hidden → only non-finding sections remain
+- Toggling back on → block reappears because original content is preserved
 
-### 4.7 Frontend: `frontend/src/App.tsx`
+### 4.2 CREATE: `frontend/src/utils/__tests__/filterMarkdown.test.ts`
 
-**What**: Change `handleExportJson` to use structured data when available:
+**What**: 13 unit tests for `filterMarkdownBySeverity` (see §5.1).
 
-```typescript
-const handleExportJson = useCallback(() => {
-  try {
-    const auditResult: AuditResult = {
-      version: 1,
-      findings: state.findings,
-      summary: state.summary,
-      exportedAt: new Date().toISOString(),
-      specFormat: state.specFormat,
-    };
-    // Only include result field if no structured data (fallback)
-    if (state.findings.length === 0 && state.summary === null) {
-      auditResult.result = state.result;
-    }
-    // ... rest same (JSON.stringify, Blob, download)
-  } catch {
-    // JSON export API unavailable — silently ignore
-  }
-}, [state.result, state.findings, state.summary, state.specFormat]);
-```
+### 4.3 MODIFY: `frontend/src/components/features/ResultPanel.tsx`
 
-**What**: The download (markdown) and copy button remain unchanged (they use `state.result`). The PDF export remains unchanged (uses `state.result`).
+**What**: Add filter state, toggle buttons, and apply filtered content.
 
-### 4.8 Frontend: `frontend/src/components/features/ResultPanel.tsx`
+**Changes**:
 
-**What**: No changes needed. This component only receives `content` (markdown string) and `isStreaming`. It does not need structured data.
+1. **New imports**:
+   - `filterMarkdownBySeverity` from `'../../utils/filterMarkdown'`
 
-### 4.9 Frontend: `frontend/src/utils/exportPdf.ts`
+2. **New state** inside `ResultPanel`:
+   ```typescript
+   const [severityFilter, setSeverityFilter] = useState<Record<SeverityLevel, boolean>>({
+     CRITICAL: true,
+     WARNING: true,
+     INFO: true,
+   });
+   ```
 
-**What**: No changes needed. This utility still converts `state.result` (markdown) to PDF. Structured data for PDF is deferred.
+3. **New callback**:
+   ```typescript
+   const toggleSeverity = useCallback((severity: SeverityLevel) => {
+     setSeverityFilter((prev) => ({ ...prev, [severity]: !prev[severity] }));
+   }, []);
+   ```
+
+4. **Derived hidden severities**:
+   ```typescript
+   const hiddenSeverities = new Set(
+     (Object.keys(severityFilter) as SeverityLevel[]).filter((s) => !severityFilter[s])
+   );
+   const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
+   ```
+
+5. **Toggle button row** (rendered inside `{content && ...}` guard, before the markdown area):
+   ```tsx
+   <div className="flex gap-2 mb-3">
+     {(['CRITICAL', 'WARNING', 'INFO'] as const).map((severity) => {
+       const active = severityFilter[severity];
+       const base = SEVERITY_STYLES[severity];
+       return (
+         <button
+           key={severity}
+           onClick={() => toggleSeverity(severity)}
+           className={`
+             text-xs font-bold px-2 py-0.5 rounded border transition-opacity
+             ${active
+               ? `${base.badge} border-transparent`
+               : 'text-slate-500 border-slate-600 bg-transparent opacity-50 light:text-slate-400 light:border-slate-300'
+             }
+           `}
+         >
+           {severity}
+         </button>
+       );
+     })}
+   </div>
+   ```
+
+6. **Use `filteredContent`** instead of `content` in the `<ReactMarkdown>` component.
+
+**Edge cases**:
+- Empty content → skeleton shown (no toggle buttons)
+- Streaming → toggles work during streaming; partial blocks filter harmlessly
+- All toggles off → non-finding sections still render
+- Toggle back on → finding reappears
+
+**Pattern to follow**: Existing `SEVERITY_STYLES` constant, existing ReactMarkdown component structure (copy from current `ResultPanel.tsx`).
+
+### 4.4 MODIFY: `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+
+**What**: Add 10 new tests for toggle behavior (see §5.2). Existing severity styling tests remain unchanged.
+
+### 4.5 No change: `frontend/src/App.tsx`
+
+The filter is entirely internal to `ResultPanel`. No prop changes, no state changes in App.
+
+### 4.6 No change: `frontend/src/types/audit.ts`
+
+No new types needed. Uses existing `SeverityLevel`.
 
 ---
 
 ## 5. Test Strategy
 
-### 5.1 Existing tests that MUST pass unchanged
+### 5.1 Unit tests: `filterMarkdown.test.ts` (13 tests)
 
-All utility tests (parseSSEChunks, parseSeverity, exportPdf, useAutoScroll, Button, ThemeToggle, ScrollButton, InputPanel) must pass without modification. They don't interact with the structured data.
+| # | Test | What it verifies |
+|---|------|------------------|
+| 1 | returns content unchanged when no severities are hidden | Empty `hiddenSeverities` Set → pass-through |
+| 2 | removes CRITICAL finding blocks | Only CRITICAL blocks removed |
+| 3 | removes WARNING finding blocks | Only WARNING blocks removed |
+| 4 | removes INFO finding blocks | Only INFO blocks removed |
+| 5 | removes multiple severity types simultaneously | Two severities hidden at once |
+| 6 | keeps non-finding sections (Summary, Governance Score) | Always preserved even with all severities hidden |
+| 7 | keeps plain h3 headings without severity | Non-severity headings pass through |
+| 8 | handles empty content | Empty string → empty string |
+| 9 | handles content with no findings at all | No `### [SEVERITY]` → content unchanged |
+| 10 | handles content with one finding | Single block removed → empty string |
+| 11 | handles malformed severity header (partial streaming) | `### [CRITI` not matched → passes through |
+| 12 | preserves block order when filtering | Remaining blocks keep original order |
+| 13 | handles `---` inside Governance Score section | Only `\n---\n` separators split blocks |
 
-### 5.2 Tests that will break and need updates
+### 5.2 Component tests: `ResultPanel.test.tsx` (10 new tests, lines 82–172)
 
-#### `frontend/src/hooks/__tests__/useAudit.test.tsx`
-- **Breakage**: All tests check `result.current.state` shape. They expect `{ status, result, error, specFormat }`. Now they need `{ status, result, findings, summary, error, specFormat }`.
-- **Fix**: Add `findings: []` and `summary: null` to all state assertions (7 locations).
-- **Add**: New test: "onStructured callback updates findings and summary in state".
+| # | Test | What it verifies |
+|---|------|------------------|
+| 1 | renders three filter toggle buttons when content is present | CRITICAL, WARNING, INFO buttons exist |
+| 2 | does not render filter buttons when content is empty | Skeleton view has no buttons |
+| 3 | clicking CRITICAL toggle hides CRITICAL findings | CRITICAL text disappears, WARNING remains |
+| 4 | clicking WARNING toggle hides WARNING findings | WARNING text disappears, CRITICAL remains |
+| 5 | clicking INFO toggle hides INFO findings | INFO text disappears, CRITICAL remains |
+| 6 | clicking toggle again re-shows findings | Toggle on → off → on restores content |
+| 7 | non-finding content (Governance Score) unaffected by filter | Always visible even with all severities hidden |
+| 8 | filter works during streaming | Toggle still functions with `isStreaming={true}` |
 
-#### `frontend/src/components/features/__tests__/App.test.tsx`
-- **Breakage**: 
-  - `createTestResult()` helper creates `AuditResult` without `findings`/`summary` → TypeScript error.
-  - Test 4 ("creates correct JSON envelope on click") asserts `parsed.result` exists → now `result` may be absent if structured data present.
-  - Test 15 ("handles empty result string"), Test 16 ("handles result with unicode characters") create `AuditResult` without `findings`/`summary`.
-- **Fix**: 
-  - Update `createTestResult()` to include `findings: []` and `summary: null`.
-  - Update Test 4 to also assert `parsed.findings` and `parsed.summary` exist.
-  - Update Test 15/16 to include `findings: []`, `summary: null`.
-- **Add**: 
-  - New test: "JSON export includes findings and summary when structured data available".
-  - New test: "JSON export includes result field when no structured data (fallback)".
+### 5.3 Existing tests that must pass unchanged
 
-#### `frontend/src/api/__tests__/auditClient.test.ts`
-- **Breakage**: None expected. The `onStructured` callback is optional and existing tests don't pass it.
-- **Add**: New test group: "structured event handling":
-  - "calls onStructured when chunk contains [SPECAUDIT_STRUCTURED] prefix"
-  - "does not pass structured chunk to onChunk"
-  - "ignores invalid JSON in structured sentinel"
-  - "does not call onStructured when callback not provided"
-
-#### `frontend/src/__tests__/integration/feature-pipeline.test.ts`
-- **Breakage**: None expected. The test uses `auditStream` with the fixture chunks which don't include a structured sentinel. The `onStructured` parameter is optional.
-- **Think about**: Should we add a test that includes a structured sentinel at the end? Yes — new test: "SSE stream with structured sentinel at end extracts findings".
-
-#### `frontend/src/App.tsx` itself
-The mock for `useAudit` in `App.test.tsx` returns `{ state: { status, result, error, specFormat } }`. Need to add `findings` and `summary` to the mock state.
-
-### 5.3 New tests to write
-
-| Test | File | What it verifies |
-|------|------|------------------|
-| ExtractStructuredJson matches valid block | Backend C# test | Given markdown with ` ```json...``` ` at end, returns the JSON string |
-| ExtractStructuredJson returns null when no block | Backend C# test | Plain markdown returns null |
-| ExtractStructuredJson returns null on invalid JSON | Backend C# test | ` ```json { invalid } ``` ` returns null |
-| ExtractStructuredJson handles multiple blocks | Backend C# test | Only the LAST ` ```json ``` ` block is extracted |
-| onStructured updates findings in state | `useAudit.test.tsx` | State.findings and state.summary are set |
-| JSON export includes findings+summary | `App.test.tsx` | Downloaded JSON blob has `findings` and `summary` fields |
-| JSON export includes result fallback | `App.test.tsx` | When findings=[], summary=null, `result` field is present |
-| onStructured callback works in auditStream | `auditClient.test.ts` | Structured sentinel parsed correctly |
-| AuditResult type is valid with all fields | `App.test.tsx` | Type compliance |
+All pre-existing ResultPanel tests (lines 7–80: skeleton rendering, streaming cursor, severity styling for CRITICAL/WARNING/INFO, plain H3 rendering) plus all other utility and component tests in the project.
 
 ### 5.4 Test count
 
-- **Existing tests**: ~169 (counting all `it()` calls)
-- **Expected to break**: ~8–12 tests (state shape assertions + AuditResult construction)
-- **Expected to pass unchanged**: ~157–161 tests
-- **New tests to add**: ~10–15
+- **Pre-existing tests**: ~177 (`it()` calls across entire project)
+- **New unit tests**: 13 (`filterMarkdown.test.ts`)
+- **New component tests**: 10 (`ResultPanel.test.tsx`)
+- **Total**: ~200 tests
 
 ---
 
-## 6. Implementation Order (Recommended)
-
-1. **Types first**: Update `frontend/src/types/audit.ts` with new interfaces
-2. **Backend model**: Update `backend/src/Models/Responses/AuditResponse.cs`
-3. **Backend service**: Update `SpecAuditService.cs` with `ExtractStructuredJson` and prompt change
-4. **Frontend SSE client**: Update `auditClient.ts` with `onStructured` callback
-5. **Frontend hook**: Update `useAudit.ts` with findings/summary state
-6. **Frontend App**: Update `App.tsx` `handleExportJson`
-7. **Test updates**: Fix broken tests, add new tests
-8. **Backend tests**: Write unit tests for `ExtractStructuredJson`
-
----
-
-## 7. Files Summary
+## 6. Files Summary
 
 | Action | Path |
 |--------|------|
-| Modify | `backend/src/Services/SpecAuditService.cs` |
-| Modify | `backend/src/Models/Responses/AuditResponse.cs` |
-| Modify | `frontend/src/types/audit.ts` |
-| Modify | `frontend/src/api/auditClient.ts` |
-| Modify | `frontend/src/hooks/useAudit.ts` |
-| Modify | `frontend/src/App.tsx` |
-| Modify | `frontend/src/hooks/__tests__/useAudit.test.tsx` |
-| Modify | `frontend/src/components/features/__tests__/App.test.tsx` |
-| Modify (minor) | `frontend/src/api/__tests__/auditClient.test.ts` |
-| Add (minor) | `frontend/src/__tests__/integration/feature-pipeline.test.ts` (new tests within existing) |
-| No change | `backend/src/Endpoints/AuditEndpoints.cs` |
-| No change | `frontend/src/components/features/ResultPanel.tsx` |
-| No change | `frontend/src/utils/exportPdf.ts` |
-| No change | `frontend/src/utils/parseSSEChunks.ts` |
+| CREATE | `frontend/src/utils/filterMarkdown.ts` |
+| CREATE | `frontend/src/utils/__tests__/filterMarkdown.test.ts` |
+| MODIFY | `frontend/src/components/features/ResultPanel.tsx` |
+| MODIFY | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` |
+| No change | `frontend/src/App.tsx` |
+| No change | `frontend/src/types/audit.ts` |
+| No change | `frontend/src/hooks/useAudit.ts` |
+| No change | `frontend/src/api/auditClient.ts` |

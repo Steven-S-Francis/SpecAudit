@@ -1,9 +1,10 @@
-import type { ComponentPropsWithoutRef } from 'react';
+import { useState, useCallback, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { SeverityLevel } from '../../types/audit';
 import { parseSeverity } from '../../utils/parseSeverity';
+import { filterMarkdownBySeverity } from '../../utils/filterMarkdown';
 import { useAutoScroll } from '../../hooks/useAutoScroll';
 import { ScrollButton } from '../ui/ScrollButton';
 
@@ -44,6 +45,22 @@ export function ResultPanel({ content, isStreaming }: Props) {
   const showSkeleton = content === '' && !isStreaming;
   const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content] });
 
+  const [severityFilter, setSeverityFilter] = useState<Record<SeverityLevel, boolean>>({
+    CRITICAL: true,
+    WARNING: true,
+    INFO: true,
+  });
+
+  const toggleSeverity = useCallback((severity: SeverityLevel) => {
+    setSeverityFilter((prev) => ({ ...prev, [severity]: !prev[severity] }));
+  }, []);
+
+  const hiddenSeverities = new Set(
+    (Object.keys(severityFilter) as SeverityLevel[]).filter((s) => !severityFilter[s])
+  );
+
+  const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
+
   return (
     <div
       ref={containerRef}
@@ -58,6 +75,29 @@ export function ResultPanel({ content, isStreaming }: Props) {
         </>
       ) : (
         <>
+        {content && (
+          <div className="flex gap-2 mb-3">
+            {(['CRITICAL', 'WARNING', 'INFO'] as const).map((severity) => {
+              const active = severityFilter[severity];
+              const base = SEVERITY_STYLES[severity];
+              return (
+                <button
+                  key={severity}
+                  onClick={() => toggleSeverity(severity)}
+                  className={`
+                    text-xs font-bold px-2 py-0.5 rounded border transition-opacity
+                    ${active
+                      ? `${base.badge} border-transparent`
+                      : 'text-slate-500 border-slate-600 bg-transparent opacity-50 light:text-slate-400 light:border-slate-300'
+                    }
+                  `}
+                >
+                  {severity}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="font-mono text-sm text-slate-200 light:text-slate-800">
           <ReactMarkdown
               remarkPlugins={[remarkGfm]}
@@ -99,7 +139,7 @@ export function ResultPanel({ content, isStreaming }: Props) {
                 },
               }}
             >
-              {content}
+              {filteredContent}
             </ReactMarkdown>
             {isStreaming && (
               <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />

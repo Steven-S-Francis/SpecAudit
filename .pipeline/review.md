@@ -1,111 +1,74 @@
-﻿# Review: Structured AI Output for Practical JSON Export
+﻿# Review: Severity Filter
 
-**Reviewer**: deepseek-v4-flash-free
-**Date**: 2026-06-03
-**Verdict**: SHIP
+## VERDICT: SHIP
+
+Ready to commit. The implementation fully matches the updated spec, all 198 tests pass, TypeScript compiles with zero errors, and the code quality is clean.
+
+---
+
+## Spec Conformance
+
+| Requirement | Status | Notes |
+|-------------|--------|-------|
+| Filter state in ResultPanel (not App) | OK | useState inside ResultPanel, no prop/state changes to App.tsx |
+| Block splitting on \n---\n | OK | filterMarkdownBySeverity splits on '\n---\n', matches spec S 1.2 |
+| Three toggle buttons using SEVERITY_STYLES | OK | CRITICAL/WARNING/INFO buttons using SEVERITY_STYLES[severity].badge |
+| Always-on dynamic filtering | OK | Toggles never disabled, all-off state shows only non-finding blocks |
+| Utility function signature | OK | Matches spec S 2.2 exactly |
+| No new shared types | OK | Uses existing SeverityLevel from types/audit.ts |
+| No App.tsx changes | OK | Confirmed via git diff - zero changes to App.tsx |
+
+## Filter Correctness
+
+- **Block identification**: extractSeverityFromBlock correctly uses multiline regex /^### \[(CRITICAL|WARNING|INFO)\]/m to detect finding block headers.
+- **Filtering logic**: !severity || !hiddenSeverities.has(severity) correctly keeps non-finding blocks and visible-severity blocks while dropping hidden-severity blocks.
+- **Non-finding preservation**: Blocks without matching severity headers always pass through.
+- **Consistency with parseSeverity**: Both agree on standard ### [SEVERITY] Title format. extractSeverityFromBlock is slightly stricter (requires ### prefix), which is correct for block-level filtering, while parseSeverity (used in the h3 component) operates on already-stripped heading text.
+
+## Edge Cases
+
+| Case | Status | How handled |
+|------|--------|-------------|
+| Empty content | OK | Returns ''; skeleton shown, no toggle buttons |
+| Partial streaming (malformed header) | OK | ### [CRITI doesn't match regex -> block passes through harmlessly |
+| All severities off | OK | Non-finding sections (Summary, Governance) remain visible |
+| Toggle back on | OK | Original content preserved, block reappears |
+| --- inside non-finding sections | OK | Split on \n---\n only, not bare ---; verified by test |
+| Block order preservation | OK | filter() preserves array order; verified by test |
+| Leading/trailing whitespace around separators | OK | Split on exact separator; whitespace handled naturally by regex |
+
+## Test Coverage
+
+- **filterMarkdown.test.ts**: 13 unit tests covering all specified scenarios (spec S 5.1). Tests are meaningful - they verify actual content filtering, not just trivial pass-through.
+- **ResultPanel.test.tsx**: 8 new component tests + modifications to 4 existing badge tests to scope within .font-mono. Tests verify toggle presence, hide/show behavior, all-severities-off, and streaming interaction.
+- **Existing tests**: All pass unchanged (confirmed by test run output: 198 tests, 15 files).
+
+## Code Quality
+
+- **Clean separation of concerns**: Pure utility function filterMarkdownBySeverity handles filtering logic; ResultPanel handles UI state and rendering.
+- **Efficient fast path**: if (hiddenSeverities.size === 0) return content avoids unnecessary work.
+- **Derived state pattern**: filteredContent is a derived value (not stored in state), avoiding stale data issues.
+- **Safe useCallback**: toggleSeverity uses functional updater prev => ({...prev, [severity]: !prev[severity]}) with empty deps - correct because it only closes over the stable setState function.
+- **No code smells**: No mutations, no fragile selectors, no implicit dependencies.
+
+## Minor Notes (non-blocking)
+
+1. **Spec/test-count discrepancy**: The spec and changes.md both mention "10 new tests" for ResultPanel but the actual spec table (S 5.2) lists only 8, and 8 were implemented. This is a documentation typo in the spec/changes.md, not a code issue.
+
+2. **Multiple findings without \n---\n separators**: If AI output places two ### [SEVERITY] headers in the same block (without a \n---\n separator), filtering one severity would remove the entire combined block. This is correct per the spec's block-splitting design and would only occur if AI output deviates from the expected format.
+
+Neither issue rises to the level of blocking a SHIP verdict.
 
 ---
 
 ## Summary
 
-The implementation faithfully tracks the spec across all modified files and 1 new test file. All tests pass (177 frontend, 18 backend), TypeScript compiles cleanly, and the C# backend builds with zero warnings.
+The implementation:
+- Exactly matches the updated spec
+- Correctly filters finding blocks by severity
+- Handles all specified edge cases
+- Is fully self-contained in ResultPanel (no App.tsx changes)
+- Has meaningful, thorough test coverage
+- Is clean, well-structured code
 
----
-
-## Checklist Evaluation
-
-### 1. Does the implementation match the spec? PASS
-
-| Spec Item | Status | Notes |
-|---|---|---|
-| SSE sentinel prefix [SPECAUDIT_STRUCTURED] | PASS | Backend StructuredSentinel constant; frontend STRUCTURED_PREFIX check |
-| JSON extraction in backend after streaming | PASS | StringBuilder accumulation -> ExtractStructuredJson() -> sentinel yield |
-| Markdown display unchanged | PASS | Raw markdown chunks still contain the JSON block; sentinel is an additional event |
-| Fallback when AI omits JSON block | PASS | findings: [], summary: null -> result field included in export |
-| AuditResult shape | PASS | result optional, findings/summary always present |
-| Regex extracts LAST json block | PASS | Confirmed by test: WithMultipleJsonBlocks_ExtractsOnlyLast |
-| Prompt appended with JSON instruction | PASS | Lines 115-147 of SpecAuditService.cs |
-| No changes to AuditEndpoints.cs | PASS | Confirmed via git diff --name-only |
-| No changes to ResultPanel.tsx | PASS | Confirmed via git diff --name-only |
-| No changes to exportPdf.ts | PASS | Confirmed via git diff --name-only |
-| No changes to parseSSEChunks.ts | PASS | Confirmed via git diff --name-only |
-
-### 2. Are the types correct? PASS
-
-**Frontend** (frontend/src/types/audit.ts):
-- SeverityLevel = CRITICAL | WARNING | INFO - matches spec
-- Finding - all 6 fields present (PASS)
-- AuditDimensions - all 4 fields present (PASS)
-- AuditSummary - all 8 fields present (PASS)
-- AuditState - includes findings: Finding[] and summary: AuditSummary | null (PASS)
-- AuditResult - version: 1 (literal type), result?: string, findings, summary, exportedAt, specFormat (PASS)
-
-**Backend** (AuditResponse.cs):
-- StructuredFinding, StructuredDimensions, StructuredSummary, StructuredData all match spec exactly (PASS)
-
-### 3. Is the JSON export truly useful now? PASS
-
-handleExportJson in App.tsx builds:
-- When structured data present: { version, findings, summary, exportedAt, specFormat } -- clean, queryable structured output
-- When no structured data: fallback adds result field for backward compatibility
-
-The condition (state.findings.length === 0 && state.summary === null) correctly distinguishes "no structured data" from "structured data with zero findings" (latter has non-null summary object).
-
-### 4. Is the fallback working? PASS
-
-Three fallback layers verified:
-
-1. Backend: No json block -> ExtractStructuredJson returns null -> no sentinel -> onStructured never called -> state stays findings: [], summary: null -> export includes result
-2. Backend: Invalid JSON in block -> JsonDocument.Parse throws -> catch returns null -> same fallback
-3. Frontend: Invalid JSON in sentinel -> JSON.parse throws -> catch skips onStructured -> continue skips chunk from onChunk
-
-Tested by: WithNoJsonBlock_ReturnsNull, WithInvalidJson_ReturnsNull, WithTextAfterJsonBlock_ReturnsNull, and frontend "ignores invalid JSON in structured sentinel" test.
-
-### 5. Are markdown/PDF/clipboard unchanged? PASS
-
-| Export | Uses | Verification |
-|---|---|---|
-| Copy (handleCopy) | state.result | Line 21 of App.tsx |
-| Download (handleDownload) | state.result | Line 31 of App.tsx |
-| PDF (handleExportPdf) | state.result | Line 47 of App.tsx |
-
-None use state.findings or state.summary.
-
-### 6. Quality Assessment
-
-**Strengths:**
-- GeneratedRegex in C# for compile-time regex compilation
-- try/catch wrapping all JSON parse operations (both backend and frontend)
-- StringBuilder for efficient string accumulation
-- useCallback with correct dependency arrays
-- Integration test exercises end-to-end structured data flow
-- Excellent edge case coverage: empty code block, whitespace-only, text after block, multiple blocks, invalid JSON
-
-**Minor issues (none block SHIP verdict):**
-
-1. Incomplete mock state objects in App.test.tsx: Several mock state objects (around lines 58, 80, 93, 109, 150, 169, 182, 197) are missing specFormat, and one (line 109) is missing findings/summary/specFormat. These work because the tests only access properties they need, but they are inconsistent with the stated goal of updating all 22 mock state occurrences.
-
-2. No nullish guard in onStructured callback (useAudit.ts lines 33-37): data.findings and data.summary are assigned directly. If the AI sends valid JSON with missing keys, the state could receive undefined. A minimal guard (data.findings ?? [], data.summary ?? null) would add robustness.
-
-3. No guard against multiple structured sentinel events: Spec mentions this defensively; backend only produces one sentinel, so not a practical risk.
-
----
-
-## Test Coverage Summary
-
-| Area | Tests | New | Status |
-|---|---|---|---|
-| Backend ExtractStructuredJson | 7 unit tests | 7 new | PASS |
-| Frontend useAudit | +1 new structured test | 1 new | PASS |
-| Frontend auditClient | 4 structured event tests | 4 new | PASS |
-| Frontend App.test.tsx | 2 new JSON export tests | 2 new | PASS |
-| Integration (feature-pipeline.test.ts) | 1 structured sentinel test | 1 new | PASS |
-| Total | 177 frontend + 18 backend | ~15 new | 100% pass |
-
----
-
-## Verdict
-
-SHIP - The implementation is correct, well-tested, and matches the spec.
-
-The two minor recommendations (mock state consistency, nullish guard in onStructured) are non-blocking and can be addressed in a follow-up PR if desired.
+**SHIP**

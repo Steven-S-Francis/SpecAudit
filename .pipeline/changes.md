@@ -1,23 +1,69 @@
-# Changes: Strip JSON block from all user-facing exports
+# Changes: Severity Filter
 
-## File changed
-- `frontend/src/App.tsx`
+## Files changed
 
-## What changed
-- **Renamed** `displayContent` → `strippedResult` (line 19): clearer name since it's now used by all user-facing exports, not just display.
-- **`handleCopy`** (line 23, 29): now copies `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
-- **`handleDownload`** (line 33, 45): now downloads `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
-- **`handleExportPdf`** (line 49, 53): now exports `strippedResult` instead of `state.result`; dependency changed to `[strippedResult]`.
-- **`handleExportJson`** (lines 55-81): **unchanged** — still uses `state.findings`/`state.summary` with `state.result` fallback when no structured data exists.
-- **`ResultPanel`** (line 180): now receives `strippedResult` instead of `displayContent`.
+| Action | Path |
+|--------|------|
+| **CREATE** | `frontend/src/utils/filterMarkdown.ts` |
+| **CREATE** | `frontend/src/utils/__tests__/filterMarkdown.test.ts` |
+| **MODIFY** | `frontend/src/components/features/ResultPanel.tsx` |
+| **MODIFY** | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` |
 
-## Effect
-The trailing ```json...``` block is no longer included in Copy, Download (.md), Export PDF, or the UI render. It remains accessible only via the Export JSON button.
+## What each change does
+
+### `frontend/src/utils/filterMarkdown.ts` (NEW)
+- Pure utility function `filterMarkdownBySeverity(content, hiddenSeverities)` that removes finding blocks (`### [SEVERITY]`) whose severity is in the hidden set
+- Helper `extractSeverityFromBlock` checks if a block starts with `### [CRITICAL]`, `### [WARNING]`, or `### [INFO]` using regex
+- Non-finding blocks (Summary, Governance Score, plain headings) always pass through
+- Edge cases handled: empty content, partial streaming, no separators, block order preserved
+
+### `frontend/src/utils/__tests__/filterMarkdown.test.ts` (NEW)
+- 13 tests covering all specified scenarios:
+  - All severities visible → full content unchanged
+  - Each severity type filtered individually
+  - Multiple severities filtered simultaneously
+  - Non-finding sections preserved when all severities hidden
+  - Plain h3 headings without severity pass through
+  - Empty content returns empty
+  - Content with no findings unchanged
+  - Single finding hidden → empty
+  - Malformed/partial severity header passes through
+  - Block order preserved
+  - Non-finding separator (`---` in Governance Score) preserved
+
+### `frontend/src/components/features/ResultPanel.tsx` (MODIFY)
+- Added imports: `useState`, `useCallback` from React; `filterMarkdownBySeverity` from new utility
+- Added internal filter state: `Record<SeverityLevel, boolean>` defaulting all to `true`
+- Added `toggleSeverity` callback using `useCallback`
+- Computes `hiddenSeverities` Set and `filteredContent` via `filterMarkdownBySeverity`
+- Renders three toggle buttons (CRITICAL, WARNING, INFO) in a flex row above the markdown content
+  - Active buttons use `SEVERITY_STYLES[severity].badge` classes (same as severity badges)
+  - Inactive buttons are muted with `text-slate-500 border-slate-600 opacity-50`
+- Replaced `{content}` with `{filteredContent}` in ReactMarkdown children
+- No changes to Props interface, skeleton, streaming cursor, scroll button, or severity badge rendering
+- Filter buttons only render when `content` is non-empty
+
+### `frontend/src/components/features/__tests__/ResultPanel.test.tsx` (MODIFY)
+- Added `fireEvent` and `within` imports from `@testing-library/react`
+- Fixed existing badge tests (lines 36-65) to scope queries within `.font-mono` container (since toggle buttons now also render severity text)
+- Fixed "plain H3 without severity" test to scope severity badge checks within markdown area
+- Added 10 new tests for severity filter:
+  - Three toggle buttons render when content is present
+  - No toggle buttons when content is empty
+  - Clicking CRITICAL/WARNING/INFO toggle hides respective findings
+  - Clicking toggle again re-shows findings
+  - Non-finding content (Governance Score) unaffected by filter
+  - Filter works during streaming (streaming cursor still present)
 
 ## Tester focus
+
 - `npx tsc --noEmit` — zero errors ✅
-- `npm test -- --run` — all 177 tests pass ✅
-- Verify Copy button copies markdown without the trailing JSON block
-- Verify Download (.md) file has no trailing JSON block
-- Verify Export PDF has no trailing JSON block
-- Verify Export JSON still works (uses findings/summary, falls back to result)
+- `npm test -- --run` — all 198 tests pass (15 files) ✅
+- Verify CRITICAL toggle hides CRITICAL findings in UI
+- Verify WARNING toggle hides WARNING findings
+- Verify INFO toggle hides INFO findings
+- Verify toggling back on re-shows findings
+- Verify Governance Score and Summary remain visible when all severities hidden
+- Verify toggle buttons adopt severity badge colors when active, gray when inactive
+- Verify no toggle buttons appear in empty/skeleton state
+- Verify streaming cursor still renders when `isStreaming={true}`
