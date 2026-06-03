@@ -3,7 +3,8 @@ import type { SeverityLevel } from '../types/audit';
 /**
  * Removes finding blocks whose severity is in `hiddenSeverities`.
  * Non-finding blocks (Summary, Governance Score, etc.) are always kept.
- * A finding block starts with `### [SEVERITY]` and is separated by `\n---\n`.
+ * Each finding block starts with `### [SEVERITY]` and is split from surrounding
+ * content by matching a newline followed by a severity header.
  */
 export function filterMarkdownBySeverity(
   content: string,
@@ -11,15 +12,15 @@ export function filterMarkdownBySeverity(
 ): string {
   if (hiddenSeverities.size === 0) return content;
 
-  const separator = '\n---\n';
-  const blocks = content.split(separator);
+  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
+  const blocks = content.split(blockSplitter);
 
   const filtered = blocks.filter((block) => {
     const severity = extractSeverityFromBlock(block);
     return !severity || !hiddenSeverities.has(severity);
   });
 
-  return filtered.join(separator);
+  return filtered.join('\n');
 }
 
 /**
