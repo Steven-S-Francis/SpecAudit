@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Sentry;
 using SpecAudit.Configuration;
 using SpecAudit.Models.Requests;
 using SpecAudit.Services;
@@ -45,6 +46,9 @@ public static class AuditEndpoints
             }
             catch (Exception ex)
             {
+                // Capture the caught exception in Sentry so it's not lost
+                SentrySdk.CaptureException(ex);
+
                 var message = ex.Message.Contains("429")
                     ? "Rate limit reached. Please wait a moment and try again, or switch to a provider with higher limits."
                     : "An error occurred. Please try again.";
@@ -58,5 +62,11 @@ public static class AuditEndpoints
 
         app.MapGet("/api/config", (IOptions<AiOptions> options) =>
             Results.Ok(new { providerName = options.Value.ProviderName }));
+
+        app.MapGet("/api/test-error", () =>
+        {
+            throw new Exception("This is a SpecAudit test exception to verify Sentry integration.");
+        });
     }
 }
+

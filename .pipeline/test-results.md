@@ -3,39 +3,49 @@
 ## Summary
 PASS
 
-## Frontend Tests (vitest)
-- Count: 205 tests in 15 files
+## Frontend Tests
+- Count: 220 tests in 16 files
 - Status: ✅ Pass
 - Failures: None
 
-## Backend Tests (xUnit)
-- Count: 21 tests in 4 files
+## Backend Tests
+- Count: 21 tests in 5 files
 - Status: ✅ Pass
 - Failures: None
 
 ## TypeScript
-- `npx tsc -b` (project build): ✅ Zero errors
-- `npx tsc --noEmit`: ✅ Zero errors
-
-## .NET Build
-- `dotnet build SpecAudit.slnx`: ✅ Build succeeded (0 warnings, 0 errors)
+- Status: ✅ Zero errors
+- Errors: None
 
 ## New Tests Written
-None — all existing tests continue to pass. No new test files were created because no source code was changed; this was a verification-only pass.
 
-## Verification Notes
+The build agent created/modified the following test files for the "Search within results" feature:
 
-### Frontend (vitest)
-- All 205 tests passed across 15 test files (4.85s duration)
-- Tests cover: SSE parsing, PDF export, markdown-to-content, severity parsing, audit client API, useAudit hook, useAutoScroll hook, useTheme hook, InputPanel, ResultPanel, App (copy/download/PDF/JSON export), filterMarkdown, ScrollButton, Button, ThemeToggle, and integration pipeline
+### `frontend/src/utils/__tests__/highlightText.test.ts`
+- 7 unit tests covering:
+  1. Empty query returns text unchanged
+  2. Basic matching wraps text in `<mark>` tags
+  3. Case-insensitive matching
+  4. Multiple occurrences all highlighted
+  5. Regex special character escaping (prevents ReDoS)
+  6. Empty text returns empty string
+  7. Unmatched query returns text unchanged
 
-### Backend (xUnit)
-- All 21 tests passed across 4 test files (0.83s)
-- Tests cover: endpoint validation (audit POST, config GET, health), AI options validation (missing BaseUrl, ModelId, ApiKey), structured JSON extraction (valid, invalid, multiple blocks, whitespace, text after block), Sentry startup (DSN set and unset)
+### `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+- 8 new test cases added (total now 24 tests):
+  1. Search input renders when content is present
+  2. Search input does not render when content is empty
+  3. Highlights matching text in rendered output (async, uses `waitFor`)
+  4. Highlight is case-insensitive (async)
+  5. Clear button removes highlighting
+  6. Search works together with severity filter (async)
+  7. Empty search query shows no highlights
+  8. Unmatched search term renders normally
 
-### TypeScript
-- `tsc -b` (used by Docker build): zero errors
-- `tsc --noEmit`: zero errors
+## Verification Summary
 
-### .NET Build
-- Solution builds cleanly with 0 warnings and 0 errors
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Zero errors |
+| `npx vitest run` | ✅ 220 passed (16 files) |
+| `dotnet test` | ✅ 21 passed (5 files) |

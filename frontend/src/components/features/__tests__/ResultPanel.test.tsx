@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { ResultPanel } from '../ResultPanel';
 
 describe('ResultPanel', () => {
@@ -168,5 +168,90 @@ describe('ResultPanel', () => {
     expect(screen.getByText('Missing 404')).toBeInTheDocument();
     // Streaming cursor should still be present
     expect(document.querySelector('.animate-pulse')).toBeInTheDocument();
+  });
+
+  // --- Search within results tests ---
+
+  it('renders search input when content is present', () => {
+    render(<ResultPanel content="# Test" isStreaming={false} />);
+    expect(screen.getByPlaceholderText('Search results…')).toBeInTheDocument();
+  });
+
+  it('does not render search input when content is empty', () => {
+    render(<ResultPanel content="" isStreaming={false} />);
+    expect(screen.queryByPlaceholderText('Search results…')).not.toBeInTheDocument();
+  });
+
+  it('highlights matching text in rendered output', async () => {
+    const markdown = '## Governance Score\nScore: 8.5';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const input = screen.getByPlaceholderText('Search results…');
+    fireEvent.change(input, { target: { value: 'Governance' } });
+    // The <mark> element should contain 'Governance'
+    await waitFor(() => {
+      const highlights = container.querySelectorAll('mark.search-highlight');
+      expect(highlights.length).toBeGreaterThanOrEqual(1);
+      expect(highlights[0]).toHaveTextContent('Governance');
+      expect(highlights[0].className).toContain('search-highlight');
+    });
+  });
+
+  it('highlight is case-insensitive', async () => {
+    const markdown = '### [CRITICAL] Missing Auth';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const input = screen.getByPlaceholderText('Search results…');
+    fireEvent.change(input, { target: { value: 'missing' } });
+    await waitFor(() => {
+      const highlights = container.querySelectorAll('mark.search-highlight');
+      expect(highlights.length).toBeGreaterThanOrEqual(1);
+      expect(highlights[0]).toHaveTextContent('Missing');
+    });
+  });
+
+  it('clear button removes highlighting', () => {
+    const markdown = '## Governance Score\nScore: 8.5';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const input = screen.getByPlaceholderText('Search results…');
+    fireEvent.change(input, { target: { value: 'Governance' } });
+    expect(screen.getByLabelText('Clear search')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Clear search'));
+    expect(input).toHaveValue('');
+    const highlights = container.querySelectorAll('mark.search-highlight');
+    expect(highlights.length).toBe(0);
+  });
+
+  it('search works together with severity filter', async () => {
+    const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    // Hide CRITICAL
+    fireEvent.click(screen.getByRole('button', { name: 'CRITICAL' }));
+    // Search for 'Missing'
+    const input = screen.getByPlaceholderText('Search results…');
+    fireEvent.change(input, { target: { value: 'Missing' } });
+    // Only WARNING finding should be visible
+    expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+    // The WARNING text should be present (check via container to handle DOM structure)
+    await waitFor(() => {
+      const markdownArea = container.querySelector<HTMLElement>('.font-mono');
+      expect(markdownArea?.textContent).toContain('Missing 404');
+      expect(markdownArea?.textContent).not.toContain('Missing Auth');
+    });
+  });
+
+  it('empty search query shows no highlights', () => {
+    const markdown = '## Governance Score\nScore: 8.5';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const highlights = container.querySelectorAll('mark.search-highlight');
+    expect(highlights.length).toBe(0);
+  });
+
+  it('unmatched search term renders normally', () => {
+    const markdown = '## Governance Score\nScore: 8.5';
+    const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+    const input = screen.getByPlaceholderText('Search results…');
+    fireEvent.change(input, { target: { value: 'ZZZNOTFOUND' } });
+    const highlights = container.querySelectorAll('mark.search-highlight');
+    expect(highlights.length).toBe(0);
+    expect(screen.getByText('Governance Score')).toBeInTheDocument();
   });
 });

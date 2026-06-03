@@ -1,437 +1,510 @@
-# Monitoring / Error Tracking (Sentry Integration)
-
-## Overview
-
-Add Sentry SDK to both backend (ASP.NET Core) and frontend (React) for proactive error monitoring and outage detection. Sentry is only active when a DSN is configured — no DSN = no-op initialization.
+# Search within results
 
 ## OPEN QUESTIONS
 
-1. **Sentry JS SDK version**: The spec uses `@sentry/react ^9.0.0`. Check the latest stable version at `npm info @sentry/react versions --json`. If v8 is latest, adjust the import paths accordingly (`Sentry.replayIntegration()` vs `new Replay()`). The spec assumes the v9 API shape.
-2. **`@sentry/vite-plugin`**: This spec does NOT include `@sentry/vite-plugin` for source map upload. Sentry recommends it for production builds to get readable stack traces. Should it be included? It would require a Sentry auth token in CI and modifies `vite.config.ts`. If omitted, stack traces in Sentry will be minified.
-3. **Sentry.AspNetCore version for .NET 10**: Confirm `Sentry.AspNetCore 5.*` is compatible with .NET 10. Check `nuget.org` for the latest version that targets `net10.0`. If `5.*` is not yet compatible, use `4.*` instead.
+1. **Minimum query length**: Should single-character searches be allowed, or require ≥2 characters? Searching for a single letter like "e" on a large report could highlight thousands of matches and degrade performance. **Recommendation**: No minimum — empty string disables highlighting, any non-empty query triggers it. The debounce handles the performance case. If rendering is still too slow, we can add a minimum later.
+
+2. **Highlight in code blocks**: Should matches inside `<code>` elements (both inline and block) be highlighted? Highlighting inside block code could visually clutter the output since code often contains special characters like `/`, `.`, or `-` that users might search for. **Recommendation**: Highlight everywhere for now. The `<mark>` styling is subtle (yellow background, dark text) and won't obscure content.
+
+3. **Case sensitivity**: Should the search be case-sensitive or case-insensitive? **The spec assumes case-insensitive** (matching the user's expectation for finding text in a document). If you want case-sensitive, change the `RegExp` flag from `'gi'` to `'g'`.
 
 ---
+
+## Architecture Overview
+
+The search feature lives entirely within the existing `ResultPanel` component. No new components, no backend changes, no markdown pipeline changes.
+
+**Data flow:**
+
+```
+raw markdown content
+  → filterMarkdownBySeverity()  (existing — removes hidden severity blocks)
+    → severity-filtered markdown string
+      → highlightTextInMarkdown()  (NEW — wraps matches with <mark> tags)
+        → markdown with injected <mark> HTML
+          → ReactMarkdown with rehype-raw + rehype-sanitize
+            → rendered DOM with highlighted matches
+```
+
+**Why inject `<mark>` HTML tags into the markdown string instead of modifying ReactMarkdown renderers?**
+- Simpler: only one new utility function + two remark plugin additions, vs. modifying every custom renderer
+- Works for ALL markdown elements, not just the ones with custom overrides
+- The `<mark>` HTML tag passes through `rehype-raw` and renders as a native `<mark>` element
+
+**Why use `rehype-raw`?**
+- `react-markdown` v10 strips raw HTML by default for security. `rehype-raw` enables HTML passthrough.
+- `rehype-sanitize` ensures only safe HTML tags pass through (we configure it to allow `<mark>`).
+- Without this, `<mark>` tags in the markdown string would be rendered as literal text.
+
+**Debounce approach:**
+- Use `useDeferredValue` (React 19 built-in) to defer search highlighting re-renders
+- The search input state updates immediately (responsive typing)
+- The `deferredQuery` value lags behind, so markdown re-processing (splitting + highlighting + ReactMarkdown render) happens at lower priority
+- No explicit timeout needed — React schedules the deferred work during idle periods
 
 ## Files to Create or Modify
 
 | Action | Path | Description |
 |--------|------|-------------|
-| MODIFY | `backend/backend.csproj` | Add `<PackageReference Include="Sentry.AspNetCore" />` |
-| MODIFY | `backend/Program.cs` | Add Sentry configuration with data scrubbing |
-| MODIFY | `frontend/package.json` | Add `@sentry/react` dependency |
-| MODIFY | `frontend/src/main.tsx` | Initialize Sentry frontend SDK |
-| MODIFY | `docker-compose.yml` | Add `Sentry__Dsn` and `VITE_SENTRY_DSN` environment variables |
-| MODIFY | `.env` | Add commented-out placeholder entries for Sentry DSNs |
+| CREATE | `frontend/src/utils/highlightText.ts` | Utility to inject `<mark>` tags into markdown text |
+| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Add search input, deferred query state, wire up highlighting |
+| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Add `rehype-raw` + `rehype-sanitize` plugins to ReactMarkdown |
+| MODIFY | `frontend/package.json` | Add `rehype-raw` and `rehype-sanitize` dependencies |
+| MODIFY | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` | Add search + highlight test cases |
 
 ---
 
-## 1. Backend Changes
+## 1. New file: `frontend/src/utils/highlightText.ts`
 
-### 1.1 `backend/backend.csproj` — Add Package
+### Purpose
 
-Add after the existing `<PackageReference Include="OpenAI" />`:
+Injects `<mark>` HTML tags around case-insensitive matches of `query` in plain text. Operates on the **raw markdown string** before it enters ReactMarkdown.
 
-```xml
-<PackageReference Include="Sentry.AspNetCore" Version="5.*" />
+### Signature
+
+```ts
+/**
+ * Wraps all case-insensitive occurrences of `query` in `<mark>` tags.
+ * Returns the original string unchanged if query is empty.
+ * Escapes special regex characters in query to prevent ReDoS.
+ */
+export function highlightText(text: string, query: string): string;
 ```
 
-Use version `5.*` (latest stable 5.x for .NET 10 compatibility). The `Sentry.AspNetCore` meta-package includes `Sentry` and all ASP.NET Core integrations.
+### Implementation
 
-### 1.2 `backend/Program.cs` — Sentry Configuration
+```ts
+/**
+ * Wraps all case-insensitive occurrences of `query` in `<mark>` tags.
+ * Returns the original string unchanged if query is empty.
+ * Escapes special regex characters in query to prevent ReDoS / injection.
+ */
+export function highlightText(text: string, query: string): string {
+  if (!query || !text) return text;
 
-**Pattern to follow:** The existing `builder.Services.Configure<AiOptions>` and `builder.Configuration` usage in `Program.cs`.
+  // Escape special regex characters
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-Add Sentry *before* `var builder = WebApplication.CreateBuilder(args)` chain, because Sentry hooks into the `IHostBuilder`:
-
-```csharp
-// Add at the top, after the existing using statements
-// No new using needed — Sentry uses extension methods
-
-var builder = WebApplication.CreateBuilder(args);
-
-// --- Sentry (only if DSN is configured) ---
-var sentryDsn = builder.Configuration["Sentry:Dsn"];
-if (!string.IsNullOrWhiteSpace(sentryDsn))
-{
-    builder.WebHost.UseSentry(sentryDsn, options =>
-    {
-        // Performance tracking — traces sample rate (0.0 = no trace, 0.25 = 25%)
-        options.TracesSampleRate = 0.25;
-
-        // Security: never send PII
-        options.SendDefaultPii = false;
-
-        // Security: scrub the AI API key from all captured data
-        options.BeforeSend = @event =>
-        {
-            // Scrub from extra/context
-            if (@event.Contexts.TryGetValue("Ai", out var aiContext))
-            {
-                foreach (var key in new[] { "ApiKey", "apiKey" })
-                {
-                    if (aiContext.ContainsKey(key))
-                        aiContext[key] = "[redacted]";
-                }
-            }
-
-            // Scrub from breadcrumb data
-            foreach (var breadcrumb in @event.Breadcrumbs)
-            {
-                if (breadcrumb.Data?.ContainsKey("ApiKey") == true)
-                    breadcrumb.Data["ApiKey"] = "[redacted]";
-            }
-
-            return @event;
-        };
-
-        // Send only errors and above by default (can be configured per-environment)
-        options.MinimumBreadcrumbLevel = Microsoft.Extensions.Logging.LogLevel.Warning;
-        options.MinimumEventLevel = Microsoft.Extensions.Logging.LogLevel.Error;
-    });
+  // Split and rejoin with <mark> tags — avoids re-entrant matching
+  return text.replace(
+    new RegExp(escaped, 'gi'),
+    (match) => `<mark class="search-highlight">${match}</mark>`,
+  );
 }
 ```
 
-**Key design decisions:**
-- Sentry is only configured when `Sentry:Dsn` is present and non-empty. This means local dev with no DSN runs Sentry-free, emitting zero Sentry-related log noise.
-- `TracesSampleRate = 0.25` — captures 25% of requests for performance monitoring without overwhelming the quota.
-- `SendDefaultPii = false` — ensures no personal info (IP addresses, etc.) is sent.
-- `BeforeSend` callback scrubs `Ai:ApiKey` from any context or breadcrumb data that Sentry might have captured.
-- `MinimumEventLevel = Error` — only sends error-level events, not warnings.
-- The existing `/health` endpoint (line 45) remains unchanged — Railway uses it for uptime health checks, and any failure there will automatically be captured as an error by Sentry.
-
-**Placement within `Program.cs`:**
-- Insert AFTER line 8 (`var builder = WebApplication.CreateBuilder(args);`)
-- Insert BEFORE line 10 (`builder.Services.Configure<AiOptions>(...)`)
-- This ensures Sentry is bootstrapped before any service configuration.
+**Edge cases handled:**
+- Empty query → returns text unchanged (no-op)
+- Empty text → returns empty string
+- Query not found → text unchanged
+- Query with regex special chars (`(`, `)`, `*`, `+`, etc.) → escaped before building RegExp
+- Overlapping matches → `String.replace` handles non-overlapping matches; overlapping (e.g., "aaa" searching for "aa") is rare and `replace` only replaces the first match in each overlap group, which is acceptable
+- Matches spanning markdown syntax characters (e.g., `###`) → `<mark>` is injected around the match; since markdown headings are defined by leading `###`, the `###` is still at the start of the line, so markdown parsing is unaffected
 
 ---
 
-## 2. Frontend Changes
+## 2. Modify `frontend/src/components/features/ResultPanel.tsx`
 
-### 2.1 `frontend/package.json` — Add Dependencies
+### 2.1 Add imports
 
-Add to `dependencies`:
+Add these imports at the top:
 
-```json
-"@sentry/react": "^9.0.0",
-"@sentry/browser": "^9.0.0"
+```ts
+import { useDeferredValue } from 'react';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { type Options as SanitizeOptions } from 'rehype-sanitize';
+import { highlightText } from '../../utils/highlightText';
 ```
 
-`@sentry/react` is the main package for React integration (includes ErrorBoundary, Profiler, etc.).  
-`@sentry/browser` provides the core browser SDK (includes Replay, BrowserTracing, etc.).
+### 2.2 Allow `<mark>` in rehype-sanitize
 
-> **Note:** In Sentry v9+, `@sentry/react` re-exports everything from `@sentry/browser`. However, for Replay functionality, the import path is explicit. Check the final `package.json` after install to verify exact version.
+Define a custom sanitize schema that permits `<mark>` elements:
 
-### 2.2 `frontend/src/main.tsx` — Sentry Initialization
+```ts
+const SANITIZE_SCHEMA: SanitizeOptions = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],
+  attributes: {
+    ...defaultSchema.attributes,
+    mark: ['class'],
+  },
+};
+```
 
-**Replace the existing `main.tsx` content** with:
+(The exact import of `defaultSchema` needs verification — it may be `defaultSchema` or a named export from `rehype-sanitize`. The Coder should check the actual export.)
+
+### 2.3 Add search state and deferred query
+
+Inside the `ResultPanel` function, after existing state:
+
+```ts
+const [searchQuery, setSearchQuery] = useState('');
+const deferredQuery = useDeferredValue(searchQuery);
+```
+
+### 2.4 Add search input UI
+
+Add the search input between the `{content && ...}` severity filter group and the `<div className="font-mono ...">` markdown area.
+
+Place it after the severity filter buttons (line 99) and before the markdown content div (line 101):
 
 ```tsx
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import * as Sentry from '@sentry/react';
-import App from './App';
-import './index.css';
+{/* Search input */}
+<div className="relative mb-3">
+  <input
+    type="text"
+    value={searchQuery}
+    onChange={(e) => setSearchQuery(e.target.value)}
+    placeholder="Search results…"
+    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 pl-8 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
+    aria-label="Search within results"
+  />
+  {/* Search icon (magnifying glass) */}
+  <svg
+    className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none"
+    xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+    fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+  >
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+  {/* Clear button — only visible when query is non-empty */}
+  {searchQuery && (
+    <button
+      onClick={() => setSearchQuery('')}
+      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 light:hover:text-slate-600"
+      aria-label="Clear search"
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      >
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+  )}
+</div>
+```
 
-// Sentry initialization — only if DSN is set
-const sentryDsn = import.meta.env.VITE_SENTRY_DSN;
-if (sentryDsn) {
-  Sentry.init({
-    dsn: sentryDsn,
-    environment: import.meta.env.MODE,  // 'development' | 'production'
-    integrations: [
-      // Session replay — captures user interactions for error replay
-      Sentry.replayIntegration({
-        // Only record replays in production to save bandwidth in dev
-        sessionSampleRate: import.meta.env.MODE === 'production' ? 0.1 : 0.0,
-        errorSampleRate: import.meta.env.MODE === 'production' ? 1.0 : 0.0,
-      }),
-    ],
-    // Send only errors, not warnings
-    beforeSend(event) {
-      // Never send PII — scrub any potential personally identifiable data
-      if (event.request?.headers) {
-        event.request.headers = {};
-      }
-      return event;
-    },
-    // Performance monitoring — traces sample rate
-    tracesSampleRate: import.meta.env.MODE === 'production' ? 0.25 : 0.0,
-    // Replays sampling
-    replaysSessionSampleRate: import.meta.env.MODE === 'production' ? 0.1 : 0.0,
-    replaysOnErrorSampleRate: 1.0,
+### 2.5 Apply highlighting to content
+
+Replace the `filteredContent` variable assignment (line 62) with:
+
+```ts
+const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
+const highlightedContent = highlightText(filteredContent, deferredQuery);
+```
+
+### 2.6 Pass highlighted content and add rehype plugins
+
+Replace the ReactMarkdown invocation (lines 102–143) with:
+
+```tsx
+<ReactMarkdown
+  remarkPlugins={[remarkGfm]}
+  rehypePlugins={[
+    [rehypeRaw],
+    [rehypeSanitize, SANITIZE_SCHEMA],
+  ]}
+  components={{ /* … unchanged … */ }}
+>
+  {highlightedContent}
+</ReactMarkdown>
+```
+
+**Note on component ordering:** If the rehype plugin declaration format differs from the above (e.g., flat array vs. nested), the Coder should refer to the `react-markdown` v10 documentation for the exact plugin array shape.
+
+### 2.7 Search input visibility
+
+The search input should only render when `content` is present (same condition as the severity filter buttons). Wrap the search input block in the same `{content && (...)}` condition that wraps the severity buttons.
+
+### 2.8 Full renderer changes summary
+
+The modified component flow (inside the `!showSkeleton` branch):
+
+```
+{content && (
+  <>
+    <Severity filter buttons />       (existing, unchanged)
+    <Search input />                  (NEW)
+  </>
+)}
+<div className="font-mono text-sm …">
+  <ReactMarkdown
+    remarkPlugins={[remarkGfm]}
+    rehypePlugins={[[rehypeRaw], [rehypeSanitize, SANITIZE_SCHEMA]]}
+    components={{ /* same custom renderers */ }}
+  >
+    {highlightedContent}
+  </ReactMarkdown>
+  {isStreaming && <Blinking cursor />}  (existing, unchanged)
+</div>
+{content && <ScrollButton … />}        (existing, unchanged)
+```
+
+---
+
+## 3. Modify `frontend/package.json`
+
+Add these to `dependencies`:
+
+```json
+"rehype-raw": "^7.0.0",
+"rehype-sanitize": "^6.0.0"
+```
+
+These versions are compatible with `react-markdown ^10.1.0`. Verify exact latest versions with `npm info rehype-raw versions --json` and `npm info rehype-sanitize versions --json`.
+
+---
+
+## 4. Add test file entries to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+
+Add the following test cases inside the existing `describe('ResultPanel', () => { … })` block.
+
+### 4.1 Search input renders when content is present
+
+```ts
+it('renders search input when content is present', () => {
+  render(<ResultPanel content="# Test" isStreaming={false} />);
+  expect(screen.getByPlaceholderText('Search results…')).toBeInTheDocument();
+});
+
+it('does not render search input when content is empty', () => {
+  render(<ResultPanel content="" isStreaming={false} />);
+  expect(screen.queryByPlaceholderText('Search results…')).not.toBeInTheDocument();
+});
+```
+
+### 4.2 Search highlighting in rendered output
+
+```ts
+it('highlights matching text in rendered output', () => {
+  const markdown = '## Governance Score\nScore: 8.5';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const input = screen.getByPlaceholderText('Search results…');
+  fireEvent.change(input, { target: { value: 'Governance' } });
+  // The <mark> element should contain 'Governance'
+  const highlights = container.querySelectorAll('mark.search-highlight');
+  expect(highlights.length).toBeGreaterThanOrEqual(1);
+  expect(highlights[0]).toHaveTextContent('Governance');
+  expect(highlights[0].className).toContain('search-highlight');
+});
+
+it('highlight is case-insensitive', () => {
+  const markdown = '### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const input = screen.getByPlaceholderText('Search results…');
+  fireEvent.change(input, { target: { value: 'missing' } });
+  const highlights = container.querySelectorAll('mark.search-highlight');
+  expect(highlights.length).toBeGreaterThanOrEqual(1);
+  expect(highlights[0]).toHaveTextContent('Missing');
+});
+```
+
+### 4.3 Clear button resets highlights
+
+```ts
+it('clear button removes highlighting', () => {
+  const markdown = '## Governance Score\nScore: 8.5';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const input = screen.getByPlaceholderText('Search results…');
+  fireEvent.change(input, { target: { value: 'Governance' } });
+  expect(screen.getByLabelText('Clear search')).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText('Clear search'));
+  expect(input).toHaveValue('');
+  const highlights = container.querySelectorAll('mark.search-highlight');
+  expect(highlights.length).toBe(0);
+});
+```
+
+### 4.4 Search + severity filter interaction
+
+```ts
+it('search works together with severity filter', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  // Hide CRITICAL
+  fireEvent.click(screen.getByRole('button', { name: 'CRITICAL' }));
+  // Search for 'Missing'
+  const input = screen.getByPlaceholderText('Search results…');
+  fireEvent.change(input, { target: { value: 'Missing' } });
+  // Only WARNING finding should be visible and highlighted
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+  expect(screen.getByText('Missing 404')).toBeInTheDocument();
+});
+```
+
+### 4.5 Empty search shows no highlights
+
+```ts
+it('empty search query shows no highlights', () => {
+  const markdown = '## Governance Score\nScore: 8.5';
+  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
+  const highlights = container.querySelectorAll('mark.search-highlight');
+  expect(highlights.length).toBe(0);
+});
+```
+
+### 4.6 Search term not found renders normally
+
+```ts
+it('unmatched search term renders normally', () => {
+  const markdown = '## Governance Score\nScore: 8.5';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const input = screen.getByPlaceholderText('Search results…');
+  fireEvent.change(input, { target: { value: 'ZZZNOTFOUND' } });
+  const highlights = container.querySelectorAll('mark.search-highlight');
+  expect(highlights.length).toBe(0);
+  expect(screen.getByText('Governance Score')).toBeInTheDocument();
+});
+```
+
+---
+
+## 5. CSS for `<mark>` highlights
+
+Add to `frontend/src/index.css` or a CSS module. Since Tailwind v4 is used with `@import "tailwindcss"`, add a custom utility. The `<mark>` tag uses the `search-highlight` class.
+
+Add this to `frontend/src/index.css`:
+
+```css
+mark.search-highlight {
+  @apply bg-yellow-400 text-slate-900 rounded px-0.5;
+}
+```
+
+**Light mode compatibility:** The yellow background is equally visible in both dark and light mode. The `text-slate-900` ensures contrast against the yellow background.
+
+---
+
+## Edge Cases
+
+### 5.1 Empty search query
+- `highlightText` returns text unchanged.
+- No `<mark>` tags injected.
+- No performance impact.
+
+### 5.2 Search term not found
+- `String.replace` returns the original string unchanged.
+- No `<mark>` tags injected.
+- Content renders normally.
+
+### 5.3 Special regex characters in query
+- `.*+?^${}()|[]\` are all escaped before constructing the RegExp.
+- Searching for `(CRITICAL)` will match the literal string `(CRITICAL)` in the markdown.
+
+### 5.4 Query appears inside markdown formatting (e.g., searching for `CRITICAL`)
+- The match `CRITICAL` appears inside `[CRITICAL]` in the raw markdown heading `### [CRITICAL] Missing Auth`.
+- `highlightText` replaces it with `<mark class="search-highlight">CRITICAL</mark>`, resulting in:
+  `### [<mark class="search-highlight">CRITICAL</mark>] Missing Auth`
+- ReactMarkdown parses this as a heading (`###`) with inline content containing `<mark>`. This works correctly.
+
+### 5.5 Query appears inside severity filter badges
+- The severity filter buttons (CRITICAL / WARNING / INFO) are outside the markdown area and are NOT affected by highlighting.
+- The badge text inside the markdown content (the `<span className={styles.badge}>` in the h3 renderer) IS highlighted because the `<mark>` tag is in the raw markdown before ReactMarkdown renders it.
+
+### 5.6 Streaming content
+- The search input state persists across content updates.
+- `deferredQuery` updates asynchronously, so rapid streaming chunks don't trigger re-highlighting on every chunk.
+- The user can continue typing search terms while content streams in.
+
+### 5.7 Very large reports (>10k lines)
+- `highlightText` uses a single `String.replace` call — O(n) in content length.
+- ReactMarkdown parsing is the bottleneck. `useDeferredValue` ensures this work is deferred.
+- If performance is still poor, the search input could be disabled during streaming (`isStreaming` prop), but this is NOT in scope.
+
+### 5.8 Copy / Export / Download
+- All export functions (`handleCopy`, `handleDownload`, `handleExportPdf`, `handleExportJson`) use the raw `strippedResult` string from `App.tsx` — they NEVER see the highlighted HTML.
+- No search artifacts leak into exports.
+
+### 5.9 Multiple matches in the same line
+- `String.replace` with `g` flag replaces all matches in the string.
+- Overlapping matches (e.g., text `"aaaa"` searching for `"aa"`) result in two non-overlapping `<mark>` tags: `<mark>aa</mark><mark>aa</mark>`. This is acceptable behavior.
+
+### 5.10 Null/undefined content
+- `highlightText` handles empty/falsy text by returning it unchanged.
+- The `{content && ...}` guard ensures the search input is not rendered when content is empty.
+
+---
+
+## Testing Strategy
+
+### Unit tests for `highlightText.ts`
+
+Create `frontend/src/utils/__tests__/highlightText.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { highlightText } from '../highlightText';
+
+describe('highlightText', () => {
+  it('returns text unchanged for empty query', () => {
+    expect(highlightText('hello world', '')).toBe('hello world');
   });
-}
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <Sentry.ErrorBoundary fallback={<div className="p-8 text-center text-red-400">An unexpected error occurred.</div>}>
-      <App />
-    </Sentry.ErrorBoundary>
-  </StrictMode>,
-);
+  it('wraps matching text in <mark> tags', () => {
+    expect(highlightText('hello world', 'world'))
+      .toBe('hello <mark class="search-highlight">world</mark>');
+  });
+
+  it('is case-insensitive', () => {
+    expect(highlightText('Hello World', 'world'))
+      .toBe('Hello <mark class="search-highlight">World</mark>');
+  });
+
+  it('highlights all occurrences', () => {
+    expect(highlightText('test test test', 'test'))
+      .toBe(
+        '<mark class="search-highlight">test</mark> '
+        + '<mark class="search-highlight">test</mark> '
+        + '<mark class="search-highlight">test</mark>'
+      );
+  });
+
+  it('escapes regex special characters', () => {
+    expect(highlightText('cost (total)', '(total)'))
+      .toBe('cost <mark class="search-highlight">(total)</mark>');
+  });
+
+  it('returns empty string for empty text', () => {
+    expect(highlightText('', 'test')).toBe('');
+  });
+
+  it('returns text unchanged when query not found', () => {
+    expect(highlightText('hello world', 'xyz')).toBe('hello world');
+  });
+});
 ```
 
-**Key design decisions:**
-- `VITE_SENTRY_DSN` env var follows Vite's convention (`VITE_` prefix). This is replaced at build time by Vite.
-- `environment: import.meta.env.MODE` — distinguishes dev/production errors in Sentry dashboard.
-- `replayIntegration` with `sessionSampleRate: 0.1` (10% in production) — captures enough replays for debugging without overwhelming storage. Dev replays are disabled (0.0).
-- `errorSampleRate: 1.0` — always capture a replay when an error occurs.
-- `tracesSampleRate: 0.25` (production only) — 25% trace sampling for performance monitoring.
-- `Sentry.ErrorBoundary` wraps the entire `<App />` — catches any uncaught React errors with a minimal fallback UI.
-- The `beforeSend` callback strips request headers to prevent accidental PII leakage.
-- If `VITE_SENTRY_DSN` is not set, Sentry is never initialized — no network requests, no side effects.
+### Component tests (in `ResultPanel.test.tsx`)
 
-**Edge cases:**
-1. **`VITE_SENTRY_DSN` is empty string**: The `if (sentryDsn)` check handles this — empty string is falsy.
-2. **`import.meta.env.MODE` is undefined**: Falls back gracefully — Sentry receives `undefined` for environment and uses its default.
-3. **Replay fails to load**: Replay is an optional integration — if it fails to initialize, Sentry core still works.
-4. **`Sentry.ErrorBoundary` catches an error during initial render**: The fallback component renders a centered red error message. No Sentry upload loop — ErrorBoundary only shows fallback once.
+Already listed in Section 4 above. Follow the existing test patterns:
+- Render with `@testing-library/react`
+- Use `fireEvent` for interactions
+- Use `container.querySelectorAll` for checking `<mark>` elements
+- Use `screen.getByText` / `screen.queryByText` for visible content assertions
+
+### What NOT to test
+
+- **Debounce timing**: `useDeferredValue` is a React 19 primitive — we test behavior, not timing. The component tests verify that highlights appear after changing the search value, which is sufficient.
+- **rehype plugin integration**: This is `react-markdown` internals. Trust that `rehype-raw` + `rehype-sanitize` works as documented.
+- **Performance under load**: Manual testing during review.
 
 ---
 
-## 3. Environment Variables / Configuration
-
-### 3.1 `.env` (local Docker compose)
-
-Add commented-out placeholders after the existing `AI_API_KEY` line (line 1):
-
-```env
-AI_API_KEY=your-api-key-here
-
-# Sentry DSN (optional — leave empty to disable Sentry)
-# Get from https://specaudit.sentry.io/ → Project Settings → Client Keys (DSN)
-# SENTRY_DSN=
-# VITE_SENTRY_DSN=
-```
-
-### 3.2 `docker-compose.yml`
-
-Add Sentry env vars under `environment`:
-
-```yaml
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "5000:5000"
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Production
-      - Ai__ApiKey=${AI_API_KEY}
-      - Sentry__Dsn=${SENTRY_DSN}
-      # VITE_SENTRY_DSN is a build-time arg, not runtime env var
-      # It's baked into the frontend JS during npm run build
-    restart: unless-stopped
-```
-
-> **Note on `VITE_SENTRY_DSN`:** Unlike the backend DSN, the frontend DSN is a **build-time** environment variable. Vite replaces `import.meta.env.VITE_SENTRY_DSN` at build time. In Railway, this would be set in the build command env or passed as a Docker build arg. For local Docker Compose, it would need to be passed as a build argument if Sentry is desired in the frontend. For Railway, add `VITE_SENTRY_DSN` to the Railway project's environment variables (Railway injects VITE_ prefixed variables at build time for frontend frameworks).
-
-### 3.3 Railway Setup (documentation only — no files changed)
-
-Railway needs these env vars configured in the dashboard:
-
-| Variable | Purpose | Required? | Scoping |
-|----------|---------|-----------|---------|
-| `Sentry__Dsn` | Backend Sentry DSN | No | Runtime |
-| `VITE_SENTRY_DSN` | Frontend Sentry DSN | No | Build-time (Vite injects into JS bundle) |
-
-Both are optional. If omitted, Sentry is a no-op in both layers.
-
----
-
-## 4. Security Considerations
-
-### 4.1 API Key Scrubbing (Backend)
-
-The `BeforeSend` callback in Program.cs handles:
-
-1. **`options.Contexts`**: If Sentry captures the `Ai` configuration section, `ApiKey` and `apiKey` keys are replaced with `[redacted]`.
-2. **Breadcrumb data**: Any breadcrumb that contains an `ApiKey` key is scrubbed.
-3. **`SendDefaultPii = false`**: Prevents IP addresses, usernames, and other PII from being included.
-
-### 4.2 Request Header Stripping (Frontend)
-
-The `beforeSend` callback in `main.tsx` sets `event.request.headers = {}` to ensure no authorization headers or cookies leak into Sentry.
-
-### 4.3 Frontend DSN Is Public
-
-The frontend DSN is embedded in the client-side JS bundle. This is by design for Sentry — the DSN identifies the project but is not a secret. Anyone can see it in the browser's network tab. Sentry uses it only for routing events. Rate limits and project access are controlled via DSN restrictions in the Sentry dashboard.
-
-### 4.4 No PII by Default
-
-- `SendDefaultPii = false` is explicit
-- Request headers are cleared on the frontend
-- No user context is attached
-- Breadcrumb levels are set to `Warning` minimum (no debug-level data)
-
----
-
-## 5. Test Approach
-
-### 5.1 Backend: Verify No Crash When DSN Is Missing
-
-**Existing test pattern to follow:** `backend.Tests/EndpointValidationTests.cs` uses `WebApplicationFactory<Program>` with in-memory configuration.
-
-Add a new test file: `backend.Tests/SentryStartupTests.cs`:
-
-```csharp
-using Microsoft.AspNetCore.Mvc.Testing;
-using Xunit;
-
-namespace backend.Tests;
-
-public class SentryStartupTests : IClassFixture<WebApplicationFactory<Program>>
-{
-    private readonly WebApplicationFactory<Program> _factory;
-
-    public SentryStartupTests(WebApplicationFactory<Program> factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task HealthEndpoint_Works_WhenSentryDsnIsNotSet()
-    {
-        // Arrange: no Sentry:Dsn in config
-        var client = _factory.WithWebHostBuilder(builder =>
-            builder.ConfigureAppConfiguration((_, cfg) =>
-                cfg.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Ai:ProviderName"]   = "Test",
-                    ["Ai:BaseUrl"]        = "https://test.example.com/v1",
-                    ["Ai:ModelId"]        = "test-model",
-                    ["Ai:ApiKey"]         = "test-key",
-                    ["Ai:MaxInputLength"] = "100000"
-                    // NOTE: Sentry__Dsn is intentionally absent
-                })
-            )
-        ).CreateClient();
-
-        // Act
-        var response = await client.GetAsync("/health");
-
-        // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task HealthEndpoint_Works_WhenSentryDsnIsSet()
-    {
-        // Arrange: with Sentry:Dsn set (fake DSN — no actual connection)
-        var client = _factory.WithWebHostBuilder(builder =>
-            builder.ConfigureAppConfiguration((_, cfg) =>
-                cfg.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Ai:ProviderName"]   = "Test",
-                    ["Ai:BaseUrl"]        = "https://test.example.com/v1",
-                    ["Ai:ModelId"]        = "test-model",
-                    ["Ai:ApiKey"]         = "test-key",
-                    ["Ai:MaxInputLength"] = "100000",
-                    ["Sentry:Dsn"]        = "https://fake@example.com/1"  // Fake DSN — SDK won't connect
-                })
-            )
-        ).CreateClient();
-
-        // Act
-        var response = await client.GetAsync("/health");
-
-        // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-    }
-}
-```
-
-**Note:** Add `using FluentAssertions;` and `using System.Net;` to the file.
-
-### 5.2 Frontend: Verify App Renders When VITE_SENTRY_DSN Is Not Set
-
-The existing test setup in `App.test.tsx` already mocks all hooks. Sentry initialization in `main.tsx` is a side effect — `App.tsx` itself does not import Sentry. The tests render `<App />` directly (not via `main.tsx`), so Sentry has no effect on existing tests.
-
-**No new frontend tests are needed** because:
-
-1. `main.tsx` is not unit-tested (it's the bootstrap entry point)
-2. The `if (sentryDsn)` guard means Sentry is a no-op when DSN is missing
-3. The app component tree is unchanged — `Sentry.ErrorBoundary` is in `main.tsx`, not `App.tsx`
-
-**Manual verification steps:**
-
-```bash
-# Frontend dev build — ensure no Sentry errors in console
-VITE_SENTRY_DSN="" npm run dev
-# Verify app loads without any Sentry-related console errors
-
-# Frontend production build with DSN
-VITE_SENTRY_DSN="https://key@o1.ingest.sentry.io/123" npm run build
-# Verify build succeeds and contains "Sentry.init" in the bundle
-```
-
-### 5.3 Verification Without Real DSN
-
-To verify Sentry initialization without a real DSN:
-
-**Backend:**
-- Set `Sentry__Dsn` to a fake value: `https://fake@sentry.io/123`
-- Start the app and trigger an error (e.g., hit `/api/audit` with an empty body)
-- Check the logs — Sentry should log a warning about invalid DSN but not crash
-
-**Frontend:**
-- Set `VITE_SENTRY_DSN` to a fake value and rebuild
-- Open the app, trigger an error (e.g., access a broken route)
-- Check the browser console for Sentry error messages (expected: "Sentry: Unable to send event")
-- Verify the app still renders normally despite Sentry errors
-
-Neither test requires a real Sentry account.
-
----
-
-## 6. Edge Cases
-
-### 6.1 `Sentry__Dsn` Has Invalid Format
-- The `Sentry.AspNetCore` SDK validates DSN format at startup. If invalid, it logs a warning (not an exception) and disables itself.
-- No startup crash — the app continues without monitoring.
-
-### 6.2 `VITE_SENTRY_DSN` Has Invalid Format
-- `Sentry.init()` validates the DSN on the client side. If invalid, it logs a console error and disables itself.
-- No crash — the app continues without monitoring.
-
-### 6.3 Sentry Backend Unreachable
-- The Sentry SDK sends events asynchronously with retry logic and exponential backoff.
-- If the Sentry ingest endpoint is unreachable, events are queued in memory and retried. If all retries fail, events are dropped silently.
-- No impact on user-facing functionality — the app continues to work normally.
-
-### 6.4 Multiple `ApiKey`-Like Config Keys
-- The `BeforeSend` callback scrubs `ApiKey` and `apiKey` keys. If any other config keys contain API keys (e.g., `Sentry__ApiKey`), they are not scrubbed — but Sentry does not capture configuration values unless explicitly added to the scope.
-- This is acceptably safe: the only API key in the app is `Ai:ApiKey`, which IS scrubbed.
-
-### 6.5 Frontend DSN Leaked in Git
-- `VITE_SENTRY_DSN` goes into the Railway dashboard, not into source code. No `.env` file with the real DSN is committed.
-- The `.env` file is already in `.gitignore` (confirmed).
-
-### 6.6 Large Trace Volume / Quota Exhaustion
-- `tracesSampleRate: 0.25` limits traces to 25% of requests.
-- `MinimumEventLevel: Error` limits events to errors only.
-- If the Sentry quota is reached, Sentry stops sending and logs warnings — no app impact.
-
----
-
-## 7. Summary of Implementation Order
-
-1. **Backend:**
-   - `dotnet add backend/backend.csproj package Sentry.AspNetCore`
-   - Edit `backend/Program.cs` to add Sentry configuration block
-   - Add `backend.Tests/SentryStartupTests.cs` with startup resilience tests
-
-2. **Frontend:**
-   - `npm install @sentry/react @sentry/browser` in `frontend/`
-   - Edit `frontend/src/main.tsx` with Sentry init + ErrorBoundary
-
-3. **Configuration/Docs:**
-   - Edit `docker-compose.yml` to add `Sentry__Dsn` env var
-   - Edit `.env` to add commented-out Sentry DSN placeholders
-
-4. **Verify:**
-   - `dotnet build && dotnet test` on backend
-   - `npx tsc --noEmit && npx vitest run && npm run build` on frontend
-   - Manual smoke test without DSN (both layers)
+## Implementation Order
+
+1. `npm install rehype-raw rehype-sanitize` in `frontend/`
+2. Create `frontend/src/utils/highlightText.ts`
+3. Create `frontend/src/utils/__tests__/highlightText.test.ts`
+4. Add `.search-highlight` CSS rule to `frontend/src/index.css`
+5. Modify `frontend/src/components/features/ResultPanel.tsx`:
+   - Add imports
+   - Add `SANITIZE_SCHEMA`
+   - Add search state + deferred query
+   - Add search input UI (conditionally rendered)
+   - Apply `highlightText` to filtered content
+   - Add `rehypePlugins` to ReactMarkdown
+6. Add test cases to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+7. `npx tsc --noEmit && npx vitest run` — ensure all tests pass
+8. Manual smoke test: open the app, run an audit, type in the search input, verify highlights appear

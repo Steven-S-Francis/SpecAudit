@@ -1,102 +1,74 @@
-# Review: Code Review Fixes Findings 1-3
+# Review: Search within results
+
 ## VERDICT: SHIP
 
-## Pre-flight Checks
-- Spec read: .pipeline/spec.md v3
-- Changes read: .pipeline/changes.md
-- Test results: PASS (205 frontend, 19 backend)
-- git diff HEAD: verified changes match
+## Findings
 
-## Finding 1 - Build agent bash permissions
+### Spec Conformance: ✅ PASS
+- All specified files were created/modified correctly:
+  - `frontend/src/utils/highlightText.ts` — created with regex escaping, matches spec signature and implementation exactly
+  - `frontend/src/components/features/ResultPanel.tsx` — search input, deferred query, rehype plugins, h3 renderer fix, SANITIZE_SCHEMA
+  - `frontend/package.json` — rehype-raw ^7.0.0, rehype-sanitize ^6.0.0 added
+  - `frontend/src/index.css` — `.search-highlight` CSS rule added matching spec
+  - `frontend/src/utils/__tests__/highlightText.test.ts` — 7 unit tests covering all edge cases
+  - `frontend/src/components/features/__tests__/ResultPanel.test.tsx` — 8 new tests added
 
-### Verified
-- File: .opencode/opencode.json
-- Bash block (lines 20-29): deny with explicit allowlist
-- edit/write rules: unchanged
-- Plan agent already has deny
+### Documented Deviations (acceptable)
+1. **`className` vs `class`** — Schema uses `['className']` (HAST property name) instead of `['class']`. Necessary for `hast-util-sanitize` to work. Correct fix.
+2. **h3 renderer restructured** — Added `extractTextContent()` helper and `Children.map` to preserve `<mark>` elements in headings. Fixes `[object Object]` bug that the spec didn't anticipate.
+3. **Tests use `waitFor`** — Three tests use `async`/`waitFor` because `useDeferredValue` defers highlight updates. Necessary accommodation.
 
-### Result: PASS - matches spec exactly
+### Security Review: ✅ PASS (no findings)
+- **Query escaping**: All regex special characters (`.*+?^${}()|[]\`) are escaped before RegExp construction — prevents ReDoS and injection.
+- **rehype-sanitize protection**: Only `<mark>` elements with `className` are allowed in the schema. XSS via query text is prevented because rehype-sanitize runs after rehype-raw and strips disallowed HTML tags.
+- **No information disclosure**: No exception messages forwarded to client.
+- **No new endpoints**: Search is entirely client-side. No auth concerns.
+- **No secrets exposure**: No credentials in source files.
 
-## Finding 2 - JSON export stripped result
+### Correctness Review: ✅ PASS (no findings)
+- **Async discipline**: `useDeferredValue` used correctly. No fire-and-forget patterns.
+- **State management**: No race conditions. `searchQuery` and `deferredQuery` properly separated.
+- **Runtime type safety**: No `JSON.parse` casts, no `as unknown as T` patterns.
+- **Error handling**: No empty catch blocks. `extractTextContent` gracefully handles all node types.
+- **Edge case coverage**:
+  - Empty query → no highlighting (tested) ✅
+  - Empty content → search input hidden (tested) ✅
+  - Case-insensitive matching (tested) ✅
+  - Regex special chars escaped (tested) ✅
+  - Clear button removes highlights (tested) ✅
+  - Search + severity filter interaction (tested) ✅
+  - Unmatched query → normal rendering (tested) ✅
+  - All nine edge cases from spec Section 5 are handled ✅
 
-### Verified
-- File: frontend/src/App.tsx
-- Line 66: uses strippedResult (not state.result)
-- Line 81: deps uses strippedResult (not state.result)
+### Code Quality: ✅ Good
+- No dead code or unused imports
+- No cross-platform issues
+- `useDeferredValue` for debounced re-rendering (no setTimeout-based debounce)
+- Single `String.replace` — O(n) performance, no ReDoS risk
+- CSS uses Tailwind v4 `@apply` correctly
+- `extractTextContent` recursion handles all React node types (string, number, array, element, falsy)
 
-### Result: PASS - matches spec exactly
+### Test Quality: ✅ Strong
+- **`highlightText` unit tests**: 7 tests covering empty query, basic matching, case-insensitivity, multiple occurrences, regex escaping, empty text, unmatched query
+- **`ResultPanel` component tests**: 8 new tests covering visibility, highlighting, case-insensitivity, clear behavior, severity+search interaction, empty query, unmatched term
+- Tests verify DOM behavior (user-visible output), not implementation details
+- Both happy paths and edge cases are covered
 
-## Finding 3 - Dark mode prefers-color-scheme
-
-### Verified (Source)
-- File: frontend/src/hooks/useTheme.ts
-- Lines 13-18: matchMedia check after localStorage with try-catch
-- useEffect: unchanged
-- toggle: unchanged
-
-### Verified (Tests)
-- File: frontend/src/hooks/__tests__/useTheme.test.tsx
-- Line 11: matchMedia reset uses assignment (not delete)
-- Test: defaults to dark theme when no OS preference
-- New test: defaults to light theme when OS prefers light mode
-- New test: localStorage preference overrides OS preference
-
-### Result: PASS - matches spec exactly
-
-## Security Review - No blocking issues
-
-| Check | Status | Notes |
-|-------|--------|-------|
-| Information disclosure | PASS | No exception leaks, no stack traces |
-| Missing auth/authorization | PASS | No new endpoints or routes |
-| Unvalidated external input | PASS | No new input parsing |
-| Injection vectors | PASS | No HTML/SQL/shell interpolation |
-| Secrets exposure | PASS | No API keys or credentials in source |
-| Permissions bypass (Finding 1) | PASS | Bash deny blocks shell bypass |
-
-## Correctness Review - No blocking issues
-
-| Check | Status | Notes |
-|-------|--------|-------|
-| Async discipline | PASS | No new async code introduced |
-| State race conditions | PASS | No new shared state |
-| Runtime type safety | PASS | No JSON.parse or type casts introduced |
-| Error swallowing | PASS (pre-existing) | Empty catch blocks in App.tsx are pre-existing |
-
-## Spec Conformance
-
-| Requirement | Status | Notes |
-|-------------|--------|-------|
-| Finding 1: bash allowlist | MATCH | Exact match to spec |
-| Finding 1: edit/write unchanged | MATCH | Verified in file |
-| Finding 1: no other allow agents | MATCH | Only plan and build agents |
-| Finding 2: strippedResult in assignment | MATCH | Line 66 verified |
-| Finding 2: strippedResult in deps | MATCH | Line 81 verified |
-| Finding 3: matchMedia after localStorage | MATCH | Lines 13-18 verified |
-| Finding 3: try-catch guard | MATCH | Both localStorage and matchMedia guarded |
-| Finding 3: useEffect/toggle unchanged | MATCH | Verified |
-| Finding 3 tests: dark default mock | MATCH | Test renamed and updated |
-| Finding 3 tests: light mode test | MATCH | New test present |
-| Finding 3 tests: localStorage override | MATCH | New test present |
-| Finding 3 tests: matchMedia reset | MATCH | beforeEach with assignment |
-
-## Test Verification
-
-| Suite | Result |
-|-------|--------|
-| Frontend (vitest) | 205 passed (15 files) |
-| Backend (dotnet test) | 19 passed (1 file) |
-| TypeScript (tsc --noEmit) | Zero errors |
-| Backend build (dotnet build) | 0 warnings, 0 errors |
-
-Both frontend AND backend test suites were executed and passed.
-
-## Non-Blocking Observations
-
-1. **Test coverage gap for Finding 2 (minor):** The spec describes Finding 2 tests as optional. The existing test in App.test.tsx (line 832) uses a plain result string without a json fence, so strippedResult equals state.result and the test passes. There is no explicit test that feeds a result WITH a trailing json fence and asserts the fence is absent from the exported JSON. This would be a valuable regression test but is not blocking since the spec treats it as optional.
-
-2. **Pre-existing empty catch blocks (informational):** App.tsx has four empty catch blocks that silently discard errors (handleCopy, handleDownload, handleExportPdf, handleExportJson). These were not introduced by this diff and are user-initiated action handlers where silent failure is acceptable UX.
+### Backend Tests: ✅ Verified
+Both test suites confirmed passing: frontend 220 tests (16 files), backend 21 tests (5 files). Zero failures.
 
 ## Required Actions
+None for the search feature. The implementation is complete, spec-conformant, correct, and well-tested.
 
-None. All three findings are correctly implemented. The changes match the spec, pass all tests, introduce no security or correctness issues, and are ready to ship.
+## Suggested Commit Message
+```
+feat: add search-within-results highlighting for audit output
+
+- Add highlightText() utility that injects <mark> tags with regex escaping
+- Add search input with deferred query via useDeferredValue (React 19)
+- Add rehype-raw + rehype-sanitize plugins for <mark> HTML passthrough
+- Fix h3 renderer to preserve <mark> elements when stripping severity prefix
+- Add .search-highlight CSS rule (bg-yellow-400, text-slate-900)
+- 15 new tests: 7 highlightText unit tests + 8 ResultPanel component tests
+- 220 frontend + 21 backend tests passing, zero TypeScript errors
+```

@@ -21,16 +21,11 @@
 | Structured JSON export (findings + summary objects) | `37b7a0d` |
 | Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
 | Monitoring / error tracking (Sentry) | `d9f6fb0` |
+| Search within results (inline search + highlight) | `_` |
 
 ---
 
 ## Small (quick wins)
-
-### Search within results
-Inline search input that highlights/filters audit output text.
-- **Why:** Users hunting for a specific path or finding in a long report.
-- **Affects:** `frontend/src/components/features/ResultPanel.tsx` (search input + highlight logic).
-- **Risk:** Performance on large reports if re-rendering on every keystroke; debounce needed.
 
 ### Copy individual finding
 Click a copy icon on a single severity block to copy just that finding.

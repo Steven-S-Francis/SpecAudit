@@ -1,10 +1,13 @@
-import { useState, useCallback, type ComponentPropsWithoutRef } from 'react';
+import { useState, useCallback, useDeferredValue, isValidElement, Children, type ReactNode, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from 'rehype-sanitize';
 import type { SeverityLevel } from '../../types/audit';
 import { parseSeverity } from '../../utils/parseSeverity';
 import { filterMarkdownBySeverity } from '../../utils/filterMarkdown';
+import { highlightText } from '../../utils/highlightText';
 import { useAutoScroll } from '../../hooks/useAutoScroll';
 import { ScrollButton } from '../ui/ScrollButton';
 
@@ -41,6 +44,33 @@ const SEVERITY_STYLES: Record<SeverityLevel, {
   },
 };
 
+const SANITIZE_SCHEMA: SanitizeOptions = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],
+  attributes: {
+    ...defaultSchema.attributes,
+    mark: ['className'],
+  },
+};
+
+/**
+ * Recursively extracts plain text from React children, handling
+ * React elements (like <mark> from search highlighting) correctly.
+ */
+function extractTextContent(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(extractTextContent).join('');
+  }
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode };
+    return extractTextContent(props.children);
+  }
+  return '';
+}
+
 export function ResultPanel({ content, isStreaming }: Props) {
   const showSkeleton = content === '' && !isStreaming;
   const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content], isStreaming });
@@ -59,7 +89,11 @@ export function ResultPanel({ content, isStreaming }: Props) {
     (Object.keys(severityFilter) as SeverityLevel[]).filter((s) => !severityFilter[s])
   );
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const deferredQuery = useDeferredValue(searchQuery);
+
   const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
+  const highlightedContent = highlightText(filteredContent, deferredQuery);
 
   return (
     <div
@@ -76,6 +110,7 @@ export function ResultPanel({ content, isStreaming }: Props) {
       ) : (
         <>
         {content && (
+          <>
           <div className="flex gap-2 mb-3">
             {(['CRITICAL', 'WARNING', 'INFO'] as const).map((severity) => {
               const active = severityFilter[severity];
@@ -97,26 +132,71 @@ export function ResultPanel({ content, isStreaming }: Props) {
               );
             })}
           </div>
+          {/* Search input */}
+          <div className="relative mb-3">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search results…"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 pl-8 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
+              aria-label="Search within results"
+            />
+            {/* Search icon (magnifying glass) */}
+            <svg
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none"
+              xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            {/* Clear button — only visible when query is non-empty */}
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 light:hover:text-slate-600"
+                aria-label="Clear search"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                  fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            )}
+          </div>
+          </>
         )}
         <div className="font-mono text-sm text-slate-200 light:text-slate-800">
           <ReactMarkdown
               remarkPlugins={[remarkGfm]}
+              rehypePlugins={[
+                [rehypeRaw],
+                [rehypeSanitize, SANITIZE_SCHEMA],
+              ]}
               components={{
                 h3({ children }: HeadingProps) {
-                  const text = String(children);
+                  const text = extractTextContent(children);
                   const severity = parseSeverity(text);
-                  const cleanTitle = text
-                    .replace('[CRITICAL]', '')
-                    .replace('[WARNING]', '')
-                    .replace('[INFO]', '')
-                    .trim();
 
                   if (severity) {
                     const styles = SEVERITY_STYLES[severity];
+                    const prefix = `[${severity}]`;
+                    // Filter out the severity prefix from children to keep
+                    // <mark> highlighting elements intact when search is active
+                    const contentChildren = Children.map(children, (child) => {
+                      if (typeof child === 'string' && child.startsWith(prefix)) {
+                        const rest = child.slice(prefix.length).trimStart();
+                        return rest || undefined;
+                      }
+                      return child;
+                    });
                     return (
                       <div className={styles.wrapper}>
                         <span className={styles.badge}>{severity}</span>
-                        <span className={`font-semibold ${styles.label}`}>{cleanTitle}</span>
+                        <span className={`font-semibold ${styles.label}`}>{contentChildren}</span>
                       </div>
                     );
                   }
@@ -139,7 +219,7 @@ export function ResultPanel({ content, isStreaming }: Props) {
                 },
               }}
             >
-              {filteredContent}
+              {highlightedContent}
             </ReactMarkdown>
             {isStreaming && (
               <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
