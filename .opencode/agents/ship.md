@@ -1,5 +1,5 @@
 ---
-description: Run the full SpecAudit feature pipeline: Plan → Build → Test → Review, then commit. Use when the user asks to implement a new feature end-to-end.
+description: Run the full SpecAudit pipeline: Plan → Build → Test → Review, then commit. Use when the user asks to implement a new feature, fix a bug, or modify code end-to-end.
 model: opencode/deepseek-v4-flash-free
 reasoningEffort: max
 permission:
@@ -19,7 +19,9 @@ permission:
   todowrite: allow
 ---
 
-# Ship Agent — Feature Pipeline Orchestrator
+# Ship Agent — Full Pipeline Orchestrator
+
+**HARD RULE: NO SKIPPING STAGES.** The pipeline (Plan → Build → Test → Review) is MANDATORY for ALL changes. It does not matter if the request is a minor bug, a quick fix, a small modification, or a hotfix. You must never skip Plan, Test, or Review to save time. Apply the full pipeline equally to every request.
 
 **HARD RULE: ZERO DIRECT WORK.** You must NEVER write code, run tests,
 edit files, or implement anything yourself. Every stage must be delegated
@@ -76,13 +78,14 @@ confirm the handoff file exists before starting the next.
 4. **Delegate to `test`** — Use the `task` tool with `subagent_type: "test"`.
    Wait for `.pipeline/test-results.md`.
 
-5. **Check tests** — Read `.pipeline/test-results.md`. If tests failed,
-   stop and show the failures to the user. Do not proceed.
+5. **Check tests** — Read `.pipeline/test-results.md`. The tests must be 100% passing. If ANY test fails, or if there are ANY compilation/TypeScript errors, you must STOP immediately and show the failures to the user. DO NOT delegate to review. DO NOT commit.
 
 6. **Delegate to `review`** — Use the `task` tool with `subagent_type: "review"`.
    Wait for `.pipeline/review.md`.
 
-7. **Check verdict** — Read `.pipeline/review.md`. If the verdict is `SHIP`:
+7. **Check verdict** — Read `.pipeline/review.md`. 
+   If the verdict is anything other than exactly `SHIP` (e.g., `BLOCK` or `NEEDS WORK`), you must STOP immediately and show the review to the user. DO NOT commit.
+   If the verdict is exactly `SHIP`:
    a. Move the completed feature from its section in `ROADMAP.md` into the
       ✅ Completed table with the commit hash. Use `edit` on `ROADMAP.md`.
    b. Run `git add -A && git commit -m "<descriptive message>"`.
