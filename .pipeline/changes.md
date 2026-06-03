@@ -299,3 +299,50 @@ Updated ~1200-line reference document to reflect all commits from `775b729` thro
 - **Finding 1:** Verify the build agent can still run `dotnet build`, `dotnet test`, `dotnet restore`, `npm run build`, `npm run test`, `npx tsc --noEmit`, and `npx vitest run`. Commands like `rm`, `cat`, `echo`, `curl`, `python`, `git` should be denied.
 - **Finding 2:** The existing test "JSON export includes result field when no structured data (fallback)" in `App.test.tsx` should verify the exported JSON's `result` field does NOT contain the `` ```json `` fence. If the test was previously passing with the fence included, it should now pass with the stripped version.
 - **Finding 3:** The three new tests in `useTheme.test.tsx` cover: (1) OS-level light → initial light, (2) OS-level dark → initial dark, (3) localStorage overrides OS preference. All existing toggle/persist/class tests continue to pass.
+
+---
+
+# Group 7 — Fix JSON block flashing in UI during streaming
+
+## Files Changed
+
+### `frontend/src/App.tsx` (line 19)
+- **Replaced** `const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');`
+- **With** `lastIndexOf`-based approach:
+  ```typescript
+  const JSON_MARKER = '```json';
+  const markerIndex = state.result.lastIndexOf(JSON_MARKER);
+  const strippedResult = markerIndex === -1
+    ? state.result
+    : state.result.slice(0, markerIndex);
+  ```
+- This strips everything from the **last** ` ```json ` marker to the end, whether or not the closing ` ``` ` fence has arrived yet. The old regex required both the closing fence AND end-of-string (`$`), causing the partial ` ```json ` and raw JSON to leak into the displayed markdown during streaming.
+
+## What this fixes
+
+During streaming, when the AI outputs the trailing JSON block chunk by chunk:
+1. ` ```json` arrives → old regex requires closing ` ``` ` + `$` → leaks into display → **FIX: `lastIndexOf` finds it and strips immediately**
+2. `\n{"findings":[` arrives → still leaking → **FIX: already stripped from view**
+3. `...\n` ` ``` ` arrives → now old regex would finally strip → but at this point user has already seen the flash
+
+## What does NOT change
+
+- `state.result` still has the full content (JSON export fallback)
+- Copy/Download/PDF all use `strippedResult` (still stripped, now even during streaming)
+- JSON export uses `state.findings[]` + `state.summary` (structured data unaffected)
+- Severity filter operates on the `content` prop which is `strippedResult`
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Passed (0 errors) |
+| `npx vitest run --reporter=verbose` | ✅ **205 passed** (15 files, 0 failures) |
+| `npm run build` (tsc -b && vite build) | ✅ Build succeeded |
+
+## Notes for Tester
+
+- **Behavioral change**: During streaming, the trailing ` ```json ` block is now immediately hidden from view as soon as the ` ```json ` marker arrives. Previously it would flash until the closing ` ``` ` arrived.
+- **No change** to `state.result` — the full content (including the JSON block) is preserved for JSON export fallback.
+- **Edge case** — multiple ` ```json ` markers: `lastIndexOf` picks the last occurrence, which is the trailing AI-generated JSON block. Earlier ones (e.g., inline code examples) are preserved — more correct than the old regex which could match non-trailing blocks.
+- **Existing tests unaffected** — all static (non-streaming) test strings either have no ` ```json ` marker or have a complete ` ```json…``` ` block; both old and new logic produce identical results.

@@ -16,7 +16,11 @@ function App() {
   const [providerName, setProviderName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
-  const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
+  const JSON_MARKER = '```json';
+  const markerIndex = state.result.lastIndexOf(JSON_MARKER);
+  const strippedResult = markerIndex === -1
+    ? state.result
+    : state.result.slice(0, markerIndex);
 
   const handleCopy = useCallback(async () => {
     try {

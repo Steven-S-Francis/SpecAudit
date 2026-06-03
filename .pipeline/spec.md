@@ -1,196 +1,109 @@
-# Permanent Fix for Docker Build Failure (TS2304: Cannot find name 'vi')
+# Fix JSON block flashing in UI during streaming
 
-## OPEN QUESTION
+## Root Cause
 
-**Q1 (nul file location):** The stray `nul` file (Windows reserved device name) has been reported in the project root. It cannot be found via glob right now, but it sporadically reappears. Should `nul` be added to the root `.gitignore` only, or also to `frontend/.gitignore` and `frontend/.dockerignore`? The implementer should check the actual working directory before merging and add `nul` to whatever `.gitignore` / `.dockerignore` files are relevant to the directory where the file appears.
+`App.tsx` line 19 uses a regex to strip the trailing ````json```` block:
 
----
-
-## Overview
-
-The Docker build (`npm run build` → `tsc -b && vite build`) fails because `tsconfig.app.json` includes `"include": ["src"]`, which pulls in all test files under `src/`. Test files use `vi` (vitest global), which is unavailable during `tsc -b` compilation. This is the same class of bug as the `declare module '*.md?raw'` issue that was previously fixed in `filterMarkdown.test.ts` (see `frontend/src/vite-env.d.ts`).
-
-**Root cause:** `tsconfig.app.json` line 24: `"include": ["src"]` — no exclusion for test files. Test code is not app code and should not be type-checked by the app tsconfig.
-
-**Fix summary:**
-1. Exclude test files from `tsconfig.app.json` (permanent solution that prevents this class of bug for ALL future test files)
-2. Add `import { vi } from 'vitest'` to `useTheme.test.tsx` (correct practice for self-contained tests)
-3. Add `nul` to `.gitignore` (and optionally `.dockerignore`) to prevent stray Windows reserved-device-name files from breaking Docker builds
-
-| # | Change | Type | Files touched |
-|---|--------|------|---------------|
-| 1 | Exclude test files from app tsconfig | Config fix | `frontend/tsconfig.app.json` |
-| 2 | Add explicit `vi` import in test | Code hygiene | `frontend/src/hooks/__tests__/useTheme.test.tsx` |
-| 3 | Gitignore stray `nul` file | Housekeeping | `.gitignore` (root), possibly `frontend/.gitignore`, `frontend/.dockerignore` |
-
----
-
-## Fix 1 — Exclude test files from app tsconfig
-
-**Problem:** `tsconfig.app.json` has `"include": ["src"]` which compiles ALL `.ts`/`.tsx` files under `src/`, including test files in `__tests__/` directories and `*.test.ts` / `*.test.tsx` files. These files use vitest globals (`vi`, `describe`, `it`, etc.) that are not available to `tsc -b`. The same issue will recur for any future test file that uses vitest-specific APIs.
-
-**File:** `frontend/tsconfig.app.json`
-
-**Changes:**
-
-Add an `"exclude"` block to the existing JSON object. The current file (line 24) is:
-```json
-"include": ["src"]
-```
-
-Change to:
-```json
-"include": ["src"],
-"exclude": [
-  "src/**/__tests__",
-  "src/**/*.test.ts",
-  "src/**/*.test.tsx",
-  "src/test-setup.ts"
-]
-```
-
-This excludes:
-- All `__tests__` directories anywhere under `src/`
-- All `.test.ts` and `.test.tsx` files anywhere under `src/`
-- The Vitest setup file `src/test-setup.ts`
-
-**Why this is safe:**
-- `npm run build` uses `tsc -b && vite build`. After this change, `tsc -b` only type-checks app code (non-test files). Test files don't need to be compiled for the app build — they are executed by vitest (which has its own compilation pipeline via `vite.config.ts` with `globals: true`).
-- `vite build` does not bundle test files; they are never imported by app code.
-- vitest resolves its own tsconfig via `vite.config.ts`, which already has `globals: true`.
-- Future test files won't accidentally break `tsc -b` with vitest-specific syntax.
-- This also prevents the `declare module '*.md?raw'` pattern from recurring (the type declaration in `vite-env.d.ts` is already correct, but other `declare module` patterns in test files won't pollute app compilation).
-
-**Edge cases:**
-- If a test file exists outside `src/` (e.g., `src/../tests/`), it wouldn't match the exclude patterns. Currently no such files exist. If one is added in the future, the exclude should be updated.
-- Files named `*.spec.ts` / `*.spec.tsx` are not excluded (current convention uses `__tests__` directories, not spec files). If spec files are used in the future, they must be added to the exclude list.
-- Shared type definitions in `__tests__` directories (e.g., `src/__tests__/types.ts`) will also be excluded. If any app code imports them, it will break. Currently no app code imports from `__tests__` directories — this is a standard convention.
-
----
-
-## Fix 2 — Add explicit `vi` import to `useTheme.test.tsx`
-
-**Problem:** `useTheme.test.tsx` uses `vi.fn()` (lines 17, 21–25, 35, 39–43, 70, 74–78) but only imports `describe, it, expect, beforeEach` from vitest. It relies on vitest globals (`globals: true` in `vite.config.ts`), which works at runtime but is bad practice — it breaks IDE intellisense and makes the test dependent on global configuration.
-
-**File:** `frontend/src/hooks/__tests__/useTheme.test.tsx`
-
-**Changes:**
-
-Line 2, change:
 ```typescript
-import { describe, it, expect, beforeEach } from 'vitest';
+const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
 ```
-to:
+
+The regex requires **both** the full closing fence `\`\`\`` **and** the end-of-string anchor `$` to match. During streaming, the AI output arrives incrementally:
+
+1. `\`\`\`json` — open marker arrives, regex does NOT match (no `\`\`\`` yet)
+2. `\n{"findings":[` — JSON content arrives, regex still does NOT match
+3. `...` — more JSON content, still no match
+4. `\n\`\`\`` — closing fence finally arrives, regex matches and strips
+
+At steps 1–3 the partial ````json```` and raw JSON **leaks** into `strippedResult`, which is passed to `ResultPanel`'s `ReactMarkdown` render. The user sees a flash of ````json` followed by raw JSON — confusing and ugly.
+
+## Fix
+
+Replace the regex on line 19 of `frontend/src/App.tsx` with a `lastIndexOf`-based approach that strips everything from the last ````json```` marker to the end, regardless of whether the closing fence is present.
+
+### File to modify
+
+**`frontend/src/App.tsx`** — line 19 only.
+
+### Before (line 19)
+
 ```typescript
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+const strippedResult = state.result.replace(/```json[\s\S]*?```\s*$/gm, '');
 ```
 
-No other changes to this file. The `vi` references throughout the file will now be resolved by the explicit import rather than the global.
+### After
 
-**Note:** This change is technically unnecessary once Fix 1 is applied (the test file won't be compiled by `tsc -b`), but it is correct practice for vitest tests. It makes the test self-contained and avoids reliance on globals, which helps with IDE intellisense, linters, and future tsconfig changes.
+```typescript
+const JSON_MARKER = '```json';
+const markerIndex = state.result.lastIndexOf(JSON_MARKER);
+const strippedResult = markerIndex === -1
+  ? state.result
+  : state.result.slice(0, markerIndex);
+```
 
-**Edge cases:**
-- If `vitest` package is missing from `devDependencies`, the import will fail at the module resolution level. Currently it is present (see `frontend/package.json`).
-- The `@vitest-environment jsdom` doc comment (line 1) is unaffected and should remain.
+### Behavioral comparison
 
----
+| Streaming phase | `state.result` | `strippedResult` (new) | `strippedResult` (old regex) |
+|---|---|---|---|
+| Before JSON block | `...report text...` | `...report text...` | `...report text...` |
+| ` ```json ` just arrived | `...text\n\n\`\`\`json` | `...text\n\n` | `...text\n\n\`\`\`json` ❌ leaks! |
+| JSON content streaming | `...\n\`\`\`json\n{...}` | `...text\n\n` | `...\n\`\`\`json\n{...` ❌ leaks! |
+| Closing fence arrives | `...\n\`\`\`json\n{...}\n\`\`\`` | `...text\n\n` | `...text\n\n` ✅ |
 
-## Fix 3 — Gitignore stray `nul` file
+### Why this is safe
 
-**Problem:** A zero-length file named `nul` (Windows reserved device name) sporadically appears in the working directory, likely as a PowerShell piping artifact. On Windows, `nul` is a reserved DOS device name and cannot be deleted with normal commands. This file gets picked up by `COPY frontend/ .` in the Dockerfile, causing build issues or at minimum wasting Docker cache.
+- **`state.result`** is never mutated — only `strippedResult` (derived value) changes.
+- **Copy / Download / PDF export** — all use `strippedResult`; they will now also avoid the JSON block during streaming (which is correct — you don't want to copy/export raw JSON mid-stream).
+- **JSON export** — uses structured `state.findings` + `state.summary` when available, falling back to `strippedResult` only when both are empty/null (line 65–66). Unchanged.
+- **Severity filter / ResultPanel** — receives `strippedResult`; no change in interface.
+- **Auto-scroll** — triggers on `content` prop changes to `ResultPanel`; still fires during streaming.
 
-**Files to modify:**
-- `.gitignore` (root) — add `nul` to prevent git tracking
-- `frontend/.gitignore` — add `nul` in case it appears in the frontend subdirectory
-- `frontend/.dockerignore` — add `nul` to prevent it from being copied into Docker build context
+### Edge cases
 
-**Changes:**
+1. **No ````json```` marker in result**: `lastIndexOf` returns `-1`, so `strippedResult` equals `state.result` — identical to old behavior.
+2. **Multiple ````json```` markers**: `lastIndexOf` picks the last occurrence, which is the trailing AI-generated JSON block. Earlier ones (e.g., inline code examples) are preserved — this is more correct than the old regex which might match a non-trailing block with a lazy quantifier.
+3. **`\`\`\`json` at position 0**: `slice(0, 0)` returns `""` (empty string) — same as stripping everything, which is correct.
+4. **Result is empty string**: `lastIndexOf` returns `-1`, returns `""` — identical to old behavior.
+5. **`\`\`\`json` with no closing fence (streaming)**: Stripped immediately — this is the fix.
+6. **`\`\`\`json` with closing fence (complete)**: Stripped — same as old behavior for completed results.
 
-1. **Root `.gitignore`** (D:\Work\Personal\SpecAudit\.gitignore) — append a new line:
-   ```
-   nul
-   ```
+## What tested behaviors change
 
-2. **`frontend/.gitignore`** (D:\Work\Personal\SpecAudit\frontend\.gitignore) — append a new line:
-   ```
-   nul
-   ```
+### Existing tests: `frontend/src/components/features/__tests__/App.test.tsx`
 
-3. **`frontend/.dockerignore`** (D:\Work\Personal\SpecAudit\frontend\.dockerignore) — append a new line:
-   ```
-   nul
-   ```
+No existing test needs modification. All tests use static (non-streaming) result strings:
 
-**Edge cases:**
-- The `nul` file may not exist at the time of implementation. That's fine — the `.gitignore`/`.dockerignore` entries are prophylactic.
-- If the `nul` file does exist, attempt to delete it with: `git rm --cached nul` (if tracked) then `del nul` (on Windows, this may fail due to the reserved name; use `\\.\C:\full\path\to\nul` syntax or `Remove-Item -Path "nul" -Force` in PowerShell). If deletion fails, the `.gitignore` entry at least prevents future tracking.
-- No other reserved Windows names (CON, PRN, AUX, etc.) have been observed in this project. Only `nul` is addressed.
+| Test | Result value | Old behavior | New behavior | Change? |
+|---|---|---|---|---|
+| Copy button tests | `'Audit report content'`, `'Partial content...'`, `'Full audit report text'` | No ````json```` → pass-through | Same (`lastIndexOf` returns `-1`) | No change |
+| Download button tests | `'Full audit report text'` | Same | Same | No change |
+| Export PDF button tests | `'Full audit report text'` | Same | Same | No change |
+| Export JSON "structured data" test (line 787) | `'# Some markdown\n\`\`\`json\n{"findings":[]}\n\`\`\`'` | Regex strips the ````json```` block → `'# Some markdown\n'` | `lastIndexOf` finds `\`\`\`json` at position 15, slices → `'# Some markdown\n'` | Same result ✅ |
+| Export JSON "no structured data" test (line 836) | `'Plain markdown without structured data'` | No ````json```` → pass-through | Same | No change |
 
----
+### Integration tests: `frontend/src/__tests__/integration/feature-pipeline.test.ts`
 
-## Test Requirements
+None of these tests exercise `App.tsx`'s `strippedResult` directly. They test the streaming pipeline (`auditStream`), PDF generation, and content structure independently. No changes needed.
 
-### Fix 1 — tsconfig exclusion
+## Verification steps
 
-- Run `npm run build` from the `frontend/` directory. It should succeed with 0 errors.
-- Run `npx tsc --noEmit` from the `frontend/` directory. It should succeed with 0 errors.
-- Run `npx vitest run` from the `frontend/` directory. All existing tests should pass.
-- Specifically verify that `tsc -b` no longer errors on `useTheme.test.tsx` or any other test file.
-
-### Fix 2 — vi import
-
-- No behavioral change. Run the existing test suite to confirm all `useTheme` tests still pass:
-  ```bash
-  cd frontend && npx vitest run src/hooks/__tests__/useTheme.test.tsx
-  ```
-- All 6 tests in the file should pass.
-
-### Fix 3 — nul ignore
-
-- Run `git status` and confirm no `nul` file appears in untracked files.
-- If a `nul` file is present in the working directory, verify that `git check-ignore nul` returns the file path (confirming it is ignored).
-- Run `docker build .` from the project root and verify it succeeds (specifically the `COPY frontend/ .` step does not report copying `nul`).
-- If the `nul` file exists, try to delete it. If deletion fails on Windows, document the exact command used so future maintainers can clean it up.
-
----
-
-## Build Verification
-
-Tie everything together by running the full build pipeline locally:
+Run these from `frontend/`:
 
 ```bash
-# 1. From project root
-cd frontend
-
-# 2. Type-check app code only (should pass, excluding test files)
+# 1. Type-check (must pass with 0 errors)
 npx tsc --noEmit
 
-# 3. Full production build (tsc -b + vite build)
-npm run build
-
-# 4. Run all vitest tests
+# 2. Run all unit tests (must pass)
 npx vitest run
 
-# 5. Check git status is clean (no stray files)
-git status
+# 3. Full production build (must succeed)
+npm run build
 ```
 
-Expected results:
-- `tsc --noEmit`: 0 errors, 0 warnings
-- `npm run build`: Build succeeded (0 errors)
-- `npx vitest run`: All tests pass (203+ frontend tests)
-- `git status`: Clean, no untracked `nul` file
-
----
-
-## Files Summary
+## Files summary
 
 | Action | Path | Description |
 |--------|------|-------------|
-| MODIFY | `frontend/tsconfig.app.json` | Add `"exclude"` block for test files |
-| MODIFY | `frontend/src/hooks/__tests__/useTheme.test.tsx` | Add `vi` to vitest import |
-| MODIFY | `.gitignore` | Add `nul` |
-| MODIFY | `frontend/.gitignore` | Add `nul` |
-| MODIFY | `frontend/.dockerignore` | Add `nul` |
+| MODIFY | `frontend/src/App.tsx` | Replace regex on line 19 with `lastIndexOf` approach |
 
-**Total: 5 files modified.**
+Total: **1 file modified**.
