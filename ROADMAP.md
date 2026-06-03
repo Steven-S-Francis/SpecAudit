@@ -24,7 +24,7 @@
 | Search within results (inline search + highlight) | `679149a` |
 | Copy individual finding (per-block copy icon) | `10c9d94` |
 | Keyboard shortcuts (Ctrl+Enter, Escape) | `75fd570` |
-| Remove NetworkTimeout from OpenAI client (fixes AI streaming hang) | `(this commit)` |
+| Remove NetworkTimeout from OpenAI client (fixes AI streaming hang) | `be75242` |
 
 ---
 
