@@ -3,36 +3,56 @@
 ## Summary
 PASS
 
-## Frontend Tests
-- Count: 205 tests in 15 files
+## Frontend Tests (`npx tsc -b`)
 - Status: ✅ Pass
-- Failures: None
+- `tsc -b` (Docker build equivalent) completed with 0 errors
 
-## Backend Tests
-- Count: 19 tests in 1 file
+## Frontend Tests (`npx tsc --noEmit`)
+- Status: ✅ Pass
+- `tsc --noEmit` completed with 0 errors
+
+## Frontend Tests (`npx vitest run --reporter=verbose`)
+- Count: **205 passed** in **15 test files**
 - Status: ✅ Pass
 - Failures: None
+- All `useTheme` tests pass (6 tests, including `vi` imported explicitly)
+- All `useAutoScroll` tests pass (4 tests, including streaming `'auto'` behavior)
+- All `exportPdf` tests pass (including CRLF and trailing-space code fence detection)
+- All `InputPanel` tests pass (including loading/streaming disabled states)
+- All `App` tests pass (including JSON export with stripped result fallback)
+- All `filterMarkdownBySeverity` tests pass (including real fixture filtering)
+- All integration pipeline tests pass (33 tests)
+
+## Backend Tests (`dotnet test SpecAudit.slnx`)
+- Count: **19 passed** in 1 test project
+- Status: ✅ Pass
+- Failures: None
+- All `ExtractStructuredJsonTests` pass (7 tests, including `WithTextAfterJsonBlock_ReturnsJsonString`)
+- All `AiOptionsValidationTests` pass (3 tests, including `MissingApiKey`)
+- All `EndpointValidationTests` pass (6 tests, including rate-limit-aware endpoints)
+- All `UserMessageBuilderTests` pass (3 tests)
+
+## Backend Build (`dotnet build`)
+- Status: ✅ Build succeeded
+- Warnings: 0
+- Errors: 0
 
 ## TypeScript
-- Status: ✅ Zero errors
+- Status: ✅ Zero errors (`tsc -b` and `tsc --noEmit` both pass)
 
-## Backend Build
-- Status: ✅ Build succeeded (0 warnings, 0 errors)
+## Git Ignore
+- `nul` is properly gitignored (confirmed via `git check-ignore nul` returns the path)
+- No untracked `nul` file in working tree
 
-## New Tests Written
-None — all existing tests continue to pass. No source code changes were made.
+## Summary of All Checks
 
-## Test Suites Executed
+| Check | Result |
+|-------|--------|
+| `npx tsc -b` (Docker build) | ✅ Passed (0 errors) |
+| `npx tsc --noEmit` (frontend) | ✅ Passed (0 errors) |
+| `npx vitest run --reporter=verbose` | ✅ **205 passed** (15 files) |
+| `dotnet build` (backend) | ✅ Build succeeded (0 errors, 0 warnings) |
+| `dotnet test SpecAudit.slnx` (backend) | ✅ **19 passed** (0 failures) |
+| Git ignore (`nul`) | ✅ Properly ignored |
 
-| Suite | Command | Result |
-|-------|---------|--------|
-| Frontend unit tests | `npx vitest run --reporter=verbose` (frontend/) | ✅ 205 passed (15 files) |
-| Backend unit tests | `dotnet test SpecAudit.slnx` (repo root) | ✅ 19 passed (1 file) |
-| TypeScript type check | `npx tsc --noEmit` (frontend/) | ✅ Zero errors |
-| Backend build | `dotnet build` (backend/) | ✅ 0 warnings, 0 errors |
-
-## Notes
-- All 205 frontend tests pass across 15 test files.
-- All 19 backend tests pass (ExtractStructuredJsonTests: 7, UserMessageBuilderTests: 3, AiOptionsValidationTests: 3, EndpointValidationTests: 6).
-- The `useAudit.test.tsx` produces a benign `act(...)` warning (state update not wrapped in `act()`), but this is a pre-existing test hygiene issue, not a failure — the test still passes.
-- No regressions detected.
+**All tests pass. No failures to report.**

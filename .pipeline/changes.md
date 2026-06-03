@@ -1,3 +1,46 @@
+# Group 6 Changes — Permanent Docker build fix (exclude test files + vi import + nul ignore)
+
+## Files Changed
+
+### `frontend/tsconfig.app.json` (Fix 1 — Exclude test files)
+- **Added `"exclude"` block** (lines 25–30) with four patterns:
+  - `"src/**/__tests__"` — all test directories anywhere under `src/`
+  - `"src/**/*.test.ts"` — all `.test.ts` files anywhere under `src/`
+  - `"src/**/*.test.tsx"` — all `.test.tsx` files anywhere under `src/`
+  - `"src/test-setup.ts"` — vitest setup file
+- This prevents `tsc -b` from ever compiling vitest-specific code again. Fixes the `vi` issue AND prevents any future test-file type errors from breaking the Docker build.
+
+### `frontend/src/hooks/__tests__/useTheme.test.tsx` (Fix 2 — Explicit vi import)
+- **Line 2:** Added `vi` to the vitest import: `import { describe, it, expect, beforeEach, vi } from 'vitest'`
+- Correct practice — tests that use `vi` should import it explicitly rather than relying on vitest globals.
+
+### `.gitignore` (root) (Fix 3 — nul ignore)
+- **Line 11:** Added `nul` on its own line to prevent stray Windows reserved-device-name file from being tracked by git.
+
+### `frontend/.gitignore` (Fix 3 — nul ignore)
+- **Line 25:** Added `nul` on its own line.
+
+### `frontend/.dockerignore` (Fix 3 — nul ignore)
+- **Line 8:** Added `nul` on its own line to prevent stray `nul` file from being copied into Docker build context.
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc -b` (what Docker build uses) | ✅ Passed (0 errors) |
+| `npx tsc --noEmit` (frontend) | ✅ Passed (0 errors) |
+| `npx vitest run --reporter=verbose` | ✅ **205 passed** (15 files, 0 failures) |
+| `dotnet build` (backend) | ✅ Build succeeded (0 warnings, 0 errors) |
+
+## Notes for Tester
+
+- **Fix 1:** Verify `npm run build` (which runs `tsc -b && vite build`) succeeds. Test files that use `vi` should no longer interfere with the app tsconfig. If a new test file using vitest-specific APIs is added in the future, it will NOT break the Docker build.
+- **Fix 2:** No behavioral change. The 6 `useTheme` tests should still all pass (they did: ✓). Verify `vi` is now imported explicitly instead of relying on the global.
+- **Fix 3:** Run `git status` from project root — no `nul` file should appear. If a `nul` file exists, `git check-ignore nul` should return the file path. The `.dockerignore` entry prevents `nul` from being copied during Docker builds.
+- Q1 (nul location) has been resolved per spec: `nul` added to root `.gitignore`, `frontend/.gitignore`, and `frontend/.dockerignore`.
+
+---
+
 # Group 3 Changes — Code quality (C, D, E, J)
 
 ## Files Changed
