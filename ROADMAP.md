@@ -22,7 +22,7 @@
 | Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
 | Monitoring / error tracking (Sentry) | `d9f6fb0` |
 | Search within results (inline search + highlight) | `e2505b5` |
-| Copy individual finding (per-block copy icon) | `_` |
+| Copy individual finding (per-block copy icon) | `ece2750` |
 
 ---
 
