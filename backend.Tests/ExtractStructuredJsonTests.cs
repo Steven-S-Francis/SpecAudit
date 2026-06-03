@@ -103,13 +103,14 @@ public class ExtractStructuredJsonTests
     }
 
     [Fact]
-    public void ExtractStructuredJson_WithTextAfterJsonBlock_ReturnsNull()
+    public void ExtractStructuredJson_WithTextAfterJsonBlock_ReturnsJsonString()
     {
         var markdown = "# SpecAudit Report\n\n```json\n{\"findings\":[]}\n```\n\nSome trailing text after the code block.\n";
 
         var result = SpecAuditService.ExtractStructuredJson(markdown);
 
-        // The regex uses \s*$ anchor so text after the block means no match
-        result.Should().BeNull();
+        // LastIndexOf approach allows text after the JSON block
+        result.Should().NotBeNull();
+        result.Should().Contain("findings");
     }
 }

@@ -2,7 +2,7 @@ using System.ClientModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
+
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
@@ -11,7 +11,7 @@ using SpecAudit.Models.Requests;
 
 namespace SpecAudit.Services;
 
-public sealed partial class SpecAuditService
+public sealed class SpecAuditService
 {
     private const string SystemPrompt = """
         You are a strict API Governance Architect performing a formal security and design audit of an OpenAPI specification. Your role is regulatory, not advisory. You identify violations, not suggestions.
@@ -213,11 +213,19 @@ public sealed partial class SpecAuditService
 
     internal static string? ExtractStructuredJson(string markdown)
     {
-        var match = StructuredJsonRegex().Match(markdown);
-        if (!match.Success)
+        const string openFence = "```json";
+        const string closeFence = "```";
+
+        var lastOpen = markdown.LastIndexOf(openFence, StringComparison.Ordinal);
+        if (lastOpen < 0)
             return null;
 
-        var json = match.Groups[1].Value.Trim();
+        var jsonStart = lastOpen + openFence.Length;
+        var closeStart = markdown.IndexOf(closeFence, jsonStart, StringComparison.Ordinal);
+        if (closeStart < 0)
+            return null;
+
+        var json = markdown[jsonStart..closeStart].Trim();
         if (string.IsNullOrEmpty(json))
             return null;
 
@@ -231,7 +239,4 @@ public sealed partial class SpecAuditService
             return null;
         }
     }
-
-    [GeneratedRegex(@"[\s\S]*```json\s*([\s\S]*?)\s*```\s*$")]
-    private static partial Regex StructuredJsonRegex();
 }

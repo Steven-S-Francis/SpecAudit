@@ -43,7 +43,7 @@ const SEVERITY_STYLES: Record<SeverityLevel, {
 
 export function ResultPanel({ content, isStreaming }: Props) {
   const showSkeleton = content === '' && !isStreaming;
-  const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content] });
+  const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content], isStreaming });
 
   const [severityFilter, setSeverityFilter] = useState<Record<SeverityLevel, boolean>>({
     CRITICAL: true,

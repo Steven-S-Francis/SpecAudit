@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 interface UseAutoScrollOptions {
   deps: unknown[];
   threshold?: number;
+  isStreaming?: boolean;
 }
 
-export function useAutoScroll({ deps, threshold = 50 }: UseAutoScrollOptions) {
+export function useAutoScroll({ deps, threshold = 50, isStreaming = false }: UseAutoScrollOptions) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -28,7 +29,7 @@ export function useAutoScroll({ deps, threshold = 50 }: UseAutoScrollOptions) {
     if (isAtBottomRef.current) {
       containerRef.current?.scrollTo?.({
         top: containerRef.current.scrollHeight,
-        behavior: 'smooth' as ScrollBehavior,
+        behavior: (isStreaming ? 'auto' : 'smooth') as ScrollBehavior,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

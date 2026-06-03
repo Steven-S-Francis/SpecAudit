@@ -296,6 +296,19 @@ describe('markdownToContent', () => {
     expect(result).toHaveLength(2);
   });
 
+  it('detects code fence with CRLF line endings', () => {
+    const result = markdownToContent('```\r\ncode\r\n```\r\n');
+    expect(result).toHaveLength(1);
+    // codeBuffer pushes the un-trimmed line, so \r is retained in content
+    expect(result[0]).toHaveProperty('text', 'code\r');
+  });
+
+  it('detects code fence with trailing spaces', () => {
+    const result = markdownToContent('```   \ncode\n```');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toHaveProperty('text', 'code');
+  });
+
   it('handles unicode and special characters', () => {
     const md = '# Café résumé\n\nCrème brûlée cost: $10 — 日本語\n\n`console.log("héllo")`';
     const result = markdownToContent(md);

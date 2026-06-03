@@ -143,7 +143,7 @@ export function markdownToContent(markdown: string): Record<string, unknown>[] {
     const line = rawLine;
 
     // --- Code fence handling ---
-    const codeFenceMatch = line.match(/^```(\w*)$/);
+    const codeFenceMatch = line.trimEnd().match(/^```(\w*)$/);
     if (codeFenceMatch) {
       if (inCodeBlock) {
         flushCodeBlock();
