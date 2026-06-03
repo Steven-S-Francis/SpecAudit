@@ -162,8 +162,7 @@ public sealed class SpecAuditService
         var credential = new ApiKeyCredential(_options.ApiKey);
         var clientOptions = new OpenAIClientOptions
         {
-            Endpoint = new Uri(_options.BaseUrl),
-            NetworkTimeout = TimeSpan.FromSeconds(30)
+            Endpoint = new Uri(_options.BaseUrl)
         };
         var client = new OpenAIClient(credential, clientOptions);
         _chatClient = client.GetChatClient(_options.ModelId);

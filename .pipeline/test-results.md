@@ -1,75 +1,60 @@
 # Test Results
 
-## Summary
-PASS
-
-## Frontend Tests
-- Count: 245 tests in 17 files
-- Status: ✅ Pass
-- Failures: None
-
 ## Backend Tests
-- Count: 21 tests in 6 files
-- Status: ✅ Pass
-- Failures: None
 
-## TypeScript
-- Status: ✅ Zero errors
+**Command:** `dotnet test SpecAudit.slnx`
 
-## Build
-- Backend: 0 warnings, 0 errors
-- Frontend: TypeScript compiles cleanly
+**Result:** PASS
 
-## Details
+**Summary:**
+- Total: 21
+- Passed: 21
+- Failed: 0
+- Skipped: 0
 
-### Backend: 21 tests, 0 failures
+**Details:**
 
-| Test File | Tests | Status |
-|-----------|-------|--------|
-| AiOptionsValidationTests | 3 | ✅ All pass |
-| EndpointValidationTests | 5 | ✅ All pass |
-| ExtractStructuredJsonTests | 6 | ✅ All pass |
-| SentryStartupTests | 2 | ✅ All pass |
-| UserMessageBuilderTests | 3 | ✅ All pass |
+```
+Test run for D:\Work\Personal\SpecAudit\backend.Tests\bin\Debug\net10.0\backend.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.1 (x64)
 
-### Frontend: 245 tests, 0 failures
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
 
-| Test File | Tests | Status |
-|-----------|-------|--------|
-| App.test.tsx | 41 | ✅ All pass |
-| InputPanel.test.tsx | 25 | ✅ All pass |
-| ResultPanel.test.tsx | 30 | ✅ All pass |
-| Button.test.tsx | 3 | ✅ All pass |
-| ScrollButton.test.tsx | 2 | ✅ All pass |
-| ThemeToggle.test.tsx | 3 | ✅ All pass |
-| useAudit.test.tsx | 10 | ✅ All pass |
-| useAutoScroll.test.tsx | 4 | ✅ All pass |
-| useTheme.test.tsx | 6 | ✅ All pass |
-| auditClient.test.ts | 12 | ✅ All pass |
-| exportPdf.test.ts | 37 | ✅ All pass |
-| filterMarkdown.test.ts | 14 | ✅ All pass |
-| highlightText.test.ts | 7 | ✅ All pass |
-| parseSSEChunks.test.ts | 6 | ✅ All pass |
-| parseSeverity.test.ts | 6 | ✅ All pass |
-| splitIntoBlocks.test.ts | 6 | ✅ All pass |
-| feature-pipeline.test.ts | 33 | ✅ All pass |
+  Passed backend.Tests.UserMessageBuilderTests.BuildUserMessage_SpecContentAppearsAfterFormatHint
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithInvalidJson_ReturnsNull
+  Passed backend.Tests.UserMessageBuilderTests.BuildUserMessage_WithYamlHint_IncludesFormatInMessage
+  Passed backend.Tests.UserMessageBuilderTests.BuildUserMessage_WithNullFormat_FallsBackToAutoDetect
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithMultipleJsonBlocks_ExtractsOnlyLast
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithNoJsonBlock_ReturnsNull
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithWhitespaceOnlyBlock_ReturnsNull
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithEmptyCodeBlock_ReturnsNull
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithValidJsonBlock_ReturnsJsonString
+  Passed backend.Tests.ExtractStructuredJsonTests.ExtractStructuredJson_WithTextAfterJsonBlock_ReturnsJsonString
+  Passed backend.Tests.AiOptionsValidationTests.Startup_MissingBaseUrl_ThrowsInvalidOperationException
+  Passed backend.Tests.AiOptionsValidationTests.Startup_MissingApiKey_ThrowsInvalidOperationException
+  Passed backend.Tests.AiOptionsValidationTests.Startup_MissingModelId_ThrowsInvalidOperationException
+  Passed backend.Tests.SentryStartupTests.HealthEndpoint_Works_WhenSentryDsnIsSet
+  Passed backend.Tests.EndpointValidationTests.PostAudit_WhitespaceOnlySpec_Returns400
+  Passed backend.Tests.SentryStartupTests.HealthEndpoint_Works_WhenSentryDsnIsNotSet
+  Passed backend.Tests.EndpointValidationTests.PostAudit_SpecExceedsMaxLength_Returns413
+  Passed backend.Tests.EndpointValidationTests.GetConfig_DoesNotReturnApiKey
+  Passed backend.Tests.EndpointValidationTests.PostAudit_EmptySpec_Returns400
+  Passed backend.Tests.EndpointValidationTests.GetConfig_ReturnsProviderName
+  Passed backend.Tests.EndpointValidationTests.PostAudit_TrimmedSpec_AcceptsSpec
 
-### Verifications from Changes
+Test Run Successful.
+Total tests: 21
+     Passed: 21
+ Total time: 0.8215 Seconds
 
-1. **Serilog logging observed in test output**: During `dotnet test`, the console output included Serilog-formatted log lines:
-   - `"SpecAuditService initialized for model test-model at https://test.example.com/v1"` (startup)
-   - `"Audit request: 14 chars, format: none"` (endpoint)
-   - `"Starting AI audit stream for spec (14 chars)"` (service)
-   - `"Audit error: Retry failed after 4 tries..."` (error case)
-   - `"Audit request completed"` (completion)
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
 
-2. **Timeout fix (token.ThrowIfCancellationRequested())**: Present in `AuditEndpoints.cs` line 49.
+Time Elapsed 00:00:02.69
+```
 
-3. **Three catch blocks in correct order**: Client-disconnect (when ct.IsCancellationRequested) → server timeout (unqualified) → generic Exception.
+**Conclusion:** All tests pass.
 
-4. **NetworkTimeout 30s**: Present in `SpecAuditService.cs` line 166.
-
-5. **No regressions**: All 245 frontend tests and 21 backend tests pass.
-
-## New Tests Written
-- None needed. All existing tests pass with the changes.
+All backend tests pass.

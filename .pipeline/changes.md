@@ -1,5 +1,19 @@
 # Changes: SSE Streaming Timeout Fix + Serilog Logging
 
+## Spec: Remove NetworkTimeout from OpenAI Client
+
+### Files Modified
+
+#### `backend/src/Services/SpecAuditService.cs`
+- **Action:** Removed `NetworkTimeout = TimeSpan.FromSeconds(30)` from `OpenAIClientOptions`
+- **Lines affected:** 166
+- **Before:** `NetworkTimeout = TimeSpan.FromSeconds(30)`
+- **After:** (removed)
+
+### Verification
+- [x] `dotnet build` succeeds
+- [ ] `dotnet test` passes
+
 ## Files Modified
 
 ### 1. `backend/src/Endpoints/AuditEndpoints.cs` — Timeout fix + Serilog logging
