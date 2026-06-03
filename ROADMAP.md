@@ -23,7 +23,7 @@
 | Monitoring / error tracking (Sentry) | `ca0312f` |
 | Search within results (inline search + highlight) | `679149a` |
 | Copy individual finding (per-block copy icon) | `10c9d94` |
-| Keyboard shortcuts (Ctrl+Enter, Escape) | `_` |
+| Keyboard shortcuts (Ctrl+Enter, Escape) | `75fd570` |
 
 ---
 
