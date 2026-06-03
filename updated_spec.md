@@ -1,6 +1,6 @@
 # SpecAudit — Complete Project Context for Code Review
 
-> Generated: 2026-06-03 | HEAD: `ce16a18` | Branch: `main`
+> Generated: 2026-06-03 | HEAD: `9f7bd00` | Branch: `main`
 > Purpose: Self-contained reference for AI-powered code review ("antigravity" or equivalent)
 
 ---
@@ -180,6 +180,7 @@ AI provider error (timeout, 429, etc.)
 │   ├── AiOptionsValidationTests.cs   # Startup validation (missing config)
 │   ├── EndpointValidationTests.cs    # API integration tests (empty spec, oversized, config)
 │   ├── ExtractStructuredJsonTests.cs # 7 regex extraction tests
+│   ├── SentryStartupTests.cs         # Sentry DSN gating tests (2 tests)
 │   └── UserMessageBuilderTests.cs    # BuildUserMessage format tests
 │
 ├── frontend/
@@ -898,7 +899,7 @@ export default defineConfig({
 | `api/__tests__/auditClient.test.ts` | ~8 | SSE streaming, error sentinel, structured sentinel, invalid JSON, abort signal |
 | `__tests__/integration/feature-pipeline.test.ts` | 32 | End-to-end flow with real FraudLabs fixture: SSE chunks, content structure, export PDF, download, copy, structured sentinel |
 
-### 7.2 Backend — 19 tests, 4 files, xUnit
+### 7.2 Backend — 21 tests, 5 files, xUnit
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -906,6 +907,7 @@ export default defineConfig({
 | `EndpointValidationTests.cs` | 6 | Empty spec (400), whitespace-only (400), oversized (413), trimmed spec accepted (200), GET /api/config returns providerName, GET /api/config does not return apiKey |
 | `UserMessageBuilderTests.cs` | 3 | Yaml format hint, auto-detect fallback, spec content after format hint |
 | `AiOptionsValidationTests.cs` | 3 | Missing BaseUrl throws, missing ModelId throws, **missing ApiKey throws** |
+| `SentryStartupTests.cs` | 2 | Sentry not initialized when DSN missing (no-op); Sentry configured when DSN present |
 
 ### 7.3 Integration Test Fixture
 
@@ -965,12 +967,17 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 | Dark mode respects prefers-color-scheme | `e09745a` | useTheme.ts checks `prefers-color-scheme: light` before defaulting to dark |
 | JSON export uses strippedResult | `e09745a` | App.tsx JSON export fallback uses `strippedResult` instead of `state.result` |
 | JSON block display via lastIndexOf | `ce16a18` | Replace regex with `lastIndexOf('```json')` for stripping JSON block from user-visible display |
+| Sentry monitoring (backend) | `d9f6fb0` | `Sentry.AspNetCore` package, Sentry init in `Program.cs` gated by `Sentry:Dsn`, API key scrubbing via `SetBeforeSend` |
+| Sentry monitoring (frontend) | `d9f6fb0` | `@sentry/react` package, `Sentry.init` in `main.tsx` gated by `VITE_SENTRY_DSN`, `ErrorBoundary` wrapping `<App />`, `beforeSend` stripping request headers |
+| Sentry Docker config | `d9f6fb0` | `VITE_SENTRY_DSN` build arg in `docker-compose.yml`, `ARG VITE_SENTRY_DSN` in `Dockerfile` |
 
 ---
 
 ## 9. Commit History (Recent)
 
 ```
+9f7bd00 docs: move Monitoring to Completed in ROADMAP.md
+d9f6fb0 feat: add Sentry monitoring (frontend + backend)
 ce16a18 fix: strip JSON block from display immediately via lastIndexOf
 e09745a fix: build agent bash lockdown, JSON export stripped fallback, prefers-color-scheme
 60f8afd fix: permanently prevent tsc -b failures on test files + nul ignore
@@ -1014,6 +1021,9 @@ d8b337f fix: enforce pipeline delegation via permissions
 | Railway (prod) | Environment variable | `Ai__ApiKey` (double underscore) | ✅ Railway dashboard env |
 | Docker Compose | `.env` file (gitignored) | `AI_API_KEY` | ✅ .gitignore |
 | CI | GitHub Secrets | Not applicable (no test needs real key) | ✅ |
+| Local dev / env | `appsettings.json` / env var | `Sentry:Dsn` (backend) | ✅ Optional (no-op without it) |
+| Local dev / env | `.env` file | `VITE_SENTRY_DSN` (frontend) | ✅ Optional (no-op without it) |
+| Docker Compose | `.env` file (gitignored) | `SENTRY_DSN` + `VITE_SENTRY_DSN` | ✅ .gitignore |
 
 ### Provider Switching
 
@@ -1169,6 +1179,7 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 3. **No spec validation** — Specs are sent directly to the AI without client-side YAML/JSON validation.
 4. **No persistence** — Results exist only in browser memory. Page refresh loses the audit.
 5. **PDF inline code styling** — Inline code in PDF exports uses `background` field which pdfmake renders as highlight rather than monospace.
+6. **Sentry DSN is optional** — Without a configured `Sentry:Dsn` (backend) or `VITE_SENTRY_DSN` (frontend), the Sentry SDK initializes in no-op mode. No errors are tracked but the app functions normally.
 
 
 ---
@@ -1199,7 +1210,6 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 ### Infrastructure
 - **Staging environment** — Second Railway project
 - **Custom domain** — Real domain name
-- **Monitoring / error tracking** — Sentry integration
 
 ---
 
