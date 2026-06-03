@@ -91,6 +91,17 @@ function App() {
       .catch(() => setProviderName(null));
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && state.status === 'streaming') {
+        e.preventDefault();
+        abort();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [state.status, abort]);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 p-6 lg:p-10 light:bg-white light:text-slate-800">
       <header className="flex items-center justify-between">

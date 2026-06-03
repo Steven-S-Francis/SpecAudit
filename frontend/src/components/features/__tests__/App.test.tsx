@@ -878,3 +878,80 @@ describe('App Export JSON Button', () => {
     expect(parsed).toHaveProperty('specFormat', null);
   });
 });
+
+describe('App Keyboard Shortcuts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    mockUseTheme.mockReturnValue({ theme: 'dark', toggle: vi.fn() });
+  });
+
+  it('calls abort when Escape is pressed during streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call abort when Escape is pressed and status is not streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('does not call abort on non-Escape keys during streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Enter' });
+    fireEvent.keyDown(window, { key: ' ' });
+    fireEvent.keyDown(window, { key: 'x' });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('calls abort when Escape is pressed in textarea during streaming', async () => {
+    // This tests the requirement: "Escape when textarea is focused but streaming is active"
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    // The global listener catches Escape regardless of focus
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).toHaveBeenCalledTimes(1);
+  });
+});

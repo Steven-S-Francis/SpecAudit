@@ -20,19 +20,14 @@
 | Export as JSON (basic) | `8145305` (+ trailing newline fix) |
 | Structured JSON export (findings + summary objects) | `37b7a0d` |
 | Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
-| Monitoring / error tracking (Sentry) | `d9f6fb0` |
-| Search within results (inline search + highlight) | `e2505b5` |
-| Copy individual finding (per-block copy icon) | `ece2750` |
+| Monitoring / error tracking (Sentry) | `ca0312f` |
+| Search within results (inline search + highlight) | `679149a` |
+| Copy individual finding (per-block copy icon) | `10c9d94` |
+| Keyboard shortcuts (Ctrl+Enter, Escape) | `_` |
 
 ---
 
 ## Small (quick wins)
-
-### Keyboard shortcuts
-`Ctrl+Enter` to submit the audit, `Escape` to stop streaming.
-- **Why:** Power users prefer keyboard over mouse â€” faster iteration.
-- **Affects:** `frontend/src/App.tsx` (global keydown listener), `frontend/src/components/features/InputPanel.tsx` (Ctrl+Enter).
-- **Risk:** Must not interfere with normal textarea input (e.g., multi-line text entry).
 
 ### Spec file upload
 Drag-and-drop or file picker for YAML/JSON spec files, instead of paste-only input.

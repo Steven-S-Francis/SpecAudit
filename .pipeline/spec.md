@@ -1,39 +1,43 @@
-# Copy individual finding
+# Keyboard shortcuts
 
 ## OPEN QUESTIONS
 
-1. **Copy icon visibility**: Should the copy button be always visible on each severity block, or only appear on hover? Hover-only (`group-hover:opacity-100`) keeps the UI cleaner for dense reports. **Recommendation**: hover-only, matching common patterns like GitHub code-block copy buttons.
+1. **Shortcut hint presentation**: Should the hint appear as a `title` tooltip on buttons, as a small `<kbd>` tag inside the button text, or as a subtitle under the buttons? The existing UI has clean buttons with no hints. **Recommendation**: Add `title` attribute to the Run Audit and Stop buttons for hover tooltip, plus a subtle `kbd` element inside the button content (matching GitHub's pattern). This keeps the UI clean while being discoverable.
 
-2. **Copy feedback style**: The existing full-copy button in `App.tsx` uses text change ("Copy" → "Copied!"). For the per-block icon, **recommendation**: change the icon from clipboard to checkmark for 2 seconds, with `aria-label` changing to "Copied!" to support accessibility.
-
-3. **Non-finding blocks**: Should `### Summary` or `## Governance Score` blocks get copy icons? The feature request says "severity block", implying only `### [CRITICAL|WARNING|INFO]` blocks. **Recommendation**: Only finding blocks get copy icons; non-finding blocks render as-is.
-
-4. **Block identity during streaming**: Using block text as the "copied" identifier (instead of array index) prevents feedback drift when new blocks stream in. **Recommendation**: Use `copiedBlockText: string | null` state keyed by the block's raw text.
+2. **Escape key propagation for textarea**: When pressing Escape in the textarea while NOT streaming (e.g., during editing), should we let the browser handle it (e.g., blur the textarea) or prevent default? **Recommendation**: Let the browser handle Escape normally — only intercept when streaming is active. This means the global handler will fire, check `state.status === 'streaming'` and only `preventDefault` + call `abort()` in that case.
 
 ---
 
 ## Architecture Overview
 
-The feature lives entirely within `ResultPanel.tsx` with a small addition to `filterMarkdown.ts`. No new components, no backend changes, no new dependencies.
+The feature adds two keyboard shortcut listeners:
+
+1. **`Ctrl+Enter` / `Cmd+Enter`** — local to the `InputPanel` textarea `onKeyDown` handler. Triggers the same action as clicking "Run Audit".
+2. **`Escape`** — global `window` `keydown` listener in `App.tsx`. Triggers the same action as clicking "Stop" when streaming is active.
+
+Both shortcuts reuse existing callbacks (`onSubmit` / `onAbort` from InputPanel, `abort` from useAudit hook) — no new state or API surface is added.
 
 **Data flow:**
 
 ```
-raw markdown content (from App.tsx)
-  → filterMarkdownBySeverity()          (existing — removes hidden severity blocks)
-    → splitIntoBlocks()                 (NEW — splits filtered content by severity headings)
-      → blocks: [{ text, severity }]
-        → per-block: highlightText()    (existing — wraps search matches in <mark>)
-          → per-block: <ReactMarkdown>  (one instance per block)
-            → finding blocks get an extra wrapper div + copy icon button
-              → onClick → navigator.clipboard.writeText(block.text)
+User presses Ctrl+Enter (or Cmd+Enter) in textarea
+  → InputPanel.onKeyDown handler
+    → checks: isEmpty || isOverLimit || status === 'loading' || status === 'streaming'
+    → if all clear: e.preventDefault(); onSubmit(spec, format)
+      → App.tsx handles: audit({ spec, specFormat: format })
+        → useAudit.audit() starts streaming
+
+User presses Escape (anywhere)
+  → window keydown listener in App.tsx
+    → checks: state.status === 'streaming'
+    → if true: e.preventDefault(); abort()
+      → useAudit.abort() cancels the AbortController
 ```
 
-**Why split into per-block ReactMarkdown instances instead of keeping a single ReactMarkdown?**
+**Why two locations?**
 
-- The `h3` custom renderer only has access to the heading's own children. It cannot know the full block text (heading + body paragraphs).
-- By splitting blocks in the component, each finding block becomes a self-contained unit that can carry its own copy button with the full block's plain text readily available.
-- Each block's text is also available *unhighlighted* for the copy action, so search `<mark>` tags never leak into clipboard content.
+- `Ctrl+Enter` only makes sense when the textarea is focused — it's a text editing shortcut. Adding it to the textarea's `onKeyDown` avoids unnecessary global listener overhead and naturally scopes the behavior.
+- `Escape` should work globally (even when the user is looking at results) — it needs a `window` listener. Keeping it in `App.tsx` ensures it's active whenever the app is mounted.
 
 ---
 
@@ -41,380 +45,382 @@ raw markdown content (from App.tsx)
 
 | Action | Path | Description |
 |--------|------|-------------|
-| MODIFY | `frontend/src/utils/filterMarkdown.ts` | Export `splitIntoBlocks` + `MarkdownBlock` type |
-| MODIFY | `frontend/src/components/features/ResultPanel.tsx` | Split blocks, render per-block ReactMarkdown, add copy icon + handler |
-| MODIFY | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` | Add 5+ new test cases for individual copy |
-| CREATE | `frontend/src/utils/__tests__/splitIntoBlocks.test.ts` | Unit tests for `splitIntoBlocks` |
+| MODIFY | `frontend/src/App.tsx` | Add global `keydown` listener for `Escape` key |
+| MODIFY | `frontend/src/components/features/InputPanel.tsx` | Add `onKeyDown` handler on textarea for `Ctrl+Enter`/`Cmd+Enter`; add shortcut hints |
+| MODIFY | `frontend/src/components/features/__tests__/InputPanel.test.tsx` | Add test cases for `Ctrl+Enter` |
+| MODIFY | `frontend/src/components/features/__tests__/App.test.tsx` | Add test cases for global `Escape` handler |
 
 ---
 
-## 1. Modify `frontend/src/utils/filterMarkdown.ts`
+## 1. Modify `frontend/src/App.tsx`
 
-### Add exports
+### 1.1 Add global Escape listener
 
-After `filterMarkdownBySeverity`, add:
-
-```ts
-export interface MarkdownBlock {
-  text: string;
-  severity: SeverityLevel | null;
-}
-
-/**
- * Splits markdown content into blocks at severity-heading boundaries.
- * Each block is either a finding (has a severity header) or non-finding content.
- * Uses the same splitter regex as filterMarkdownBySeverity.
- */
-export function splitIntoBlocks(content: string): MarkdownBlock[] {
-  if (!content) return [{ text: '', severity: null }];
-
-  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
-  const blocks = content.split(blockSplitter);
-  return blocks.map((block) => ({
-    text: block,
-    severity: extractSeverityFromBlock(block),
-  }));
-}
-```
-
-`extractSeverityFromBlock` is already a module-private function in the same file — `splitIntoBlocks` can call it directly.
-
-### Edge cases handled
-
-- Empty string → returns a single block with `{ text: '', severity: null }`
-- Content with no severity headings → single block, `severity: null`
-- Malformed/incomplete severity headers (e.g. `### [CRITI`) → `severity: null`, text passes through
-
----
-
-## 2. Modify `frontend/src/components/features/ResultPanel.tsx`
-
-### 2.1 Import additions
-
-At the top of the file, add to existing imports:
-
-```ts
-import { splitIntoBlocks, type MarkdownBlock } from '../../utils/filterMarkdown';
-```
-
-### 2.2 New state and callback
-
-Inside the `ResultPanel` function, after existing state declarations:
-
-```ts
-const [copiedBlockText, setCopiedBlockText] = useState<string | null>(null);
-
-const handleCopyBlock = useCallback(async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text);
-    setCopiedBlockText(text);
-    setTimeout(() => setCopiedBlockText(null), 2000);
-  } catch {
-    // Clipboard API unavailable — silently ignore (matches existing pattern)
-  }
-}, []);
-```
-
-### 2.3 Replace the markdown rendering section
-
-Remove the existing `highlightedContent` variable assignment and the single `<ReactMarkdown>` block. Replace them with:
-
-```ts
-const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
-const blocks = splitIntoBlocks(filteredContent);
-```
-
-Then replace the entire `<div className="font-mono text-sm text-slate-200 light:text-slate-800">` block with:
+Insert a new `useEffect` after the existing provider name fetch effect (around line 92):
 
 ```tsx
-<div className="font-mono text-sm text-slate-200 light:text-slate-800">
-  {blocks.map((block, index) => {
-    const highlightedBlock = highlightText(block.text, deferredQuery);
-    const isFinding = block.severity !== null;
-
-    return (
-      <div key={index} className={isFinding ? 'relative group' : ''}>
-        {isFinding && (
-          <button
-            onClick={() => handleCopyBlock(block.text)}
-            className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 light:bg-slate-200 light:hover:bg-slate-300 light:border-slate-300 text-slate-400 hover:text-slate-200 light:text-slate-500 light:hover:text-slate-700"
-            aria-label={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
-            title={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
-          >
-            {copiedBlockText === block.text ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            )}
-          </button>
-        )}
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[
-            [rehypeRaw],
-            [rehypeSanitize, SANITIZE_SCHEMA],
-          ]}
-          components={{
-            h3({ children }: HeadingProps) {
-              const text = extractTextContent(children);
-              const severity = parseSeverity(text);
-              if (severity) {
-                const styles = SEVERITY_STYLES[severity];
-                const prefix = `[${severity}]`;
-                const contentChildren = Children.map(children, (child) => {
-                  if (typeof child === 'string' && child.startsWith(prefix)) {
-                    const rest = child.slice(prefix.length).trimStart();
-                    return rest || undefined;
-                  }
-                  return child;
-                });
-                return (
-                  <div className={styles.wrapper}>
-                    <span className={styles.badge}>{severity}</span>
-                    <span className={`font-semibold ${styles.label}`}>{contentChildren}</span>
-                  </div>
-                );
-              }
-              return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
-            },
-            code({ children, className }: CodeProps) {
-              const isBlock = className?.includes('language-');
-              return isBlock
-                ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
-                : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
-            },
-            hr(_props: HrProps) {
-              return <hr className="border-slate-700 my-4 light:border-slate-300" />;
-            },
-            strong({ children }: StrongProps) {
-              return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
-            },
-            p({ children }: ParaProps) {
-              return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
-            },
-          }}
-        >
-          {highlightedBlock}
-        </ReactMarkdown>
-      </div>
-    );
-  })}
-  {isStreaming && (
-    <span className="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-1 align-text-bottom light:bg-slate-500" />
-  )}
-</div>
+useEffect(() => {
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && state.status === 'streaming') {
+      e.preventDefault();
+      abort();
+    }
+  };
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, [state.status, abort]);
 ```
 
-### 2.4 Remove obsolete variable
+**Edge cases handled by this code:**
 
-Remove the `highlightedContent` variable declaration:
-```ts
-const highlightedContent = highlightText(filteredContent, deferredQuery);
-```
-This is replaced by per-block highlighting inside the map.
+| Case | Behavior |
+|------|----------|
+| `Escape` pressed, streaming NOT active | Listener fires, check fails (`state.status !== 'streaming'`), no-op |
+| `Escape` pressed, streaming active | `preventDefault()` stops browser Escape behavior, `abort()` cancels streaming |
+| `Escape` pressed in textarea during typing (not streaming) | No-op — the check prevents any action, browser handles Escape as normal (blur) |
+| Component unmounts while listener is active | Cleanup function removes the listener |
+
+**Dependencies rationale:** `state.status` is included so the listener always reads the latest streaming state. `abort` is stable (from `useCallback` with empty deps). React guarantees the effect re-runs when deps change, keeping the closure fresh.
 
 ---
 
-## 3. Modify `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
+## 2. Modify `frontend/src/components/features/InputPanel.tsx`
 
-Add these test cases inside the existing `describe('ResultPanel', () => { … })` block, after the search tests.
+### 2.1 Add `onKeyDown` handler to textarea
 
-### 3.1 Copy button renders on severity blocks
+Inside the `InputPanel` function, before the `return` statement:
 
-```ts
-it('renders copy button on severity finding block', () => {
-  const markdown = '### [CRITICAL] Missing Auth\n\nDetails about the issue.';
-  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-  const markdownArea = container.querySelector<HTMLElement>('.font-mono');
-  const copyBtn = within(markdownArea!).getByLabelText('Copy finding');
-  expect(copyBtn).toBeInTheDocument();
-});
-
-it('does not render copy button on non-severity block', () => {
-  const markdown = '## Governance Score\nScore: 8.5';
-  const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-  const markdownArea = container.querySelector<HTMLElement>('.font-mono');
-  expect(within(markdownArea!).queryByLabelText('Copy finding')).not.toBeInTheDocument();
-});
+```tsx
+const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const isMod = e.ctrlKey || e.metaKey;
+  if (isMod && e.key === 'Enter') {
+    const isEmpty = spec.trim().length === 0;
+    const isOverLimit = count > 100000;
+    if (!isEmpty && !isOverLimit && status !== 'loading' && status !== 'streaming') {
+      e.preventDefault();
+      onSubmit(spec, format);
+    }
+  }
+}, [spec, format, status, onSubmit, count]);
 ```
 
-### 3.2 Clicking copy button copies block text
+Note: The `isEmpty` and `isOverLimit` checks are duplicated from the render scope (they're already computed as `const isEmpty = ...` and `const isOverLimit = ...` at the top of the component). Use those existing variables instead of redefining them.
 
-```ts
-it('clicking copy button copies the finding block text', async () => {
-  // Mock clipboard API
-  const writeText = vi.fn(() => Promise.resolve());
-  Object.assign(navigator, { clipboard: { writeText } });
-
-  const markdown = '### [CRITICAL] Missing Auth\n\n**Issue:** No authentication.';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  const copyBtn = screen.getByLabelText('Copy finding');
-  fireEvent.click(copyBtn);
-  await waitFor(() => {
-    expect(writeText).toHaveBeenCalledTimes(1);
-    // The copied text should be the block without <mark> tags
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('### [CRITICAL] Missing Auth'));
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('**Issue:** No authentication.'));
-  });
-});
+Actually, looking at the existing code:
+```tsx
+const count = spec.length;
+const isOverLimit = count > 100000;
+const isEmpty = spec.trim().length === 0;
 ```
 
-### 3.3 Copy visual feedback
+These are already computed before the return. So the handler can reference them directly. The `useCallback` should reference them:
 
-```ts
-it('shows checkmark icon after copy', async () => {
-  Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.resolve()) } });
-
-  const markdown = '### [CRITICAL] Missing Auth';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  const copyBtn = screen.getByLabelText('Copy finding');
-  fireEvent.click(copyBtn);
-  await waitFor(() => {
-    // After copy, label changes to "Copied!"
-    expect(screen.getByLabelText('Copied!')).toBeInTheDocument();
-  });
-});
+```tsx
+const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const isMod = e.ctrlKey || e.metaKey;
+  if (isMod && e.key === 'Enter') {
+    if (!isEmpty && !isOverLimit && status !== 'loading' && status !== 'streaming') {
+      e.preventDefault();
+      onSubmit(spec, format);
+    }
+  }
+}, [spec, format, status, onSubmit, isEmpty, isOverLimit]);
 ```
 
-### 3.4 No copy button when severity is filtered out
+Wait — `isEmpty` and `isOverLimit` are derived from `spec` and `count` (which is derived from `spec`), so they don't need to be in deps if `spec` is already there. But TypeScript may complain if the closure references them. Better to keep them in deps for correctness, though they're technically reactive through `spec`. Actually, since they're `const` declarations derived synchronously from `spec`, the closure will capture them correctly at render time. Let me simplify: just reference `isEmpty` and `isOverLimit` directly in the handler without putting them in the deps array, since they're derived from `spec` which IS in deps.
 
-```ts
-it('hides copy button when severity is filtered out', () => {
-  const markdown = '### [CRITICAL] Missing Auth\n\n---\n### [WARNING] Missing 404';
-  render(<ResultPanel content={markdown} isStreaming={false} />);
-  // Click CRITICAL toggle to hide CRITICAL findings
-  fireEvent.click(screen.getByRole('button', { name: 'CRITICAL' }));
-  // The CRITICAL finding's copy button should not exist
-  // Only the WARNING block should have a copy button
-  const copyButtons = screen.getAllByLabelText('Copy finding');
-  expect(copyButtons).toHaveLength(1);
-  // The remaining copy button should be on the WARNING block
-  expect(screen.getByText('Missing 404')).toBeInTheDocument();
-});
+Hmm, this is getting complex. Let me keep it simple — use a non-memoized handler inline on the textarea. Given that this is a single textarea with minimal re-renders, `useCallback` is not strictly necessary. But the existing codebase uses `useCallback` for event handlers. Let me follow the pattern.
+
+Actually, the simplest approach: just add `onKeyDown={handleKeyDown}` on the textarea referencing a function defined in the component body. Let me not overthink this:
+
+```tsx
+function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  const isMod = e.ctrlKey || e.metaKey;
+  if (isMod && e.key === 'Enter') {
+    if (!isEmpty && !isOverLimit && status !== 'loading' && status !== 'streaming') {
+      e.preventDefault();
+      onSubmit(spec, format);
+    }
+  }
+}
 ```
 
-### 3.5 Copy works during streaming
+This follows the existing pattern in InputPanel where `countColor` and other derived variables are computed as regular `const` in the function body (not memoized). No `useCallback` needed for a simple key handler.
 
-```ts
-it('renders copy buttons during streaming', () => {
-  const markdown = '### [WARNING] Incomplete spec';
-  render(<ResultPanel content={markdown} isStreaming={true} />);
-  expect(screen.getByLabelText('Copy finding')).toBeInTheDocument();
-  // Streaming cursor should still be present
-  expect(document.querySelector('.animate-pulse')).toBeInTheDocument();
-});
+### 2.2 Wire the handler to the textarea
+
+Add `onKeyDown={handleKeyDown}` to the `<textarea>` element:
+
+```tsx
+<textarea
+  value={spec}
+  onChange={(e) => setSpec(e.target.value)}
+  onKeyDown={handleKeyDown}
+  placeholder="Paste your OpenAPI spec here (YAML or JSON)..."
+  className="..."
+/>
 ```
+
+### 2.3 Add shortcut hints
+
+Add `title` attributes to both buttons:
+
+**Run Audit button** (line 66-70):
+```tsx
+<Button
+  variant="primary"
+  disabled={isEmpty || isOverLimit || status === 'loading' || status === 'streaming'}
+  onClick={() => onSubmit(spec, format)}
+  title="Ctrl+Enter to run audit"
+>
+  Run Audit
+  <kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Ctrl+Enter</kbd>
+</Button>
+```
+
+**Stop button** (line 72-76):
+```tsx
+{status === 'streaming' && (
+  <Button variant="danger" onClick={onAbort} title="Escape to stop">
+    Stop
+    <kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Esc</kbd>
+  </Button>
+)}
+```
+
+The `hidden sm:inline` class hides the kbd on narrow screens where the button text is already crowded.
+
+**Edge cases handled by the Ctrl+Enter handler:**
+
+| Case | Behavior |
+|------|----------|
+| `Enter` alone (no modifier) | `isMod` is false, handler returns immediately, `Enter` inserts newline normally |
+| `Ctrl+Enter` while empty | `isEmpty` is true, handler returns, no-op |
+| `Ctrl+Enter` while over limit | `isOverLimit` is true, handler returns, no-op |
+| `Ctrl+Enter` while loading/streaming | `status === 'loading'` or `'streaming'`, handler returns, no-op |
+| `Ctrl+Enter` with valid input | `onSubmit(spec, format)` is called, same as button click |
+| `Cmd+Enter` on Mac | `e.metaKey` is true, `isMod` is true, same behavior as Ctrl+Enter |
+| `Shift+Enter` | No modifier match, inserts newline normally |
+| Multiple rapid Ctrl+Enter presses | State changes to `loading` after first call disables further triggers (status check prevents re-entry) |
 
 ---
 
-## 4. Create `frontend/src/utils/__tests__/splitIntoBlocks.test.ts`
+## 3. Modify test files
+
+### 3.1 Add tests to `frontend/src/components/features/__tests__/InputPanel.test.tsx`
+
+Add these tests inside the existing `describe('InputPanel', () => { … })` block, after the existing tests (before the closing `});`):
 
 ```ts
-import { describe, it, expect } from 'vitest';
-import { splitIntoBlocks } from '../filterMarkdown';
+it('calls onSubmit when Ctrl+Enter is pressed with valid input', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+  fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+  expect(onSubmit).toHaveBeenCalledWith('openapi: 3.0.3', undefined);
+});
 
-const CRITICAL_BLOCK = '### [CRITICAL] Missing Auth\n\nDetails.';
-const WARNING_BLOCK  = '### [WARNING] Missing 404\n\nDetails.';
-const INFO_BLOCK     = '### [INFO] Missing Contact\n\nDetails.';
-const NON_FINDING    = '## Governance Score\nScore: 8.5';
+it('calls onSubmit when Cmd+Enter is pressed with valid input', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+  fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+  expect(onSubmit).toHaveBeenCalledWith('openapi: 3.0.3', undefined);
+});
 
-describe('splitIntoBlocks', () => {
-  it('splits multiple severity blocks', () => {
-    const content = [CRITICAL_BLOCK, WARNING_BLOCK, INFO_BLOCK].join('\n---\n');
-    const blocks = splitIntoBlocks(content);
-    expect(blocks).toHaveLength(3);
-    expect(blocks[0].severity).toBe('CRITICAL');
-    expect(blocks[1].severity).toBe('WARNING');
-    expect(blocks[2].severity).toBe('INFO');
+it('does not call onSubmit when Enter alone is pressed (newline)', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+  fireEvent.keyDown(textarea, { key: 'Enter' });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('does not call onSubmit when Ctrl+Enter and input is empty', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  // textarea is empty
+  fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('does not call onSubmit when Ctrl+Enter and status is loading', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="loading" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+  fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('does not call onSubmit when Ctrl+Enter and status is streaming', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="streaming" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+  fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('does not call onSubmit when Ctrl+Enter and input exceeds limit', () => {
+  const onSubmit = vi.fn();
+  render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+  const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+  fireEvent.change(textarea, { target: { value: 'x'.repeat(100_001) } });
+  fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('shows Ctrl+Enter hint on Run Audit button', () => {
+  render(<InputPanel status="idle" onSubmit={noop} onAbort={noop} />);
+  const button = screen.getByRole('button', { name: /run audit/i });
+  // kbd element should be rendered inside the button on sm+ screens
+  const kbd = button.querySelector('kbd');
+  expect(kbd).toBeInTheDocument();
+  expect(kbd).toHaveTextContent('Ctrl+Enter');
+});
+
+it('shows Escape hint on Stop button', () => {
+  render(<InputPanel status="streaming" onSubmit={noop} onAbort={noop} />);
+  const button = screen.getByRole('button', { name: /stop/i });
+  const kbd = button.querySelector('kbd');
+  expect(kbd).toBeInTheDocument();
+  expect(kbd).toHaveTextContent('Esc');
+});
+```
+
+### 3.2 Add tests to `frontend/src/components/features/__tests__/App.test.tsx`
+
+Add a new `describe('App Keyboard Shortcuts', () => { … })` block after the existing test blocks. Add this before the existing `describe` blocks or after them — order doesn't matter for vitest.
+
+```ts
+describe('App Keyboard Shortcuts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
+    mockUseTheme.mockReturnValue({ theme: 'dark', toggle: vi.fn() });
   });
 
-  it('returns null severity for non-finding content', () => {
-    const blocks = splitIntoBlocks(NON_FINDING);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].severity).toBeNull();
+  it('calls abort when Escape is pressed during streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).toHaveBeenCalledTimes(1);
   });
 
-  it('handles mixed content: non-finding followed by findings', () => {
-    const content = [NON_FINDING, CRITICAL_BLOCK, WARNING_BLOCK].join('\n---\n');
-    const blocks = splitIntoBlocks(content);
-    expect(blocks).toHaveLength(3);
-    expect(blocks[0].severity).toBeNull();
-    expect(blocks[1].severity).toBe('CRITICAL');
-    expect(blocks[2].severity).toBe('WARNING');
+  it('does not call abort when Escape is pressed and status is not streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'idle', result: '', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).not.toHaveBeenCalled();
   });
 
-  it('handles empty string', () => {
-    const blocks = splitIntoBlocks('');
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].text).toBe('');
-    expect(blocks[0].severity).toBeNull();
+  it('does not call abort on non-Escape keys during streaming', async () => {
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
+
+    render(<App />);
+    await waitFor(() => {});
+
+    fireEvent.keyDown(window, { key: 'Enter' });
+    fireEvent.keyDown(window, { key: ' ' });
+    fireEvent.keyDown(window, { key: 'x' });
+    expect(abort).not.toHaveBeenCalled();
   });
 
-  it('preserves block text content', () => {
-    const blocks = splitIntoBlocks(CRITICAL_BLOCK);
-    expect(blocks[0].text).toBe(CRITICAL_BLOCK);
-  });
+  it('calls abort when Escape is pressed in textarea during streaming', async () => {
+    // This tests the requirement: "Escape when textarea is focused but streaming is active"
+    const abort = vi.fn();
+    mockUseAudit.mockReturnValue({
+      state: { status: 'streaming', result: 'Partial...', findings: [], summary: null, error: null },
+      audit: vi.fn(),
+      abort,
+      reset: vi.fn(),
+    });
 
-  it('does not split on partial/incomplete severity headers', () => {
-    const content = '### [CRITI\nSome content\n### [WARNING] Real warning';
-    const blocks = splitIntoBlocks(content);
-    expect(blocks).toHaveLength(2);
-    expect(blocks[0].severity).toBeNull();  // Not matched
-    expect(blocks[1].severity).toBe('WARNING');
+    render(<App />);
+    await waitFor(() => {});
+
+    // The global listener catches Escape regardless of focus
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(abort).toHaveBeenCalledTimes(1);
   });
 });
 ```
 
+**Note on Escape + textarea focus:** The global `window` listener fires even when the textarea is focused, so no special handling is needed for the "Escape when textarea focused + streaming" case. The handler checks `state.status === 'streaming'` which covers all scenarios.
+
 ---
 
-## 5. Test considerations
+## 4. Test considerations
 
 ### Which existing tests might break?
 
-The structural change from a single ReactMarkdown to per-block ReactMarkdown instances **does not break any existing tests** because:
-
-- All text content is still in the DOM at the same positions relative to parent elements like `.font-mono`.
-- `screen.getByText()` queries the entire document and still works.
-- `container.querySelectorAll('mark.search-highlight')` still finds `<mark>` elements regardless of DOM nesting.
-- The streaming cursor is still after all blocks.
-- The ScrollButton is still after all blocks.
+- **None.** `InputPanel.test.tsx` tests don't use keyDown events on the textarea, so adding a handler won't affect them.
+- **App.test.tsx** mocks `useAudit` and `useTheme` at the top level. The new `useEffect` in App.tsx only fires a `keydown` listener — it doesn't change rendering, so existing tests for Copy, Download, Export PDF, Export JSON are unaffected.
+- The `keydown` listener is cleaned up on unmount, so test isolation is maintained.
 
 ### What NOT to test
 
-- **Clipboard API failure case**: The existing pattern silently ignores errors. Trust that `navigator.clipboard.writeText` either resolves or throws.
-- **Per-block ReactMarkdown rendering details**: Trust that each block is valid markdown and renders correctly through ReactMarkdown, just as the single-string version did.
-- **CSS hover visibility**: The `opacity-0 group-hover:opacity-100` pattern is a visual concern; tests access the button directly via `getByLabelText`.
+- **The `e.preventDefault()` call**: Vitest's `fireEvent.keyDown` dispatches a synthetic event; `preventDefault` on the real DOM event is browser behavior. We trust that `preventDefault()` works correctly — test the business logic (whether `onSubmit` / `abort` is called).
+- **CSS `hidden sm:inline` on kbd**: This is a responsive-visual concern. Test that `<kbd>` exists in the DOM (unit test), not that it's visible at specific breakpoints (that's an integration/E2E concern).
+- **`title` attribute on buttons**: Small accessibility improvement, not worth a dedicated test assertion.
 
 ---
 
-## 6. Edge cases
+## 5. Edge cases summary
 
 | Edge case | Handling |
 |-----------|----------|
-| Empty content | `filteredContent` is empty, `splitIntoBlocks('')` returns `[{ text: '', severity: null }]`, one block rendered with no copy button |
-| Only non-finding content | Single block with `severity: null`, no copy button rendered |
-| One finding block | Single block with severity, copy button rendered on that block |
-| Search active when copying | `block.text` is the raw (unhighlighted) text; clipboard gets clean text, no `<mark>` tags |
-| Streaming new blocks | Blocks are recomputed on each render; `copiedBlockText` uses text content (not index) so visual feedback stays on the correct block |
-| Two blocks with identical text | Both show copied feedback simultaneously — acceptable, and vanishingly unlikely for audit findings |
-| Very many blocks (>50) | Each block gets a ReactMarkdown instance; negligible overhead for typical report sizes (usually <50 findings) |
-| Copy during streaming | Button renders immediately; if block text is partial (streaming chunk in middle) the user can copy partial content — same as copy-all behavior |
+| `Enter` alone (newline) | `isMod` is false → no-op, native newline insertion |
+| `Shift+Enter` | `isMod` is false → no-op, native newline insertion |
+| `Ctrl+Enter` empty input | `isEmpty` check → no-op |
+| `Ctrl+Enter` over limit | `isOverLimit` check → no-op |
+| `Ctrl+Enter` already loading | `status === 'loading'` check → no-op |
+| `Ctrl+Enter` already streaming | `status === 'streaming'` check → no-op |
+| `Cmd+Enter` on Mac | `e.metaKey` is true → same as Ctrl+Enter |
+| `Escape` not streaming | `state.status !== 'streaming'` → no-op |
+| `Escape` streaming | `preventDefault()` + `abort()` |
+| `Escape` when textarea focused + streaming | Global listener fires, same handler path |
+| Component unmount | Both effects clean up listeners |
+| Multiple rapid Escape presses | `abort()` is idempotent — calling `AbortController.abort()` multiple times is safe |
+| kbd visible on narrow screens | `hidden sm:inline` hides the kbd on mobile |
 
----
 
-## 7. Implementation Order
 
-1. Add `splitIntoBlocks` export to `frontend/src/utils/filterMarkdown.ts`
-2. Create `frontend/src/utils/__tests__/splitIntoBlocks.test.ts`
-3. Modify `frontend/src/components/features/ResultPanel.tsx`:
-   - Add imports for `splitIntoBlocks`
-   - Add `copiedBlockText` state and `handleCopyBlock` callback
-   - Replace single ReactMarkdown with per-block rendering including copy icon
-4. Add test cases to `frontend/src/components/features/__tests__/ResultPanel.test.tsx`
-5. Run `npx tsc --noEmit && npx vitest run` — ensure all tests pass (existing + new)
-6. Manual smoke test: run an audit, hover over a finding, click copy icon, verify clipboard content, verify checkmark feedback
+## 6. Implementation Order
+
+1. Add `onKeyDown` handler + hints to `frontend/src/components/features/InputPanel.tsx`
+2. Add global Escape listener to `frontend/src/App.tsx`
+3. Add test cases to `frontend/src/components/features/__tests__/InputPanel.test.tsx`
+4. Add test cases to `frontend/src/components/features/__tests__/App.test.tsx`
+5. Run `npx tsc --noEmit && npx vitest run` — ensure all 236+ tests pass (existing 232 + 9 new for InputPanel + 4 new for App)
+6. Manual smoke test: type valid spec, press Ctrl+Enter → verify audit starts. Press Escape while streaming → verify audit stops. Press Enter alone → verify newline inserted.

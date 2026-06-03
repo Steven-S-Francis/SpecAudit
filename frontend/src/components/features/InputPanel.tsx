@@ -22,11 +22,22 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
       ? 'text-amber-400'
       : 'text-slate-400 light:text-slate-500';
 
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    const isMod = e.ctrlKey || e.metaKey;
+    if (isMod && e.key === 'Enter') {
+      if (!isEmpty && !isOverLimit && status !== 'loading' && status !== 'streaming') {
+        e.preventDefault();
+        onSubmit(spec, format);
+      }
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <textarea
         value={spec}
         onChange={(e) => setSpec(e.target.value)}
+        onKeyDown={handleKeyDown}
         placeholder="Paste your OpenAPI spec here (YAML or JSON)..."
         className="bg-slate-950 border border-slate-700 rounded-lg p-4 text-slate-200 text-sm font-mono w-full resize-y min-h-[300px] focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
       />
@@ -66,12 +77,15 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
           variant="primary"
           disabled={isEmpty || isOverLimit || status === 'loading' || status === 'streaming'}
           onClick={() => onSubmit(spec, format)}
+          title="Ctrl+Enter to run audit"
         >
           Run Audit
+          <kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Ctrl+Enter</kbd>
         </Button>
         {status === 'streaming' && (
-          <Button variant="danger" onClick={onAbort}>
+          <Button variant="danger" onClick={onAbort} title="Escape to stop">
             Stop
+            <kbd className="ml-1.5 text-xs opacity-60 hidden sm:inline">Esc</kbd>
           </Button>
         )}
       </div>

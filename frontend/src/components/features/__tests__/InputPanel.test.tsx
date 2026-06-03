@@ -144,4 +144,83 @@ describe('InputPanel', () => {
     fireEvent.click(jsonButton);
     expect(jsonButton.className).not.toContain('border-indigo-500');
   });
+
+  it('calls onSubmit when Ctrl+Enter is pressed with valid input', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledWith('openapi: 3.0.3', undefined);
+  });
+
+  it('calls onSubmit when Cmd+Enter is pressed with valid input', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
+    expect(onSubmit).toHaveBeenCalledWith('openapi: 3.0.3', undefined);
+  });
+
+  it('does not call onSubmit when Enter alone is pressed (newline)', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not call onSubmit when Ctrl+Enter and input is empty', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    // textarea is empty
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not call onSubmit when Ctrl+Enter and status is loading', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="loading" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not call onSubmit when Ctrl+Enter and status is streaming', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="streaming" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'openapi: 3.0.3' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not call onSubmit when Ctrl+Enter and input exceeds limit', () => {
+    const onSubmit = vi.fn();
+    render(<InputPanel status="idle" onSubmit={onSubmit} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'x'.repeat(100_001) } });
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows Ctrl+Enter hint on Run Audit button', () => {
+    render(<InputPanel status="idle" onSubmit={noop} onAbort={noop} />);
+    const button = screen.getByRole('button', { name: /run audit/i });
+    const kbd = button.querySelector('kbd');
+    expect(kbd).toBeInTheDocument();
+    expect(kbd).toHaveTextContent('Ctrl+Enter');
+  });
+
+  it('shows Escape hint on Stop button', () => {
+    render(<InputPanel status="streaming" onSubmit={noop} onAbort={noop} />);
+    const button = screen.getByRole('button', { name: /stop/i });
+    const kbd = button.querySelector('kbd');
+    expect(kbd).toBeInTheDocument();
+    expect(kbd).toHaveTextContent('Esc');
+  });
 });
