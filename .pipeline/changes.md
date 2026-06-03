@@ -128,3 +128,33 @@
 - The rejection status code is 429 (not default 503), matching standard rate-limit semantics.
 - Rate limiting is per IP address (`RemoteIpAddress`). If behind a reverse proxy (e.g., Railway), the proxy IP is used unless `X-Forwarded-For` is configured.
 - `QueueLimit=0` means no requests are queued — the 11th request is immediately rejected with 429.
+
+---
+
+# Group 5 Changes — TypeScript build fix (TS2666 / TS2300)
+
+## Files Changed
+
+### `frontend/src/vite-env.d.ts` (created)
+- New Vite environment declaration file following the standard Vite pattern.
+- Contains `/// <reference types="vite/client" />` triple-slash directive and a global `declare module '*.md?raw'` block.
+- This provides the `*.md?raw` import type for the entire `src/` directory, eliminating the need for inline module augmentation in test files.
+
+### `frontend/src/utils/__tests__/filterMarkdown.test.ts` (modified)
+- **Removed lines 5–9:** The inline `declare module '*.md?raw' { ... }` block.
+- With `"moduleDetection": "force"` in `tsconfig.app.json`, every file is treated as a module. The inline augmentation conflicted with Vite's own `*?raw` declaration from `vite/client`, causing TS2666 (augmentations not permitted in modules) and TS2300 (duplicate identifier 'src').
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc -b` (frontend, same as Docker build) | ✅ Passed (no errors) |
+| `npx tsc --noEmit` (frontend) | ✅ Passed (no errors) |
+| `npx vitest run --reporter=verbose` | ✅ **203 passed** (15 files, 0 failures) |
+
+## Notes for Tester
+
+- The `vite-env.d.ts` file is the standard Vite convention for declaring custom import types (same pattern used by Vite scaffolding templates).
+- The fix resolves the Docker build failure at the `tsc -b` step. No runtime behavior changes.
+- All existing tests (203) continue to pass, including `filterMarkdown.test.ts` which imports a `*.md?raw` fixture.
+- No other files needed changes — the global declaration covers all consumers of `*.md?raw` imports.
