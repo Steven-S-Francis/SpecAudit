@@ -28,8 +28,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapFallbackToFile("index.html");
 
 var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
-if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId))
-    throw new InvalidOperationException("Ai:BaseUrl and Ai:ModelId must be configured in appsettings.json.");
+if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId) || string.IsNullOrWhiteSpace(aiOptions.ApiKey))
+    throw new InvalidOperationException("Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets.");
 
 app.Run("http://+:5000");
 

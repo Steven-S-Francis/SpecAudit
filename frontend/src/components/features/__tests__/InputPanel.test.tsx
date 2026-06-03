@@ -65,6 +65,13 @@ describe('InputPanel', () => {
     expect(screen.getByRole('button', { name: /run audit/i })).toBeDisabled();
   });
 
+  it('disables Run button when status is loading', () => {
+    render(<InputPanel status="loading" onSubmit={noop} onAbort={noop} />);
+    const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);
+    fireEvent.change(textarea, { target: { value: 'spec: test' } });
+    expect(screen.getByRole('button', { name: /run audit/i })).toBeDisabled();
+  });
+
   it('disables Run button when streaming', () => {
     render(<InputPanel status="streaming" onSubmit={noop} onAbort={noop} />);
     const textarea = screen.getByPlaceholderText(/paste your openapi spec/i);

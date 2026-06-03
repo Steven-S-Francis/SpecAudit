@@ -64,7 +64,7 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
       <div className="flex gap-3">
         <Button
           variant="primary"
-          disabled={isEmpty || isOverLimit || status === 'streaming'}
+          disabled={isEmpty || isOverLimit || status === 'loading' || status === 'streaming'}
           onClick={() => onSubmit(spec, format)}
         >
           Run Audit

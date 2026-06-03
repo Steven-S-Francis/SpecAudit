@@ -1,21 +1,23 @@
-# Group 1 Changes — Critical bugs (A, G, H)
+# Group 2 Changes — UX and reliability (B, F)
 
 ## Files Changed
 
-### `backend/src/Endpoints/AuditEndpoints.cs` (Fix A)
-- **Line 50:** Changed `ex.Message` to `"An error occurred. Please try again."` for all non-429 exceptions.
-- The 429 rate-limit message is unchanged. Only non-429 exceptions now get a generic sanitized message instead of leaking the raw exception text.
+### `frontend/src/components/features/InputPanel.tsx` (Fix B)
+- **Line 67:** Added `|| status === 'loading'` to the `disabled` prop on the "Run Audit" button.
+- Previously: `disabled={isEmpty || isOverLimit || status === 'streaming'}`
+- Now: `disabled={isEmpty || isOverLimit || status === 'loading' || status === 'streaming'}`
+- Prevents double-click starting an unnecessary abort/restart cycle when a retry backoff is in progress.
 
-### `frontend/src/hooks/useAudit.ts` (Fix G)
-- **Line 53:** Added `await` before `audit(payload, true)` so the recursive retry call is awaited instead of fire-and-forget.
-- This ensures the outer Promise does not resolve while retry work is still in flight, and prevents AbortController leaks.
+### `backend/Program.cs` (Fix F)
+- **Line 31:** Added `string.IsNullOrWhiteSpace(aiOptions.ApiKey)` to the guard condition.
+- **Line 32:** Updated error message from `"Ai:BaseUrl and Ai:ModelId must be configured in appsettings.json."` to `"Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets."`.
+- A missing API key now causes a clear startup exception instead of a cryptic runtime error from the OpenAI client.
 
-### `frontend/src/api/auditClient.ts` (Fix H)
-- Added `isValidStructuredData` type guard function (lines 4–28) that validates the shape of parsed structured JSON before passing it to `onStructured`.
-- Updated the `[SPECAUDIT_STRUCTURED]` handler (lines 79–92) to wrap `onStructured` call in an `if (isValidStructuredData(data))` check.
+### `frontend/src/components/features/__tests__/InputPanel.test.tsx` (Test B)
+- Added new test: `"disables Run button when status is loading"` — renders with `status="loading"`, types valid input, asserts button is disabled.
 
-### `frontend/src/api/__tests__/auditClient.test.ts` (Test fix)
-- Updated the "does not pass structured chunk to onChunk" test to use valid structured payload (with proper `summary` and `findings` fields), since the new type guard requires a valid shape.
+### `backend.Tests/AiOptionsValidationTests.cs` (Test F)
+- Added new test: `Startup_MissingApiKey_ThrowsInvalidOperationException` — configures empty `Ai:ApiKey` with valid `BaseUrl`/`ModelId`, asserts exception message contains `"*ApiKey*"`.
 
 ## Verification Results
 
@@ -23,10 +25,10 @@
 |-------|--------|
 | `npx tsc --noEmit` (frontend) | ✅ Passed (no errors) |
 | `dotnet build` (backend) | ✅ Passed (0 warnings, 0 errors) |
-| `npx vitest run --reporter=verbose` | ✅ **199 passed** (15 files, 0 failures) |
+| `npx vitest run --reporter=verbose` | ✅ **200 passed** (15 files, 0 failures) |
+| `dotnet test` (backend.Tests) | ✅ **19 passed** (0 failures) |
 
 ## Notes for Tester
 
-- **Fix A**: The catch block now sends the generic message for any non-429 exception. To verify: mock the service to throw `new InvalidOperationException("some internal detail")` and confirm the SSE output contains `"An error occurred. Please try again."` rather than `"some internal detail"`.
-- **Fix G**: The `await` makes the retry serial. The existing "retries and succeeds after RateLimitError" test still passes, confirming the retry logic works with `await`.
-- **Fix H**: The type guard rejects malformed payloads. Existing test "calls onStructured when chunk contains [SPECAUDIT_STRUCTURED] prefix" (valid data) passes. New edge cases (missing `summary`, wrong field types) are now silently ignored rather than calling `onStructured` with garbage.
+- **Fix B**: Verify the "Run Audit" button is disabled in both `loading` and `streaming` states by checking the button's `disabled` attribute when `status="loading"` with valid input.
+- **Fix F**: Verify that setting `Ai:ApiKey` to `""` in `appsettings.json` causes startup to throw `InvalidOperationException` with a message mentioning "ApiKey". The existing `Startup_MissingBaseUrl_ThrowsInvalidOperationException` and `Startup_MissingModelId_ThrowsInvalidOperationException` tests still pass, confirming backward compatibility.
