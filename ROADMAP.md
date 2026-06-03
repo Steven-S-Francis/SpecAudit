@@ -19,16 +19,11 @@
 | Integration tests (real OpenAPI fixtures) | `517968b` |
 | Export as JSON (basic) | `8145305` (+ trailing newline fix) |
 | Structured JSON export (findings + summary objects) | `37b7a0d` |
+| Severity filter (show/hide CRITICAL / WARNING / INFO) | `5272c54` |
 
 ---
 
 ## Small (quick wins)
-
-### Severity filter
-Toggle buttons to show/hide CRITICAL / WARNING / INFO findings in the result panel.
-- **Why:** Large audit reports are easier to triage when you can focus on CRITICALs only.
-- **Affects:** `frontend/src/components/features/ResultPanel.tsx` (filter state + conditional rendering), `frontend/src/App.tsx` (pass filter state).
-- **Risk:** Filter must not interfere with streaming â€” should only apply once complete, or apply dynamically.
 
 ### Search within results
 Inline search input that highlights/filters audit output text.
