@@ -1,3 +1,36 @@
+# Spec Document Update — Updated `updated_spec.md` to reflect Sentry monitoring (commits `d9f6fb0`, `9f7bd00`)
+
+## File Changed
+
+### `updated_spec.md` — Complete project context reference updated (~1240 lines)
+
+Updated the reference document to reflect the Sentry monitoring feature and ROADMAP.md update:
+
+| # | Area | What changed |
+|---|------|-------------|
+| 1 | **Line 3 HEAD hash** | `ce16a18` → `9f7bd00` |
+| 2 | **Section 3 (Directory Map)** | Added `SentryStartupTests.cs` under `backend.Tests/` |
+| 3 | **Section 7.2 (Backend Tests)** | Updated count 19→21, 4→5 files, added `SentryStartupTests.cs` row (2 tests) |
+| 4 | **Section 8 (Features)** | Added 3 rows: Sentry monitoring (backend), Sentry monitoring (frontend), Sentry Docker config |
+| 5 | **Section 9 (Commit History)** | Added `9f7bd00` and `d9f6fb0` at top of commit list |
+| 6 | **Section 10 (API Key Management)** | Added 3 rows for `Sentry:Dsn`, `VITE_SENTRY_DSN`, and Docker Compose `SENTRY_DSN` + `VITE_SENTRY_DSN` |
+| 7 | **Section 15 (Known Issues)** | Added item 6: Sentry DSN is optional (no-op without it) |
+| 8 | **Section 16 (Roadmap)** | Removed "Monitoring / error tracking — Sentry integration" from Infrastructure (moved to Completed) |
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` (frontend) | ✅ Passed (no errors) |
+
+## Notes for Tester
+
+- All edits were targeted sections only; code snippets and implementation details (Sections 4, 5) were not updated — the spec is meant to track high-level completeness, not inline code examples.
+- The 3 new features rows in Section 8 detail: backend Sentry init gated by `Sentry:Dsn`, frontend Sentry.init gated by `VITE_SENTRY_DSN` with `ErrorBoundary`, and Docker build arg support.
+- The Sentry DSN optionality is captured in both Section 10 (Protected? = "Optional (no-op without it)") and Section 15 (Known Issues item 6).
+
+---
+
 # Review Fix — Sentry Monitoring 4 Blocking Issues
 
 ## Files Changed (6 files)
