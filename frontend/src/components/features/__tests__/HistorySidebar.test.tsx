@@ -28,25 +28,25 @@ const mockRecords: HistoryRecord[] = [
 describe('HistorySidebar', () => {
   it('renders "No past audits" when empty', () => {
     render(
-      <HistorySidebar records={[]} onLoad={noop} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={[]} onLoad={noop} onDelete={noop} onClearAll={noop} open={true} onToggle={noop} />
     );
     expect(screen.getByText('No past audits')).toBeInTheDocument();
   });
 
   it('renders list of records', () => {
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} open={true} onToggle={noop} />
     );
     // The first record shows specName
     expect(screen.getByText('spec.yaml')).toBeInTheDocument();
-    // The second record shows spec preview (first 50 chars)
+    // The second record shows spec preview (first 80 chars)
     expect(screen.getByText('{"openapi":"3.0.0"}')).toBeInTheDocument();
   });
 
   it('clicking a record calls onLoad with that record', () => {
     const onLoad = vi.fn();
     render(
-      <HistorySidebar records={mockRecords} onLoad={onLoad} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={onLoad} onDelete={noop} onClearAll={noop} open={true} onToggle={noop} />
     );
 
     fireEvent.click(screen.getByText('spec.yaml'));
@@ -56,7 +56,7 @@ describe('HistorySidebar', () => {
   it('delete button calls onDelete with the record id', () => {
     const onDelete = vi.fn();
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={onDelete} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={onDelete} onClearAll={noop} open={true} onToggle={noop} />
     );
 
     // Find all delete buttons and click the first one
@@ -69,34 +69,29 @@ describe('HistorySidebar', () => {
   it('Clear all button calls onClearAll', () => {
     const onClearAll = vi.fn();
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={onClearAll} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={onClearAll} open={true} onToggle={noop} />
     );
 
     fireEvent.click(screen.getByText('Clear all'));
     expect(onClearAll).toHaveBeenCalledTimes(1);
   });
 
-  it('toggle button opens/closes the sidebar', () => {
+  it('close button calls onToggle', () => {
+    const onToggle = vi.fn();
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} open={true} onToggle={onToggle} />
     );
 
-    // Sidebar should be visible initially (open state)
-    expect(screen.getByText('History')).toBeInTheDocument();
+    // Find the close button (X icon) in the sidebar header
+    const closeButton = screen.getByRole('button', { name: /close history/i });
+    fireEvent.click(closeButton);
 
-    // Click toggle to close
-    const toggleButton = screen.getByRole('button', { name: /close history/i });
-    fireEvent.click(toggleButton);
-
-    // After closing, the sidebar content should not be visible
-    // The aside still exists but is translated off-screen; history label not visible
-    // We can check that the toggle button label changed
-    expect(screen.getByRole('button', { name: /open history/i })).toBeInTheDocument();
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
   it('shows relative timestamps and pending state', () => {
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} open={true} onToggle={noop} />
     );
 
     // First record: 2 min ago
@@ -107,8 +102,9 @@ describe('HistorySidebar', () => {
   });
 
   it('Escape key closes the sidebar', () => {
+    const onClose = vi.fn();
     render(
-      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} />
+      <HistorySidebar records={mockRecords} onLoad={noop} onDelete={noop} onClearAll={noop} open={true} onToggle={noop} onClose={onClose} />
     );
 
     // Sidebar should be open initially
@@ -117,7 +113,7 @@ describe('HistorySidebar', () => {
     // Press Escape
     fireEvent.keyDown(window, { key: 'Escape' });
 
-    // Sidebar should close
-    expect(screen.getByRole('button', { name: /open history/i })).toBeInTheDocument();
+    // onClose should have been called
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

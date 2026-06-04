@@ -105,37 +105,73 @@ Updated to handle new history sidebar and restore functionality.
 
 ---
 
-## Fix Round 2 — 2026-06-04
+## Fix Round 3 — 2026-06-04 (5 UX Fixes)
 
-### Changes
+### Fix 1: Extract title from OpenAPI spec
 
-**`frontend/src/components/features/HistorySidebar.tsx`**
-- **Fix 1 (absolute timestamp tooltip):** When `result !== null`, the relative-time `<p>` now has a `title` attribute with the absolute locale date string. When `result === null`, shows yellow "Running..." text instead.
-- **Fix 2 (pending indicator):** Right after the spec preview text, a yellow `(pending)` badge is rendered when `result === null`.
+**`frontend/src/hooks/useHistory.ts`:**
+- Added `title?: string` to `HistoryRecord` interface
+- Added `extractSpecTitle(spec)` helper: tries JSON.parse, returns `info.title` if found, else null
+- Updated `addRecord` to auto-populate `title` from `extractSpecTitle(record.spec)` if `record.title` not provided
 
-**`frontend/src/components/features/__tests__/HistorySidebar.test.tsx`**
-- Updated `"shows relative timestamps"` test to `"shows relative timestamps and pending state"` — the second mock record has `result: null`, so it now asserts `Running...` and `(pending)` are displayed instead of `"1 hour ago"`.
+**`frontend/src/components/features/HistorySidebar.tsx`:**
+- Changed `formatSpecPreview` signature from `(spec, specName, max)` to `(record, max = 80)` returning `{ primary, subtitle }`
+- Prefers `record.title`, falls back to `record.specName`, then raw spec preview
+- When title is shown, adds a smaller subtitle with first 80 chars of raw spec
+- Updated the JSX in `records.map` to destructure the returned object and render both primary/subtitle
 
-### Spec Issues
+### Fix 2: Close button overlapping "History" header
 
-- **Fix 3 cannot be applied:** Editing `.pipeline/test-results.md` is disallowed by hard rules (it belongs to the Test and Review agents). The intended line was:
-  > `- **Backend Tests**: 29 passed across 6 files (unchanged, no backend files modified)`
-  
-  The Test agent should append this line during its review cycle.
+**`frontend/src/components/features/HistorySidebar.tsx`:**
+- Added a close (X) button as the first child of the sidebar header div, before the "History" `<h2>`
+- The X button calls `onToggle` (from lifted state)
+- Removed the old fixed-position toggle button block (hamburger/X combo)
+
+### Fix 3: Sidebar too narrow
+
+**`frontend/src/components/features/HistorySidebar.tsx`:**
+- Changed sidebar width from `w-72` to `w-80 md:w-96` (320px mobile, 384px desktop)
+
+### Fix 4: Toggle button overlaps page title when collapsed
+
+**`frontend/src/components/features/HistorySidebar.tsx`:**
+- Changed Props: added `open: boolean`, `onToggle: () => void`, `onClose?: () => void`
+- Removed internal `const [open, setOpen] = useState(true)`
+- Removed the fixed-position hamburger toggle button entirely
+- Backdrop `onClick` now calls `onClose?.()` instead of `setOpen(false)`
+- Escape handler now calls `onClose?.()` instead of `setOpen(false)`
+
+**`frontend/src/App.tsx`:**
+- Added `const [sidebarOpen, setSidebarOpen] = useState(true)`
+- Added `const loadKeyRef = useRef(0)`
+- Passed `open={sidebarOpen}`, `onToggle={() => setSidebarOpen(o => !o)}`, `onClose={() => setSidebarOpen(false)}` to `<HistorySidebar>`
+- Added an inline hamburger button in the page header (left of "SpecAudit" title) that calls `setSidebarOpen(o => !o)`
+
+### Fix 5: Spec not replaced when loading history
+
+**`frontend/src/App.tsx`:**
+- Added `loadKeyRef` counter using `useRef(0)`
+- In `handleLoadRecord`, increments `loadKeyRef.current += 1` on every load
+- Added `key={loadKeyRef.current}` prop to `<InputPanel>` to force remount on history load
+
+### Updated tests
+
+**`frontend/src/components/features/__tests__/HistorySidebar.test.tsx`:**
+- All renders now pass `open={true} onToggle={noop}` (and `onClose` where needed)
+- "toggle button opens/closes the sidebar" replaced with "close button calls onToggle" — verifies the X button in the sidebar header calls `onToggle`
+- "Escape key closes the sidebar" now verifies `onClose` was called instead of checking for a changed button label
+- Comment updated from "first 50 chars" to "first 80 chars" to match new max
 
 ## Verification
 
+- `npx tsc --noEmit` — 0 errors
+- `npx vitest run` — 282 tests passed across 19 test files (all passed)
 - `npm run build` — 0 errors (TypeScript + Vite build passed)
-- `npm run test` — 282 tests passed across 19 test files (all 19 passing, 0 failures)
-- TypeScript `tsc --noEmit` — 0 errors
 
 ## Tester Focus
 
-1. Verify sidebar toggle open/close works on desktop and mobile
-2. Verify loading a history record populates the spec textarea and (if available) the result
-3. Verify running an audit creates a new record visible in the sidebar
-4. Verify re-running the same audit updates the existing record
-5. Verify deleting individual records and "Clear all" work
-6. Verify LRU eviction: many large audits push out the oldest
-7. Verify localStorage persistence: close browser, reopen, history records are still there
-8. Verify the existing paste-into-textarea + Run Audit flow still works unchanged
+1. **Fix 1:** Save a JSON OpenAPI spec with `info.title` → sidebar shows title with raw-spec subtitle. Save YAML or JSON without title → shows raw spec preview.
+2. **Fix 2:** Sidebar open → close (X) button is inside sidebar header, to the left of "History", not overlapping.
+3. **Fix 3:** Sidebar is 320px on mobile, 384px on desktop.
+4. **Fix 4:** Sidebar collapsed → "SpecAudit" title fully visible. Hamburger button in page header. Escape/backdrop close sidebar.
+5. **Fix 5:** Click a history record → InputPanel remounts with clean state. Same record twice works correctly.

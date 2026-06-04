@@ -7,6 +7,7 @@ export interface HistoryRecord {
   specFormat: 'yaml' | 'json' | null;
   result: string | null;
   specName: string | null;
+  title?: string;
 }
 
 const STORAGE_KEY = 'specaudit-history';
@@ -59,6 +60,22 @@ function saveRecords(records: HistoryRecord[]): HistoryRecord[] {
   }
 }
 
+/**
+ * Try to extract an OpenAPI info.title from the spec string.
+ * Returns the title string or null if it can't be determined.
+ */
+function extractSpecTitle(spec: string): string | null {
+  try {
+    const parsed = JSON.parse(spec);
+    if (parsed && typeof parsed === 'object' && typeof parsed.info?.title === 'string') {
+      return parsed.info.title.trim();
+    }
+  } catch {
+    // Not JSON — return null
+  }
+  return null;
+}
+
 export function useHistory() {
   const [records, setRecords] = useState<HistoryRecord[]>(() => loadRecords());
 
@@ -82,6 +99,7 @@ export function useHistory() {
         ...record,
         id: record.id ?? crypto.randomUUID(),
         timestamp: record.timestamp ?? Date.now(),
+        title: record.title ?? extractSpecTitle(record.spec) ?? undefined,
       };
 
       setRecords((prev) => {

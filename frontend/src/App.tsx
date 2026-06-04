@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAudit } from './hooks/useAudit';
 import { useTheme } from './hooks/useTheme';
 import { useHistory } from './hooks/useHistory';
@@ -22,6 +22,8 @@ function App() {
   const [spec, setSpec] = useState('');
   const [specFormat, setSpecFormat] = useState<'yaml' | 'json' | undefined>();
   const [copied, setCopied] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const loadKeyRef = useRef(0);
   // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
   const JSON_MARKER = '```json';
   const markerIndex = state.result.lastIndexOf(JSON_MARKER);
@@ -106,6 +108,7 @@ function App() {
         restore(record.result, [], null, record.specFormat);
       }
       setCurrentAuditId(record.id);
+      loadKeyRef.current += 1;
     },
     [restore]
   );
@@ -155,12 +158,30 @@ function App() {
         onLoad={handleLoadRecord}
         onDelete={history.deleteRecord}
         onClearAll={history.clearAll}
+        open={sidebarOpen}
+        onToggle={() => setSidebarOpen(o => !o)}
+        onClose={() => setSidebarOpen(false)}
       />
       <div className="flex-1 min-w-0 p-6 lg:p-10">
       <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-100 light:text-slate-900">SpecAudit</h1>
-          <p className="text-sm text-slate-400 light:text-slate-500">OpenAPI Contract Auditor</p>
+        <div className="flex items-center gap-3">
+          {/* Hamburger button — opens sidebar on all screen sizes */}
+          <button
+            onClick={() => setSidebarOpen(o => !o)}
+            className="p-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors light:bg-white light:border-slate-300 light:text-slate-500"
+            aria-label="Open history sidebar"
+            title="Open history sidebar"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-100 light:text-slate-900">SpecAudit</h1>
+            <p className="text-sm text-slate-400 light:text-slate-500">OpenAPI Contract Auditor</p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {providerName && (
@@ -175,6 +196,7 @@ function App() {
       <div className="lg:grid lg:grid-cols-2 lg:gap-8 mt-8">
         <div>
           <InputPanel
+            key={loadKeyRef.current}
             status={state.status}
             spec={spec}
             onSpecChange={setSpec}
