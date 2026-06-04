@@ -1,4 +1,3 @@
-using System.ClientModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +8,7 @@ using OpenAI;
 using OpenAI.Chat;
 using SpecAudit.Configuration;
 using SpecAudit.Models.Requests;
+using System.ClientModel;
 
 namespace SpecAudit.Services;
 
@@ -163,6 +163,7 @@ public sealed class SpecAuditService
         var clientOptions = new OpenAIClientOptions
         {
             Endpoint = new Uri(_options.BaseUrl)
+            // NO NetworkTimeout — test harness proves it's unnecessary
         };
         var client = new OpenAIClient(credential, clientOptions);
         _chatClient = client.GetChatClient(_options.ModelId);
@@ -189,11 +190,11 @@ public sealed class SpecAuditService
             Temperature = 0.1f
         };
 
-        var fullText = new StringBuilder();
-
         _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
 
-        await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, ct))
+        var fullText = new StringBuilder();
+
+        await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
         {
             foreach (var part in update.ContentUpdate)
             {
@@ -207,26 +208,22 @@ public sealed class SpecAuditService
 
         _logger.LogInformation("AI audit stream completed ({TokenCount} chars received)", fullText.Length);
 
-        // After streaming completes, extract structured JSON from the full text
-        var json = ExtractStructuredJson(fullText.ToString());
-        if (json is not null)
+        var structuredJson = ExtractStructuredJson(fullText.ToString());
+        if (structuredJson is not null)
         {
             var findingsCount = 0;
             try
             {
-                using var doc = JsonDocument.Parse(json);
+                using var doc = JsonDocument.Parse(structuredJson);
                 if (doc.RootElement.TryGetProperty("summary", out var summary) &&
-                    summary.TryGetProperty("totalFindings", out var totalFindings))
+                    summary.TryGetProperty("totalFindings", out var total))
                 {
-                    findingsCount = totalFindings.GetInt32();
+                    findingsCount = total.GetInt32();
                 }
             }
-            catch (JsonException)
-            {
-                // Ignore parse errors for the purposes of logging the count
-            }
+            catch (JsonException) { }
             _logger.LogInformation("Structured JSON extracted ({FindingsCount} findings)", findingsCount);
-            yield return $"{StructuredSentinel}{json}";
+            yield return $"[SPECAUDIT_STRUCTURED]{structuredJson}";
         }
         else
         {
@@ -269,3 +266,5 @@ public sealed class SpecAuditService
         }
     }
 }
+
+

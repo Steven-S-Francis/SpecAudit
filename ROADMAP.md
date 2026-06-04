@@ -25,6 +25,7 @@
 | Copy individual finding (per-block copy icon) | `10c9d94` |
 | Keyboard shortcuts (Ctrl+Enter, Escape) | `75fd570` |
 | Remove NetworkTimeout from OpenAI client (fixes AI streaming hang) | `be75242` |
+| Fix AI streaming: don't pass CancellationToken to SDK | `(this commit)` |
 
 ---
 

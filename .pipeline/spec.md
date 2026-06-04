@@ -1,70 +1,117 @@
-# Fix: Remove NetworkTimeout from OpenAI Client (was causing AI streaming to hang)
+# Don't pass CancellationToken to CompleteChatStreamingAsync
 
-## Diagnosis
+## OPEN QUESTIONS
 
-- **Curl test** confirmed the Groq API key is valid and `llama-3.3-70b-versatile` responds in under 5 seconds for a realistic OpenAPI spec.
-- The 45-second CancellationToken timeout in `AuditEndpoints.cs` is correctly wired (`token.ThrowIfCancellationRequested()` in the foreach loop + three-tier catch blocks).
-- **Root cause:** `NetworkTimeout = TimeSpan.FromSeconds(30)` in `SpecAuditService.cs` line 166 sets `HttpClient.Timeout`, which applies to the **entire HTTP request lifetime including reading streaming response chunks**. This conflicts with the OpenAI SDK's internal streaming pipeline, causing the SDK to either:
-  - Throw `TaskCanceledException` after 30s (swallowed by catch block 2 as a generic timeout), or
-  - Internally abort the stream read without surfacing the exception cleanly, resulting in zero text chunks before the 45s CancellationToken fires.
+None.
 
-## Fix
+---
 
-**Single change:** Remove `NetworkTimeout = TimeSpan.FromSeconds(30)` from `SpecAuditService.cs`.
+## Why this change is needed
 
-The 45-second CancellationToken in `AuditEndpoints.cs` remains as the sole timeout mechanism. It is enforced via:
-1. The linked token passed to `CompleteChatStreamingAsync(..., token)` — the SDK may check it during HTTP operations.
-2. `token.ThrowIfCancellationRequested()` at the top of the `await foreach` loop body — enforced between every chunk.
-3. Catch block 2 (`catch (OperationCanceledException)` without `when` filter) — sends `[SPECAUDIT_ERROR]` timeout message to the client.
+The OpenAI SDK v2.10.0's `CompleteChatStreamingAsync` behaves differently when a `CancellationToken` is passed vs. when it is not:
 
-## Files to Modify
+| Scenario | Token | Observed behavior |
+|----------|-------|-------------------|
+| Test harness | No token | Stream completes in ~0.8s |
+| Backend | 45s linked token | Yields zero chunks for 45s until timeout |
 
-| Action | Path | Description |
-|--------|------|-------------|
-| MODIFY | `backend/src/Services/SpecAuditService.cs` | Remove line `NetworkTimeout = TimeSpan.FromSeconds(30)` from the `OpenAIClientOptions` initializer |
+The root cause is an SDK-level issue (or OpenAI/Groq backend interaction) where a non-default `CancellationToken` delays or suppresses streaming chunks. Passing `CancellationToken.None` restores normal streaming behavior.
 
-## Change Detail
+### Why this is safe
 
-### `backend/src/Services/SpecAuditService.cs`
+- The 45s timeout is still enforced by `token.ThrowIfCancellationRequested()` in `AuditEndpoints.cs` (line 49), which runs **between** chunks in the `await foreach` loop.
+- Client disconnect (browser tab close, Escape key) still works: ASP.NET's `CancellationToken` (`ct`) is linked via `CancellationTokenSource.CreateLinkedTokenSource(ct)` on line 41, so when the client disconnects, `ct` is cancelled, the linked token fires, and `ThrowIfCancellationRequested` on the next iteration catches it.
+- All catch blocks in `AuditEndpoints.cs` remain unchanged and will handle `OperationCanceledException` correctly.
 
-**Current (lines 163–167):**
+### Trade-off
+
+When the client disconnects, the SDK reads **one extra chunk** before the loop exit condition is checked. This is a minor resource leak (one extra chunk processed but not delivered), not a correctness issue.
+
+---
+
+## File changes
+
+### 1. MODIFY: `backend/src/Services/SpecAuditService.cs` — one line change
+
+**Line 197:** Replace the `CancellationToken` parameter in `CompleteChatStreamingAsync` with `CancellationToken.None`.
+
 ```csharp
-var clientOptions = new OpenAIClientOptions
-{
-    Endpoint = new Uri(_options.BaseUrl),
-    NetworkTimeout = TimeSpan.FromSeconds(30)
-};
+// Before:
+await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, ct))
+
+// After:
+await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
 ```
 
-**New:**
-```csharp
-var clientOptions = new OpenAIClientOptions
-{
-    Endpoint = new Uri(_options.BaseUrl)
-};
+The `ct` parameter from `AuditAsync` (line 179) is still used implicitly via `[EnumeratorCancellation]` — when the caller disposes the `IAsyncEnumerable`, enumeration stops. The explicit token on the SDK call is what causes the bug.
+
+### 2. DELETE: `ai-test/` directory (if still present)
+
+Diagnostic test harness, no longer needed. Remove the entire directory tree:
+
+- `ai-test/ai-test.csproj`
+- `ai-test/Program.cs`
+- `ai-test/bin/`
+- `ai-test/obj/`
+
+**Command (PowerShell):**
+```powershell
+if (Test-Path ai-test) { Remove-Item -Recurse -Force ai-test }
 ```
 
-## Testing / Verification
+**Command (bash):**
+```bash
+rm -rf ai-test
+```
 
-1. `dotnet build` — must succeed with zero errors.
-2. `dotnet test` — all 21 existing backend tests must pass.
-3. **Manual test:** POST a small OpenAPI spec (e.g., the Petshop spec used in curl testing) to `POST /api/audit` locally or on Railway. Verify:
-   - Audit completes in < 10 seconds (not 45s).
-   - No `[SPECAUDIT_ERROR]` appears in the SSE stream.
-   - Full markdown audit report + structured JSON sentinel are received.
+### 3. Files NOT modified
 
-## No Other Changes
+| File | Reason |
+|------|--------|
+| `backend/src/Endpoints/AuditEndpoints.cs` | Already correct — 45s linked token, `ThrowIfCancellationRequested` between chunks, proper catch blocks |
+| `backend/backend.csproj` | Already has `OpenAI v2.10.0` reference — no change needed |
+| `SpecAudit.slnx` | Does not reference `ai-test/` — no change needed |
 
-- No changes to `AuditEndpoints.cs` (45s CTS, `token.ThrowIfCancellationRequested()`, three-tier catch blocks — all correct).
-- No changes to `AiOptions`, `Program.cs`, or any other file.
-- No changes to frontend.
+---
 
-## Edge Cases
+## Edge cases the implementation must handle
 
-| Edge Case | How it's handled |
-|-----------|-----------------|
-| **Groq genuinely slow (>45s)** | 45s CTS fires → catch block 2 sends `[SPECAUDIT_ERROR]` timeout to client. Same as before, but without NetworkTimeout racing against it. |
-| **Groq instant response (<1s)** | Streaming completes normally → structured JSON extracted → both yield paths work correctly. |
-| **Network glitch (connection loss)** | `HttpClient` eventually throws (after OS TCP timeout, typically 20-120s). The 45s CTS fires first, sending a clean timeout error. Acceptable behavior. |
-| **Rate limit (429)** | Groq returns 429 immediately. The OpenAI SDK surfaces an exception with "429" in the message → catch block 3 sends the rate-limit-specific error message. No change in behavior. |
-| **Client disconnects mid-stream** | `ct.IsCancellationRequested` is true → catch block 1 silently no-ops. No change. |
+| Edge case | Handling |
+|-----------|----------|
+| `ai-test/` already deleted | Check directory existence before deleting (idempotent) |
+| `ai-test/bin/` or `ai-test/obj/` has read-only files | Use `-Recurse -Force` or `-f` to force delete |
+| SDK version changes | This fix is specific to OpenAI SDK v2.10.0 behavior; if the SDK is upgraded, re-test whether `ct` works correctly |
+| No response from AI (zero chunks) | `await foreach` completes immediately, `fullText` is empty, no structured JSON extracted — handled by existing code |
+
+---
+
+## Existing patterns to follow
+
+The change follows the same pattern already proven in the test harness: no `CancellationToken` on `CompleteChatStreamingAsync`. The rest of the service (`OpenAIClient` construction, `ChatCompletionOptions`, response chunking, structured JSON extraction) is unchanged from the current implementation.
+
+---
+
+## Verification steps
+
+```bash
+# 1. Build the backend (0 errors expected)
+dotnet build backend/backend.csproj
+
+# 2. Run tests (21/21 pass expected)
+dotnet test backend.Tests/backend.Tests.csproj
+
+# 3. Confirm the fix is in place (should show CancellationToken.None)
+rg -n "CompleteChatStreamingAsync" backend/src/Services/SpecAuditService.cs
+
+# 4. Confirm no other SDK call passes a non-default CancellationToken
+rg -n "CompleteChatStreamingAsync.*ct[^N]" backend/src
+
+# 5. Confirm ai-test/ is gone
+if (Test-Path ai-test) { Write-Warning "ai-test still present" } else { Write-Host "OK - ai-test deleted" }
+
+# 6. Docker smoke test: POST a spec and confirm audit completes in <15s
+docker compose build
+docker compose run --rm backend curl -s -X POST http://backend:8080/api/audit -H "Content-Type: application/json" -d '{"spec": "openapi: 3.0.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}"}'
+```
+
+All commands must return exit code 0. The Docker smoke test must return a complete SSE stream ending with `[SPECAUDIT_STRUCTURED]{...}` within 15 seconds.

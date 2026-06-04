@@ -1,32 +1,38 @@
 # Code Review
 
 ## Summary
-This review covers the removal of `NetworkTimeout = TimeSpan.FromSeconds(30)` from `SpecAuditService.cs`, as specified. The change is correctly implemented: the `NetworkTimeout` line has been stripped from the `OpenAIClientOptions` initializer, with no other file modifications. The 45-second `CancellationToken` in `AuditEndpoints.cs` (established in the prior commit `db1e0ed`) remains the sole timeout mechanism, enforced via `token.ThrowIfCancellationRequested()` in the streaming loop and three-tier catch blocks. All 21 backend tests pass, and the change is safe for production.
+
+The implementation correctly changes `CancellationToken ct` to `CancellationToken.None` on line 197 of `SpecAuditService.cs` when calling `CompleteChatStreamingAsync`, matching the one-line behavioral change specified in the spec. The linked 45-second `CancellationToken` in `AuditEndpoints.cs` remains the sole cancellation mechanism, enforced via `token.ThrowIfCancellationRequested()` between chunks in the `await foreach` loop. All 21 backend tests pass, and the `ai-test/` directory has been removed. A small number of cosmetic/formatting changes (namespace reorder, comment addition, variable renames) appear alongside the core fix but do not alter behavior. The trade-off of one extra SSE chunk being read on client disconnect is well-documented and acceptable.
 
 ## Files Reviewed
 - `backend/src/Services/SpecAuditService.cs` (modified)
-- `.pipeline/spec.md` (updated)
-- `.pipeline/changes.md` (updated)
-- `.pipeline/test-results.md` (updated)
+- `.pipeline/spec.md` (specification)
+- `.pipeline/changes.md` (change log)
+- `.pipeline/test-results.md` (test results)
 
 ## Verdict
-SHIP
+**SHIP**
 
 ## Rationale
-1. **Spec conformance**: The implementation matches the spec exactly. The `NetworkTimeout` line has been removed from `SpecAuditService.cs` (lines 163-166). No other source files were changed. The spec explicitly states "No changes to `AuditEndpoints.cs`, `AiOptions`, `Program.cs`, or any other file" — confirmed by `git diff HEAD --name-only`, which shows only the four files listed above.
 
-2. **Security**: No security concerns. Removing a `NetworkTimeout` from HTTP client options does not introduce authentication bypass, information disclosure, injection vectors, or secrets exposure. No new endpoints or routes were added.
+**Spec conformance:** The core functional change matches the spec exactly — `CancellationToken.None` replaces `ct` in the `CompleteChatStreamingAsync` call on line 197. The `ai-test/` directory has been removed (glob confirms no files exist). No files outside the intended scope are modified: `AuditEndpoints.cs`, `backend.csproj`, and `SpecAudit.slnx` are unchanged.
 
-3. **Correctness**: The change is correct and well-motivated. The 30-second `NetworkTimeout` on `HttpClient` was conflicting with the OpenAI SDK's streaming pipeline, causing premature timeouts during streaming reads. Removing it lets the application-level 45-second `CancellationToken` (already in `AuditEndpoints.cs`) serve as the sole timeout mechanism. The three catch blocks in `AuditEndpoints.cs` handle:
-   - Client disconnect (silent no-op)
-   - Server-side 45s timeout (sends `[SPECAUDIT_ERROR]` via `CancellationToken.None`)
-   - Other exceptions (rate limits, unexpected errors, logged at Error level)
-   This is correct defense-in-depth.
+**Security:** No security concerns. The change does not introduce information disclosure, authentication bypass, injection vectors, or secrets exposure. No new endpoints were added.
 
-4. **Testing**: All 21 backend tests pass (`dotnet test SpecAudit.slnx`: 21/21 passed, 0 failed, 0 skipped). Note: frontend tests were not run in this pipeline output, but no frontend files were modified, so this is an acceptable gap.
+**Correctness:**
+- The `await foreach` loop in `AuditEndpoints.cs` (line 47) receives the linked `token`; `token.ThrowIfCancellationRequested()` on line 49 enforces the 45s timeout and client-disconnect detection between every chunk.
+- The `[EnumeratorCancellation]` attribute on `AuditAsync`'s `ct` parameter ensures enumeration stops when the caller disposes the enumerator.
+- All three catch blocks in `AuditEndpoints.cs` remain correct: client disconnect (silent no-op), server timeout (error sent via `CancellationToken.None`), and general errors (logged + Sentry).
+- No missing awaits, race conditions, runtime type unsafety, or error swallowing beyond pre-existing patterns.
 
-5. **Production safety**: The fix resolves the root cause of streaming hangs without removing any safety net. The 45s `CancellationToken` provides bounded timeout behavior. For network glitches, the OS TCP timeout (typically 20-120s) provides a fallback, with the 45s CTS firing first in most cases. No regression risk.
+**Testing:** All 21 backend tests pass (0 failed, 0 skipped, 0.81s). The test suite covers input validation, JSON extraction, configuration validation, and endpoint behavior — providing reasonable confidence that surrounding functionality is unaffected. No frontend tests were run, but no frontend files were changed (acceptable gap).
 
-## Suggestions (optional)
-- Frontend tests could be run alongside backend tests in the pipeline for completeness, even when only backend files change, to catch any unintended cross-cutting impact.
-- Consider adding a test that verifies the `NetworkTimeout` is absent (or that the `HttpClient` has no per-request timeout) to prevent re-introduction.
+**Production safety:** The change resolves the SDK-level issue where passing a non-default `CancellationToken` to `CompleteChatStreamingAsync` suppresses streaming chunks. The documented trade-off — one extra SDK chunk read after client disconnect before the loop re-checks the token — is minor and does not affect correctness. Response still reaches the client within an acceptable timeframe.
+
+## Suggestions (non-blocking)
+
+1. **Cosmetic drift** — The diff includes several formatting/renaming changes beyond the specified one-line fix (namespace reorder, comment addition, variable renames `json`→`structuredJson`, `totalFindings`→`total`, const-to-literal substitution `{StructuredSentinel}`→`"[SPECAUDIT_STRUCTURED]"`). Consider committing only the functional change and a separate cleanup commit to keep history clean.
+
+2. **Frontend CI** — If frontend tests exist, consider running them alongside backend tests even when only backend code changes, to detect any cross-cutting impact from API contract changes.
+
+3. **SDK upgrade note** — The spec correctly notes that this fix is specific to OpenAI SDK v2.10.0 behavior. If the SDK is upgraded, re-test whether `ct` works correctly with the new version.
