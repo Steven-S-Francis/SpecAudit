@@ -27,6 +27,7 @@
 | Remove NetworkTimeout from OpenAI client (fixes AI streaming hang) | `be75242` |
 | Fix AI streaming: don't pass CancellationToken to SDK | `5230ea8` |
 | Diagnostic endpoint (GET /api/diagnose → chat/completions) | `4be9fb5`, `e1207a3`, `8c6b3f7` |
+| Fresh OpenAI client per request (fixes HTTP/2 connection poisoning) | `7642f2c` |
 
 ---
 
