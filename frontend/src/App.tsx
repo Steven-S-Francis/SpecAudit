@@ -1,8 +1,11 @@
 ﻿import { useCallback, useEffect, useState } from 'react';
 import { useAudit } from './hooks/useAudit';
 import { useTheme } from './hooks/useTheme';
+import { useHistory } from './hooks/useHistory';
+import type { HistoryRecord } from './hooks/useHistory';
 import { InputPanel } from './components/features/InputPanel';
 import { ResultPanel } from './components/features/ResultPanel';
+import { HistorySidebar } from './components/features/HistorySidebar';
 import { Spinner } from './components/ui/Spinner';
 import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
@@ -11,9 +14,13 @@ import { exportPdf } from './utils/exportPdf';
 import type { AuditResult } from './types/audit';
 
 function App() {
-  const { state, audit, abort } = useAudit();
+  const { state, audit, abort, restore } = useAudit();
   const { theme, toggle } = useTheme();
+  const history = useHistory();
   const [providerName, setProviderName] = useState<string | null>(null);
+  const [currentAuditId, setCurrentAuditId] = useState<string | null>(null);
+  const [spec, setSpec] = useState('');
+  const [specFormat, setSpecFormat] = useState<'yaml' | 'json' | undefined>();
   const [copied, setCopied] = useState(false);
   // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
   const JSON_MARKER = '```json';
@@ -91,6 +98,45 @@ function App() {
       .catch(() => setProviderName(null));
   }, []);
 
+  const handleLoadRecord = useCallback(
+    (record: HistoryRecord) => {
+      setSpec(record.spec);
+      setSpecFormat(record.specFormat ?? undefined);
+      if (record.result !== null) {
+        restore(record.result, [], null, record.specFormat);
+      }
+      setCurrentAuditId(record.id);
+    },
+    [restore]
+  );
+
+  const handleSubmit = useCallback(
+    (submitSpec: string, format?: 'yaml' | 'json') => {
+      const record = history.addRecord({
+        spec: submitSpec,
+        specFormat: format ?? null,
+        result: null,
+        specName: null,
+      });
+      setCurrentAuditId(record.id);
+      audit({ spec: submitSpec, specFormat: format });
+    },
+    [history, audit]
+  );
+
+  // Save to history when audit completes
+  useEffect(() => {
+    if (state.status === 'complete' && currentAuditId) {
+      history.addRecord({
+        id: currentAuditId,
+        spec,
+        specFormat: specFormat ?? null,
+        result: state.result,
+        specName: null,
+      });
+    }
+  }, [state.status, currentAuditId, spec, specFormat, state.result, history]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && state.status === 'streaming') {
@@ -103,7 +149,14 @@ function App() {
   }, [state.status, abort]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 p-6 lg:p-10 light:bg-white light:text-slate-800">
+    <div className="min-h-screen bg-slate-950 text-slate-200 light:bg-white light:text-slate-800 flex">
+      <HistorySidebar
+        records={history.records}
+        onLoad={handleLoadRecord}
+        onDelete={history.deleteRecord}
+        onClearAll={history.clearAll}
+      />
+      <div className="flex-1 min-w-0 p-6 lg:p-10">
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-100 light:text-slate-900">SpecAudit</h1>
@@ -123,7 +176,11 @@ function App() {
         <div>
           <InputPanel
             status={state.status}
-            onSubmit={(spec, format) => audit({ spec, specFormat: format })}
+            spec={spec}
+            onSpecChange={setSpec}
+            specFormat={specFormat}
+            onSpecFormatChange={setSpecFormat}
+            onSubmit={handleSubmit}
             onAbort={abort}
           />
         </div>
@@ -196,6 +253,7 @@ function App() {
             isStreaming={state.status === 'streaming'}
           />
         </div>
+      </div>
       </div>
     </div>
   );

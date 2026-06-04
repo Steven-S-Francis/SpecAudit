@@ -30,6 +30,7 @@
 | Fresh OpenAI client per request (fixes HTTP/2 connection poisoning) | `7642f2c` |
 | Replace OpenAI SDK streaming with raw HttpClient + SSE parsing | `80f5598` |
 | Spec file upload (drag-and-drop + file picker) | `a059f4d` |
+| Session history (localStorage + sidebar) | pending |
 
 ---
 
@@ -38,12 +39,6 @@
 ---
 
 ## Medium (more involved)
-
-### Session history
-Persist past audits in `localStorage`, show a sidebar/list to browse and re-open previous results.
-- **Why:** Users run multiple audits and want to reference past results without re-running.
-- **Affects:** NEW `frontend/src/hooks/useHistory.ts` (CRUD on localStorage), `frontend/src/components/features/HistorySidebar.tsx` (list UI), `frontend/src/App.tsx` (wire sidebar + load on click).
-- **Risk:** localStorage has a ~5MB limit; large specs + results may hit it. Need LRU eviction or size warning.
 
 ### Audit history sidebar
 Persistent collapsible sidebar listing recent audits with date/summary.

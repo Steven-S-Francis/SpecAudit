@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { AuditStatus } from '../../types/audit';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -7,11 +7,33 @@ interface Props {
   status: AuditStatus;
   onSubmit: (spec: string, format?: 'yaml' | 'json') => void;
   onAbort: () => void;
+  /** External spec value (for controlled mode from history load) */
+  spec?: string;
+  /** Callback when spec text changes externally */
+  onSpecChange?: (spec: string) => void;
+  /** External spec format (for controlled mode from history load) */
+  specFormat?: 'yaml' | 'json' | undefined;
+  /** Callback when spec format changes externally */
+  onSpecFormatChange?: (format: 'yaml' | 'json' | undefined) => void;
 }
 
-export function InputPanel({ status, onSubmit, onAbort }: Props) {
-  const [spec, setSpec] = useState('');
-  const [format, setFormat] = useState<'yaml' | 'json' | undefined>();
+export function InputPanel({ status, onSubmit, onAbort, spec: externalSpec, onSpecChange, specFormat: externalFormat, onSpecFormatChange }: Props) {
+  const [spec, setSpec] = useState(externalSpec ?? '');
+  const [format, setFormat] = useState<'yaml' | 'json' | undefined>(externalFormat);
+
+  // Sync from external props (e.g. when loading a history record)
+  useEffect(() => {
+    if (externalSpec !== undefined) {
+      setSpec(externalSpec);
+    }
+  }, [externalSpec]);
+
+  useEffect(() => {
+    if (externalFormat !== undefined) {
+      setFormat(externalFormat);
+    }
+  }, [externalFormat]);
+
   const [dragOver, setDragOver] = useState(false);
   const [fileInfo, setFileInfo] = useState<{ name: string; size: number } | null>(null);
   const [fileLoadStatus, setFileLoadStatus] = useState<'idle' | 'loading' | 'error'>('idle');
@@ -80,6 +102,7 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
       const text = e.target?.result;
       if (typeof text === 'string') {
         setSpec(text);
+        onSpecChange?.(text);
         setFileLoadStatus('idle');
       }
     };
@@ -189,7 +212,10 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
 
       <textarea
         value={spec}
-        onChange={(e) => setSpec(e.target.value)}
+        onChange={(e) => {
+          setSpec(e.target.value);
+          onSpecChange?.(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         placeholder="Paste your OpenAPI spec here (YAML or JSON)..."
         className="bg-slate-950 border border-slate-700 rounded-lg p-4 text-slate-200 text-sm font-mono w-full resize-y min-h-[300px] focus:outline-none focus:border-indigo-500 light:bg-white light:border-slate-300 light:text-slate-800"
@@ -211,14 +237,22 @@ export function InputPanel({ status, onSubmit, onAbort }: Props) {
           <Button
             variant="ghost"
             className={format === 'yaml' ? 'border-indigo-500 text-indigo-300' : ''}
-            onClick={() => setFormat(format === 'yaml' ? undefined : 'yaml')}
+            onClick={() => {
+              const next = format === 'yaml' ? undefined : 'yaml';
+              setFormat(next);
+              onSpecFormatChange?.(next);
+            }}
           >
             YAML
           </Button>
           <Button
             variant="ghost"
             className={format === 'json' ? 'border-indigo-500 text-indigo-300' : ''}
-            onClick={() => setFormat(format === 'json' ? undefined : 'json')}
+            onClick={() => {
+              const next = format === 'json' ? undefined : 'json';
+              setFormat(next);
+              onSpecFormatChange?.(next);
+            }}
           >
             JSON
           </Button>

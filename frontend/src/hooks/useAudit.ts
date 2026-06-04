@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { auditStream } from '../api/auditClient';
-import type { AuditRequest, AuditState } from '../types/audit';
+import type { AuditRequest, AuditState, Finding, AuditSummary } from '../types/audit';
 
 export function useAudit() {
   const [state, setState] = useState<AuditState>({
@@ -71,5 +71,11 @@ export function useAudit() {
     setState({ status: 'idle', result: '', findings: [], summary: null, error: null, specFormat: null });
   }, []);
 
-  return { state, audit, abort, reset };
+  const restore = useCallback((result: string, findings: Finding[], summary: AuditSummary | null, specFormat: string | null) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setState({ status: 'complete', result, findings, summary, error: null, specFormat });
+  }, []);
+
+  return { state, audit, abort, reset, restore };
 }
