@@ -1,85 +1,64 @@
-# Review: History records stuck on "(pending)" / "Running..." when audit fails
+# Review: Remove RateLimitError retry logic from `useAudit`
 
 ## VERDICT: SHIP
 
-## Findings
+## Checklist
 
-All 6 verification requirements are met. The implementation is correct, secure, and well-structured.
+| # | Check | Result |
+|---|---|---|
+| 1 | `maxRetries` constant removed from `useAudit.ts` | ✅ |
+| 2 | `catch` block flattened: only `AbortError` → idle, else → error | ✅ |
+| 3 | `RateLimitError` retry branch (with exponential backoff) fully removed | ✅ |
+| 4 | `retryCount.current` no longer incremented anywhere (only reset to 0) | ✅ |
+| 5 | Two retry test cases removed from test file | ✅ |
+| 6 | All 7 remaining tests intact, no test regressions | ✅ |
+| 7 | **309 tests pass** (280 frontend + 29 backend) — both suites executed | ✅ |
+| 8 | `npm run build` — 0 errors (per changes.md) | ✅ |
+| 9 | No unintended files changed (only the 2 specified source files + pipeline docs) | ✅ |
+| 10 | No remaining references to removed test names or removed constants | ✅ |
+| 11 | `RateLimitError` still thrown by `auditClient.ts` (API layer) — unchanged, correct | ✅ |
 
-### Checklist
+## Spec Conformance — PASS
 
-| # | Requirement | Status | Evidence |
-|---|-------------|--------|----------|
-| 1 | `HistoryRecord` interface has `error?: string` | ✅ | `frontend/src/hooks/useHistory.ts` line 11 |
-| 2 | Save effect fires on both `'complete'` and `'error'` | ✅ | `App.tsx` line 132: `state.status === 'complete' || state.status === 'error'` |
-| 3 | On error, `state.error` saved as `error` field (not as result) | ✅ | `App.tsx` line 138: `error: state.status === 'error' ? (state.error ?? undefined) : undefined` |
-| 4 | Sidebar shows red "Failed" for error records | ✅ | `HistorySidebar.tsx` lines 143-147 (badge) and 157-159 (subtitle), both `text-red-400` |
-| 5 | Existing localStorage records without `error` handled gracefully | ✅ | `error?: string` is optional; load validation (lines 24-31) doesn't require it |
-| 6 | No regressions — all 311 tests pass | ✅ | `test-results.md`: 282 frontend + 29 backend = 311 passing, TypeScript zero errors |
+The implementation matches the spec exactly:
 
-### Spec Conformance
+- **`useAudit.ts`**: `const maxRetries = 3;` deleted. The `else if (RateLimitError && retryCount < maxRetries)` branch with exponential backoff (`1000 * Math.pow(2, retryCount - 1)`) removed. The `catch` block now has exactly two paths: `AbortError` → idle, else → error. The `retryCount.current = 0` reset is preserved in both paths.
+- **`useAudit.test.tsx`**: Both `'retries and succeeds after RateLimitError'` and `'shows error after RateLimitError retries are exhausted'` tests removed. All other 7 tests kept unchanged.
+- No files were changed beyond what the spec lists (the `.pipeline/*.md` files are build artifacts).
 
-The implementation faithfully addresses the root cause chain described in the spec:
+## Security — PASS (no new issues)
 
-1. **Fix 1** (`error?: string` on `HistoryRecord`): ✅ Added at line 11 of `useHistory.ts`.
-2. **Fix 2** (save effect on error): ✅ The `useEffect` guard at line 132 checks both statuses; `state.error` is in the dependency array.
-3. **Fix 3** (red "Failed" display): ✅ Three-way logic in both badge and status line.
+- The error message is still exposed via `(err as Error).message` in the else branch — this is **pre-existing behavior** preserved by the spec. The change does not introduce any new information disclosure.
+- No new endpoints, routes, or auth bypasses introduced.
+- No secrets, credentials, or internal URLs exposed.
+- No injection vectors introduced.
 
-**Minor cosmetic deviation (non-blocking):** The spec's Fix 3a shows `<span>Failed</span>` (no parentheses, capitalized), but the implementation uses `<span>(failed)</span>` (lowercase, with parentheses). This matches the existing `(pending)` convention and is consistent with `changes.md`. Functionally identical.
+## Correctness — PASS
 
-**Minor structural deviation (non-blocking):** The spec's Fix 2 shows two separate `if/else` branches for `'complete'` and `'error'` with `result: null` explicitly set on error. The implementation uses a single `addRecord` call with `result: state.result`. This is functionally equivalent because `state.result` is `null` when `state.status === 'error'`. No behavioral difference.
+- **Async discipline**: The `catch` block no longer contains an `await new Promise(...)` or recursive `await audit(payload, true)` call — no new async issues introduced.
+- **State race conditions**: The `setState` calls are properly functional updaters (`s => ({ ...s, ... })`) in the else branch, matching the existing pattern.
+- **Runtime type safety**: The `(err as Error).name` and `(err as Error).message` pattern is unchanged. The code still relies on `name` property at runtime (not TypeScript types), which is correct for error discrimination.
+- **Error swallowing**: No empty catch blocks. All errors are handled either by resetting to idle (`AbortError`) or setting error state (everything else).
 
-### Security Review — ✅ No issues
+## Code Quality — PASS (non-blocking notes)
 
-- No raw exception messages, stack traces, or internal details exposed to client.
-- No new endpoints or routes — purely frontend React changes.
-- No injection vectors: the `error` field is rendered as React text content (auto-escaped), and the `title` attribute on the "Failed" paragraph is set via JSX attribute (React escapes).
-- No secrets, API keys, or credentials in source.
-
-### Correctness Review — ✅ No issues
-
-- **Async discipline**: All calls to `history.addRecord` are synchronous (not promises). No fire-and-forget concerns.
-- **State race conditions**: The effect depends on `state.status`, `state.error`, and `currentAuditId` — all updated synchronously by the audit hook before the effect fires. The `addRecord` callback uses functional `setRecords` update to avoid stale closure issues.
-- **Runtime type safety**: `state.error ?? undefined` properly converts `string | null` to `string | undefined`, matching the optional field semantics. No rogue `as` casts.
-- **Error swallowing**: No empty catch blocks introduced. Existing catch blocks in `useHistory.ts` are justified (localStorage unavailability).
-- **Edge case — `state.error` is `null`**: Handled via `?? undefined` — no spurious empty string stored.
-- **Edge case — existing records without `error`**: Reads back as `undefined`, which is falsy, so they appear as pending or completed (correct).
-
-### Code Quality Review — ✅ Clean
-
-- No dead code introduced.
-- No cross-platform issues (no line splitting, path separators, or regex changes).
-- No performance concerns.
-- Test quality: Existing test suite covers history CRUD, sidebar rendering, interaction, and persistence. The change is straightforward enough that the existing 282 frontend tests + existing test patterns provide adequate coverage.
-
-### Backend Test Verification
-
-Both frontend **and** backend test suites were run:
-- Frontend: **282 tests** across **19 files** — ✅ Pass
-- Backend: **29 tests** across **6 files** — ✅ Pass
-- Total: **311 tests** — ✅ All passing
-- TypeScript: `tsc --noEmit` — ✅ Zero errors
-
-## Required Actions
-
-None. This is ready to ship.
+- **`retryCount.current` usage**: The ref is declared on line 16, reset on lines 21, 39, 43, 45 (all appropriate contexts: new audit, success, abort, error). It is no longer incremented anywhere. The ref could technically be removed entirely in a future cleanup since it's only ever set to 0, but that's out of scope for this change.
+- **`RateLimitError` still defined in `auditClient.ts`**: The API client still throws `RateLimitError` for 429 responses. This is correct — the API layer should identify rate limits; only the retry handling was removed. If the error message "Rate limit reached" appears, it will now show immediately as a user-facing error (which is the intended behavior per spec).
 
 ## Suggested Commit Message
 
 ```
-fix: save history records with error state when audit fails
+Remove RateLimitError retry logic from useAudit hook
 
-- Add `error?: string` to `HistoryRecord` interface
-- Update save-to-history effect to fire on both 'complete' and 'error' status
-- Show red "(failed)" badge and "Failed" text for error records in sidebar
-- Handle null-to-undefined conversion for optional error field
-- Gracefully handle legacy records without error field
-
-All 311 tests pass (282 frontend + 29 backend), TypeScript zero errors.
+- Delete const maxRetries = 3
+- Remove the RateLimitError retry branch (exponential backoff with up to 3 retries)
+- Rate-limit errors (429) now immediately show error state like all other errors
+- AbortError handling is unchanged (still sets idle status)
+- Remove two retry-related test cases; keep all 7 other tests
 ```
 
 ## Sign Off
 
-**Reviewer:** Senior Code Reviewer  
-**Date:** 2026-06-04  
-**Verdict:** SHIP
+**Reviewer**: Senior Code Reviewer  
+**Date**: 2026-06-04  
+**Verdict**: SHIP — all spec requirements met, no security or correctness issues, all 309 tests passing, code is clean.

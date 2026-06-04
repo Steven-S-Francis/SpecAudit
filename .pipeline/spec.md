@@ -1,134 +1,103 @@
-# Fix: History records stuck on "(pending)" / "Running..." when audit fails
+# Remove RateLimitError retry logic from `useAudit`
 
-## Problem
+## Files to modify
 
-When an audit errors (API failure, network error, etc.), `state.status` becomes `'error'`. The save-to-history `useEffect` in `App.tsx` only fires when `state.status === 'complete'`, so the record is never updated after the initial creation with `result: null`. The sidebar shows "(pending)" and yellow "Running..." indefinitely — there's no way to distinguish a failed audit from one still in progress.
+| File | Action |
+|---|---|
+| `frontend/src/hooks/useAudit.ts` | Edit |
+| `frontend/src/hooks/__tests__/useAudit.test.tsx` | Edit — remove two retry tests, keep all other tests |
 
-## Root cause chain
+## Changes to `frontend/src/hooks/useAudit.ts`
 
-1. `handleSubmit` creates a `HistoryRecord` with `result: null`
-2. The `useEffect` at line 131 of `App.tsx` guards on `state.status === 'complete'`
-3. When `useAudit` catches an error, it sets `state.status = 'error'` and `state.error = error.message`
-4. The effect doesn't fire, so the record is never updated
-5. The sidebar renders "(pending)" and "Running..." whenever `record.result === null` — permanently
+### 1. Remove `maxRetries` constant (line 17)
 
-## Changes
-
----
-
-### Fix 1: Add `error?: string` to `HistoryRecord`
-
-**File:** `frontend/src/hooks/useHistory.ts`
-
-Add the optional `error` field after `result`:
-
-```ts
-export interface HistoryRecord {
-  id: string;
-  timestamp: number;
-  spec: string;
-  specFormat: 'yaml' | 'json' | null;
-  result: string | null;
-  error?: string;          // <-- add this
-  specName: string | null;
-  title?: string;
-}
+Delete the line:
+```typescript
+const maxRetries = 3;
 ```
 
-**Edge cases:**
-- Older persisted records in localStorage won't have `error` — it's optional and `undefined` reads back as `undefined`, which is the same as "not failed".
-- `error` is never serialized for successful audits — it stays `undefined`.
+### 2. Flatten the `catch` block (lines 41-62)
 
----
-
-### Fix 2: Update save effect to also fire on error
-
-**File:** `frontend/src/App.tsx`
-
-**Change the `useEffect` guard** (line 132) from a single status check to handling both `'complete'` and `'error'`:
-
-```ts
-// Save to history when audit completes or errors
-useEffect(() => {
-  if (currentAuditId) {
-    if (state.status === 'complete') {
-      history.addRecord({
-        id: currentAuditId,
-        spec,
-        specFormat: specFormat ?? null,
-        result: state.result,
-        specName: null,
-      });
-    } else if (state.status === 'error') {
-      history.addRecord({
-        id: currentAuditId,
-        spec,
-        specFormat: specFormat ?? null,
-        result: null,
-        error: state.error ?? undefined,
-        specName: null,
-      });
+**Before:**
+```typescript
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        setState(s => ({ ...s, status: 'idle' }));
+        retryCount.current = 0;
+      } else if (
+        (err as Error).name === 'RateLimitError' &&
+        retryCount.current < maxRetries
+      ) {
+        retryCount.current++;
+        setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
+        const delay = 1000 * Math.pow(2, retryCount.current - 1);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        await audit(payload, true);
+      } else {
+        retryCount.current = 0;
+        setState(s => ({
+          ...s,
+          status: 'error',
+          error: (err as Error).message,
+        }));
+      }
     }
-  }
-}, [state.status, currentAuditId, spec, specFormat, state.result, state.error, history]);
 ```
 
-**Add `state.error` to the dependency array.**
-
-**Edge cases:**
-- `state.error` is `string | null` in `AuditState`. The `HistoryRecord.error` is `string | undefined`. Convert `null` to `undefined` via `?? undefined` to match the optional field semantics.
-- If `state.status === 'error'` but `state.error` is somehow `null`, the record's `error` field is `undefined` — no spurious empty string or "null" string stored.
-- If the user submits a new audit while a previous failed record still exists, `handleSubmit` creates a new record with `result: null` and no `error` — the old failed record stays in the list with its error state.
-
----
-
-### Fix 3: Show red "Failed" instead of yellow "Running..." when `record.error` is set
-
-**File:** `frontend/src/components/features/HistorySidebar.tsx`
-
-**3a.** Update the `(pending)` badge next to the title (around line 143):
-
-```tsx
-{record.result === null && !record.error && (
-  <span className="text-yellow-400 text-xs ml-2">(pending)</span>
-)}
-{record.error && (
-  <span className="text-red-400 text-xs ml-2">Failed</span>
-)}
+**After:**
+```typescript
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        setState(s => ({ ...s, status: 'idle' }));
+        retryCount.current = 0;
+      } else {
+        retryCount.current = 0;
+        setState(s => ({
+          ...s,
+          status: 'error',
+          error: (err as Error).message,
+        }));
+      }
+    }
 ```
 
-**3b.** Update the subtitle line that shows "Running..." (around line 155-163):
+All non-`AbortError` errors (including `RateLimitError`, network errors, server errors, etc.) now immediately set `status: 'error'` with the error message.
 
-```tsx
-{record.result === null && !record.error ? (
-  <p className="text-xs text-yellow-400 mt-0.5">
-    Running...
-  </p>
-) : record.error ? (
-  <p className="text-xs text-red-400 mt-0.5">
-    Failed
-  </p>
-) : (
-  <p className="text-xs text-slate-500 mt-0.5 light:text-slate-400" title={new Date(record.timestamp).toLocaleString()}>
-    {relativeTime(record.timestamp)}
-  </p>
-)}
-```
+### 3. Remove unused `retryCount` reset calls (already done in the "after" above)
 
-**Edge cases:**
-- Record with both `result` and `error` set → `result` takes precedence, shows timestamp (success). This shouldn't happen in practice, but defensive ordering means `record.result !== null` is checked first in the existing ternary.
-- Record with neither `result` nor `error` → shows "(pending)" badge + "Running..." (existing behavior for audits in progress).
-- Record with `error` set and `result` null → shows "Failed" badge + "Failed" subtitle in red.
-- The `title` attribute on the timestamp line isn't relevant for failed records — we show "Failed" instead.
+The `retryCount.current = 0` in the `else` branch is preserved. The `catch` block no longer increments `retryCount`.
+
+## Changes to `frontend/src/hooks/__tests__/useAudit.test.tsx`
+
+Delete these two test cases (lines 154-228):
+
+1. **`'retries and succeeds after RateLimitError'`** (lines 154-188)
+2. **`'shows error after RateLimitError retries are exhausted'`** (lines 190-228)
+
+Keep all other tests intact:
+
+| Test | Keep? |
+|---|---|
+| `returns initial state with idle status` | ✓ |
+| `sets loading then streaming when audit is called` | ✓ |
+| `sets status to complete after auditStream resolves` | ✓ |
+| `sets error status when auditStream throws` | ✓ |
+| `sets idle status on AbortError` | ✓ |
+| `abort cancels the ongoing audit and sets idle` | ✓ |
+| `reset clears result and sets idle` | ✓ |
+| `onStructured callback updates findings and summary in state` | ✓ |
+
+The existing test `'sets error status when auditStream throws'` already covers the new behavior for `RateLimitError` — it mocks a generic `Error` rejection and asserts `status: 'error'` / correct error message. That same path now handles `RateLimitError` too.
+
+## Edge cases
+
+- **`AbortError`**: Still handled separately — resets state to `idle`, no error shown. Unchanged.
+- **`RateLimitError`**: Now falls through to the `else` branch, immediately showing `status: 'error'` with the message. No retries.
+- **Other errors (network, 500, generic `Error`)**: Same behavior as before — immediate error state.
+- **`retryCount.current`**: Is still reset to `0` in both error paths (idle and error). The ref is no longer incremented anywhere.
 
 ## Verification
 
-1. Trigger an audit that will fail (e.g., submit invalid spec, disconnect network mid-stream)
-2. Observe the history sidebar:
-   - The record should show a red "Failed" badge and red "Failed" text
-   - It should NOT show yellow "(pending)" or "Running..."
-3. Submit a valid audit:
-   - New record shows "(pending)" briefly then the result preview + timestamp (unchanged behavior)
-4. Reload the page:
-   - Failed records persist with their error state from localStorage
-5. Build: `npm run build` — 0 errors
+1. `npm run build` — 0 errors
+2. `npm test` — all tests pass (the two removed retry tests, the `maxRetries` constant, and the retry code path no longer exist)
+3. Manual: send `{"spec":"sss"}` → gets 429 → error shown immediately with no retries

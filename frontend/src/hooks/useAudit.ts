@@ -14,7 +14,6 @@ export function useAudit() {
 
   const abortRef = useRef<AbortController | null>(null);
   const retryCount = useRef(0);
-  const maxRetries = 3;
 
   const audit = useCallback(async (payload: AuditRequest, isRetry?: boolean) => {
     if (!isRetry) {
@@ -42,15 +41,6 @@ export function useAudit() {
       if ((err as Error).name === 'AbortError') {
         setState(s => ({ ...s, status: 'idle' }));
         retryCount.current = 0;
-      } else if (
-        (err as Error).name === 'RateLimitError' &&
-        retryCount.current < maxRetries
-      ) {
-        retryCount.current++;
-        setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
-        const delay = 1000 * Math.pow(2, retryCount.current - 1);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        await audit(payload, true);
       } else {
         retryCount.current = 0;
         setState(s => ({
