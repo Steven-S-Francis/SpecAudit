@@ -1,44 +1,77 @@
-# Review: Add SDK non-streaming diagnostic mode to `/api/diagnose`
+# Review: Move OpenAI client creation per-request to fix HTTP/2 connection pool poisoning
 
 ## VERDICT: SHIP
 
-## Summary
-
-The implementation faithfully follows the specification. The `/api/diagnose` endpoint now accepts an optional `mode` query parameter (`raw` or `sdk`) with backward-compatible default of `"raw"`. In SDK mode, it creates a fresh `OpenAIClient` + `ChatClient` matching the `SpecAuditService` initialization pattern, calls `CompleteChatAsync` with a simple prompt, and returns the diagnostic result. Four new tests cover default mode, SDK mode contract, SDK failure handling, and invalid mode fallback. All 274 tests (29 backend + 245 frontend) pass, and TypeScript type checking is clean.
-
-## Checklist
-
-- [x] **Spec compliance**: Implementation matches all spec requirements: `mode` query param (default `"raw"`), case-insensitive matching, SDK mode creates `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `ChatClient`, uses `CompleteChatAsync` with `SystemChatMessage("You are a helpful assistant.")` + `UserChatMessage("Say the word HELLO")`, `MaxOutputTokenCount = 10`, `Temperature = 0.1f`, success response `{ groqStatus: 200, elapsedMs, ok: true, response, finishReason }`, failure response `{ groqStatus: 0, elapsedMs, ok: false, error }`.
-- [x] **Backward compatible**: No `mode` param defaults to `"raw"`, preserving original behavior exactly. The raw mode logic is extracted unchanged into `DiagnoseRawMode()`.
-- [x] **Tests pass**: 274 tests pass (29 backend + 245 frontend), 0 failures. The 4 new backend tests cover all key paths. Both frontend (`npm test`) and backend (`dotnet test`) suites were executed and reported.
-- [x] **Code quality**: Clean implementation. All usings are used and necessary. No dead code, no unused imports, no cross-platform issues, no performance problems. Tests cover both failure contracts and the default/fallback behavior.
-- [x] **Edge cases covered**: No `mode` param → raw (default), `mode=invalid` → raw fallback, `mode=RAW`/`mode=Raw` → case-insensitive matching, SDK failure (connection refused) → caught and returns `{ groqStatus: 0, ok: false, error }`. All documented in the spec's edge case table are handled.
-
 ## Findings
 
-### Spec Adaptation (documented, acceptable)
+### 1. Spec Compliance — ✅ PASS
 
-The spec's original test code for `GetDiagnoseDefault_IsRawMode` and `GetDiagnose_InvalidModeFallsBackToRaw` checked for the `message` property to identify raw mode. However, because the test environment configures `BaseUrl = http://localhost:1` (which always produces a connection refused exception), the raw mode error path returns `error` (not `message`). The tests were correctly adapted to check for `error` instead of `message`, while still verifying that SDK-only fields (`response`, `finishReason`) are absent. This is a correct and necessary adjustment — the tests still validate the mode routing behavior. This change is documented in `changes.md` under "Spec Issues."
+| Requirement | Status | Notes |
+|---|---|---|
+| Only `backend/src/Services/SpecAuditService.cs` modified | ✅ | Only this file changed per `git diff` |
+| Remove `private readonly ChatClient _chatClient` field | ✅ | Confirmed removed |
+| Remove OpenAI SDK init from constructor | ✅ | Constructor now only assigns `_options` and `_logger` + logs |
+| Add per-request client creation in `AuditAsync` | ✅ | `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `GetChatClient` created at method top |
+| Use local `chatClient` instead of `_chatClient` | ✅ | `chatClient.CompleteChatStreamingAsync(...)` |
+| Everything after `await foreach` unchanged | ✅ | `ExtractStructuredJson`, logging, `yield return` pattern identical |
+| No changes to other files | ✅ | `AuditEndpoints.cs`, `AiOptions.cs`, `.csproj`, tests all untouched |
 
-### Security
+### 2. Minor Deviation — `using` omitted (CORRECT)
 
-- **No information disclosure**: Exception messages (`ex.Message`) are returned as `error` in responses, which is intentional for this diagnostic endpoint. Stack traces are not exposed. The API key is used to create credentials but is never logged or returned in responses.
-- **No new auth gaps**: The `/api/diagnose` endpoint existed before this change and was not mentioned in the spec as requiring new auth middleware. No new routes were created.
-- **No injection vectors**: No user-supplied strings are interpolated into HTML, SQL, shell, or regex contexts. The `mode` parameter is safely compared against known values.
-- **No secrets exposure**: API key is used only in `ApiKeyCredential` construction and HTTP Authorization header — never logged or echoed.
+The spec called for `using var client = new OpenAIClient(...)`. However, verification against the SDK's API surface (`api/OpenAI.netstandard2.0.cs`) confirms that **`OpenAIClient` does not implement `IDisposable`** in SDK v2.10.0. Using `using` would cause **CS1674** compile error.
 
-### Correctness
+The implementation omits `using`, matching the existing pattern in `AuditEndpoints.cs::DiagnoseSdkMode` (line 173). This is the **correct** approach — the object is not disposable, so garbage collection handles cleanup normally. No resource leak exists.
 
-- **Async discipline**: All async calls are properly awaited. No fire-and-forget patterns. The `catch` blocks correctly stop the `Stopwatch` before reading `ElapsedMilliseconds`.
-- **No race conditions**: Each request creates its own `HttpClient` (raw mode) or `OpenAIClient` (SDK mode). No shared mutable state between concurrent requests.
-- **Runtime type safety**: Anonymous types are used for JSON serialization, which is safe. `result.Value.Content[0].Text` accesses the OpenAI SDK response with proper null guards (the SDK guarantees at least one choice in non-streaming responses).
-- **No error swallowing**: All catch blocks log the exception and return a structured error response. No empty catch blocks.
+### 3. Security — ✅ SAFE (No Issues)
+
+- **No information disclosure**: Log messages only emit metadata (model ID, char counts, token counts). Exception messages are not forwarded to clients.
+- **No auth bypass**: No new endpoints added; `/api/audit` retains `RequireRateLimiting("AuditPolicy")`.
+- **No injection vectors**: AI response processed through `ExtractStructuredJson` which uses `JsonDocument.Parse` with try/catch — safe.
+- **No secrets exposure**: API key read from `_options.ApiKey` (DI-injected config), never logged or returned to clients.
+
+### 4. Correctness — ✅ PASS (No Issues)
+
+- **Async discipline**: `await foreach` correctly awaits the streaming call. No fire-and-forget.
+- **State race conditions**: Each request creates its own `OpenAIClient` + `ChatClient` — no shared mutable state across requests.
+- **Runtime type safety**: `JsonDocument.Parse` wrapped in try/catch in `ExtractStructuredJson`. No unsafe casts.
+- **Error handling**: Empty `catch (JsonException) { }` on line 225 is the same pattern as before — it's intentional: `findingsCount` defaults to 0 and the log line still executes.
+
+### 5. Edge Cases (from spec) — ✅ HANDLED
+
+| Edge Case | Status | Notes |
+|---|---|---|
+| Disposed client during streaming | ✅ N/A | `OpenAIClient` not disposable; `chatClient` is local variable scoped to method |
+| Cancellation during client creation | ✅ | Setup is synchronous; `CancellationToken` only used in `CompleteChatStreamingAsync` |
+| Exception before disposal | ✅ N/A | No `IDisposable` to leak |
+| Rapid successive requests | ✅ | Fresh connection pool per request — no cross-request poisoning |
+| HTTP/2 connection reset | ✅ | Previous request's connection cannot affect new request |
+| Null/empty API key | ✅ | Throws at network call (same as before) |
+| Invalid endpoint URL | ✅ | Throws at network call (same as before) |
+
+### 6. Test Results — ✅ ALL 29 PASS
+
+All 29 tests pass across 5 test files (static unit tests + integration tests). No test changes were needed — tests use `WebApplicationFactory<Program>` integration testing and don't mock `ChatClient`.
+
+### 7. Code Quality — ✅ Clean
+
+- Per-request client creation follows the **existing project pattern** (`DiagnoseSdkMode` in `AuditEndpoints.cs`)
+- Inline comment `// OpenAI client now created per-request in AuditAsync` aids readability
+- No dead code, no cross-platform issues, no performance concerns
 
 ## Required Actions
 
-None. The implementation is complete, correct, and ready to ship.
+None. The implementation is complete, correct, and ready to merge.
 
-## Notes
+## Suggested Commit Message
 
-- The `using Sentry;` import (line 9) was already present before this change and is used by the existing `POST /api/audit` handler's catch block — no issue.
-- `ROADMAP.md` was updated with the commit hash for this feature, which is a minor expected housekeeping change outside the spec scope.
+```
+perf: move OpenAI client creation per-request to fix HTTP/2 connection pool poisoning
+
+Create a fresh OpenAIClient + ChatClient per AuditAsync invocation
+instead of holding a singleton ChatClient in the constructor.
+This ensures each audit request gets a clean HTTP/2 connection pool,
+preventing silent failures when a pooled connection enters a bad state
+after streaming completes or is aborted.
+
+Closes #<issue>
+```

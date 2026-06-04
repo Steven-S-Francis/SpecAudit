@@ -64,3 +64,34 @@ The spec's test code checks for the `message` property to identify raw mode. How
 **Fix applied**: Changed the assertions to check for `error` instead of `message`, which is the correct field present in the raw mode failure response. The tests still correctly verify that `response` and `finishReason` (SDK fields) are absent, confirming the mode fallback behavior.
 
 This is purely an environment mismatch — in a real environment where the endpoint connects successfully, raw mode would return `message` (nullable, possibly `null`). The failure-path assertions are equally valid for identifying raw mode since both the success and failure shapes of raw mode exclude the SDK-only fields (`response`, `finishReason`).
+
+---
+
+## Feature: Move OpenAI client creation per-request to fix HTTP/2 connection pool poisoning
+
+### Files Changed
+
+**Only one file modified:** `backend/src/Services/SpecAuditService.cs`
+
+### What each change does
+
+1. **Removed field** `private readonly ChatClient _chatClient;` — the singleton `ChatClient` is no longer stored as a field, breaking the shared-connection-pool lifetime.
+
+2. **Removed OpenAI SDK initialization from constructor** — the `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `GetChatClient` sequence was removed from the constructor. A comment `// OpenAI client now created per-request in AuditAsync` marks where it was. The constructor now only assigns `_options` and `_logger` and logs initialization.
+
+3. **Added per-request OpenAI client creation inside `AuditAsync`** — before `var messages = ...`, the method now creates:
+   - `var credential = new ApiKeyCredential(_options.ApiKey);`
+   - `var clientOptions = new OpenAIClientOptions { Endpoint = new Uri(_options.BaseUrl) };`
+   - `var client = new OpenAIClient(credential, clientOptions);`
+   - `var chatClient = client.GetChatClient(_options.ModelId);`
+   
+   Then `_chatClient.CompleteChatStreamingAsync(...)` was changed to `chatClient.CompleteChatStreamingAsync(...)`.
+
+4. **No `using` on `OpenAIClient`** — The spec originally specified `using var client = new OpenAIClient(...)`, but this SDK version's `OpenAIClient` does not implement `IDisposable` (CS1674). Removed `using` to match the existing pattern in `AuditEndpoints.cs::DiagnoseSdkMode`.
+
+### Tester Focus Areas
+
+- Verify per-request client creation doesn't change streaming behavior — the `AuditAsync` method still returns `IAsyncEnumerable<string>` with the same `yield return` pattern.
+- Confirm that `chatClient.CompleteChatStreamingAsync(...)` is called the same way as the old `_chatClient.CompleteChatStreamingAsync(...)` (same arguments).
+- Edge cases from spec: disposed client during streaming (scoped to method, safe), exception before disposal (no `using` but no `IDisposable` needed), rapid successive requests (fresh connection per request).
+- All existing tests should pass unchanged (no test mocks `ChatClient`; all use `WebApplicationFactory<Program>` integration testing).

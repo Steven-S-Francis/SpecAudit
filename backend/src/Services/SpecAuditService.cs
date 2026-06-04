@@ -150,7 +150,6 @@ public sealed class SpecAuditService
 
     private const string StructuredSentinel = "[SPECAUDIT_STRUCTURED]";
 
-    private readonly ChatClient _chatClient;
     private readonly AiOptions _options;
     private readonly ILogger<SpecAuditService> _logger;
 
@@ -159,14 +158,7 @@ public sealed class SpecAuditService
         _options = options.Value;
         _logger = logger;
 
-        var credential = new ApiKeyCredential(_options.ApiKey);
-        var clientOptions = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(_options.BaseUrl)
-            // NO NetworkTimeout — test harness proves it's unnecessary
-        };
-        var client = new OpenAIClient(credential, clientOptions);
-        _chatClient = client.GetChatClient(_options.ModelId);
+        // OpenAI client now created per-request in AuditAsync
 
         _logger.LogInformation("SpecAuditService initialized for model {ModelId} at {BaseUrl}",
             _options.ModelId, _options.BaseUrl);
@@ -178,6 +170,15 @@ public sealed class SpecAuditService
         AuditRequest request,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        var credential = new ApiKeyCredential(_options.ApiKey);
+        var clientOptions = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(_options.BaseUrl)
+            // NO NetworkTimeout — proven unnecessary
+        };
+        var client = new OpenAIClient(credential, clientOptions);
+        var chatClient = client.GetChatClient(_options.ModelId);
+
         var messages = new List<ChatMessage>
         {
             new SystemChatMessage(SystemPrompt),
@@ -194,7 +195,7 @@ public sealed class SpecAuditService
 
         var fullText = new StringBuilder();
 
-        await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
+        await foreach (var update in chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
         {
             foreach (var part in update.ContentUpdate)
             {
