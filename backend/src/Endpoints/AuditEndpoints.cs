@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -88,6 +89,49 @@ public static class AuditEndpoints
 
         app.MapGet("/api/config", (IOptions<AiOptions> options) =>
             Results.Ok(new { providerName = options.Value.ProviderName }));
+
+        app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory loggerFactory) =>
+        {
+            var logger = loggerFactory.CreateLogger("SpecAudit.Diagnose");
+            var aiOptions = options.Value;
+
+            using var client = new HttpClient();
+            client.BaseAddress = new Uri(aiOptions.BaseUrl);
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
+            client.Timeout = TimeSpan.FromSeconds(10);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var response = await client.GetAsync("models");
+                sw.Stop();
+                var statusCode = (int)response.StatusCode;
+                logger.LogInformation(
+                    "Diagnose: Groq models endpoint returned {StatusCode} in {Elapsed}ms",
+                    statusCode, sw.ElapsedMilliseconds);
+                return Results.Ok(new
+                {
+                    groqStatus = statusCode,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    ok = statusCode == 200
+                });
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                logger.LogError(ex,
+                    "Diagnose: Groq models endpoint failed after {Elapsed}ms",
+                    sw.ElapsedMilliseconds);
+                return Results.Ok(new
+                {
+                    groqStatus = 0,
+                    elapsedMs = sw.ElapsedMilliseconds,
+                    ok = false,
+                    error = ex.Message
+                });
+            }
+        });
 
         app.MapGet("/api/test-error", () =>
         {

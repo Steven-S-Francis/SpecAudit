@@ -1,4 +1,4 @@
-# Don't pass CancellationToken to CompleteChatStreamingAsync
+# Add `GET /api/diagnose` diagnostic endpoint
 
 ## OPEN QUESTIONS
 
@@ -8,69 +8,80 @@ None.
 
 ## Why this change is needed
 
-The OpenAI SDK v2.10.0's `CompleteChatStreamingAsync` behaves differently when a `CancellationToken` is passed vs. when it is not:
+The AI streaming bug (zero chunks until 45s timeout inside Docker) was not resolved by passing `CancellationToken.None` to `CompleteChatStreamingAsync` (commit `5230ea8`). Requests now hang indefinitely instead of timing out. The root cause could be:
 
-| Scenario | Token | Observed behavior |
-|----------|-------|-------------------|
-| Test harness | No token | Stream completes in ~0.8s |
-| Backend | 45s linked token | Yields zero chunks for 45s until timeout |
+1. The OpenAI SDK v2.10.0 has an undiscovered networking issue inside Docker, or
+2. The Groq API is unreachable or slow from within the container, despite the sidecar PowerShell container proving basic TLS connectivity.
 
-The root cause is an SDK-level issue (or OpenAI/Groq backend interaction) where a non-default `CancellationToken` delays or suppresses streaming chunks. Passing `CancellationToken.None` restores normal streaming behavior.
-
-### Why this is safe
-
-- The 45s timeout is still enforced by `token.ThrowIfCancellationRequested()` in `AuditEndpoints.cs` (line 49), which runs **between** chunks in the `await foreach` loop.
-- Client disconnect (browser tab close, Escape key) still works: ASP.NET's `CancellationToken` (`ct`) is linked via `CancellationTokenSource.CreateLinkedTokenSource(ct)` on line 41, so when the client disconnects, `ct` is cancelled, the linked token fires, and `ThrowIfCancellationRequested` on the next iteration catches it.
-- All catch blocks in `AuditEndpoints.cs` remain unchanged and will handle `OperationCanceledException` correctly.
-
-### Trade-off
-
-When the client disconnects, the SDK reads **one extra chunk** before the loop exit condition is checked. This is a minor resource leak (one extra chunk processed but not delivered), not a correctness issue.
+We need a dedicated diagnostic endpoint that tests the exact same HTTP pipeline (base URL, auth header) that the OpenAI SDK uses internally. This lets us isolate whether the problem is SDK-level vs. infrastructure-level (DNS/TLS/routing).
 
 ---
 
 ## File changes
 
-### 1. MODIFY: `backend/src/Services/SpecAuditService.cs` — one line change
+### 1. MODIFY: `backend/src/Endpoints/AuditEndpoints.cs`
 
-**Line 197:** Replace the `CancellationToken` parameter in `CompleteChatStreamingAsync` with `CancellationToken.None`.
+**What to add:**
+
+- A new `using System.Net.Http.Headers;` at the top of the file (between existing usings, alphabetically).
+- A new `app.MapGet("/api/diagnose", ...)` invocation inside the existing `MapAuditEndpoints` method, after line 90 (after the `/api/config` endpoint).
+
+**New endpoint code:**
 
 ```csharp
-// Before:
-await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, ct))
+app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory loggerFactory) =>
+{
+    var logger = loggerFactory.CreateLogger("SpecAudit.Diagnose");
+    var aiOptions = options.Value;
 
-// After:
-await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
+    using var client = new HttpClient();
+    client.BaseAddress = new Uri(aiOptions.BaseUrl);
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
+    client.Timeout = TimeSpan.FromSeconds(10);
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        var response = await client.GetAsync("models");
+        sw.Stop();
+        var statusCode = (int)response.StatusCode;
+        logger.LogInformation(
+            "Diagnose: Groq models endpoint returned {StatusCode} in {Elapsed}ms",
+            statusCode, sw.ElapsedMilliseconds);
+        return Results.Ok(new
+        {
+            groqStatus = statusCode,
+            elapsedMs = sw.ElapsedMilliseconds,
+            ok = statusCode == 200
+        });
+    }
+    catch (Exception ex)
+    {
+        sw.Stop();
+        logger.LogError(ex,
+            "Diagnose: Groq models endpoint failed after {Elapsed}ms",
+            sw.ElapsedMilliseconds);
+        return Results.Ok(new
+        {
+            groqStatus = 0,
+            elapsedMs = sw.ElapsedMilliseconds,
+            ok = false,
+            error = ex.Message
+        });
+    }
+});
 ```
 
-The `ct` parameter from `AuditAsync` (line 179) is still used implicitly via `[EnumeratorCancellation]` — when the caller disposes the `IAsyncEnumerable`, enumeration stops. The explicit token on the SDK call is what causes the bug.
+**Placement:** Insert immediately after the existing `/api/config` block (line 90), before `/api/test-error`.
 
-### 2. DELETE: `ai-test/` directory (if still present)
-
-Diagnostic test harness, no longer needed. Remove the entire directory tree:
-
-- `ai-test/ai-test.csproj`
-- `ai-test/Program.cs`
-- `ai-test/bin/`
-- `ai-test/obj/`
-
-**Command (PowerShell):**
-```powershell
-if (Test-Path ai-test) { Remove-Item -Recurse -Force ai-test }
-```
-
-**Command (bash):**
-```bash
-rm -rf ai-test
-```
-
-### 3. Files NOT modified
+### Files NOT modified
 
 | File | Reason |
 |------|--------|
-| `backend/src/Endpoints/AuditEndpoints.cs` | Already correct — 45s linked token, `ThrowIfCancellationRequested` between chunks, proper catch blocks |
-| `backend/backend.csproj` | Already has `OpenAI v2.10.0` reference — no change needed |
-| `SpecAudit.slnx` | Does not reference `ai-test/` — no change needed |
+| `backend/src/Services/SpecAuditService.cs` | Not part of this change |
+| `backend/backend.csproj` | No new package dependencies needed |
+| Any test files | Tests are in the companion PR/commit |
 
 ---
 
@@ -78,40 +89,49 @@ rm -rf ai-test
 
 | Edge case | Handling |
 |-----------|----------|
-| `ai-test/` already deleted | Check directory existence before deleting (idempotent) |
-| `ai-test/bin/` or `ai-test/obj/` has read-only files | Use `-Recurse -Force` or `-f` to force delete |
-| SDK version changes | This fix is specific to OpenAI SDK v2.10.0 behavior; if the SDK is upgraded, re-test whether `ct` works correctly |
-| No response from AI (zero chunks) | `await foreach` completes immediately, `fullText` is empty, no structured JSON extracted — handled by existing code |
+| **Timeout** (Groq unreachable, DNS failure, slow response) | `client.Timeout = 10s` guarantees the `GetAsync` throws a `TaskCanceledException`. The `catch` block catches it, logs the elapsed time, and returns `{"groqStatus":0,"ok":false,"error":"...", "elapsedMs":10000}`. |
+| **HTTP error status** (e.g. 401 Unauthorized, 429 Rate Limited, 500 Server Error) | The catch block is NOT entered for non-success status codes — `HttpResponseMessage.IsSuccessStatusCode` is not checked, so the status code is returned as-is via `groqStatus`. The `ok` field is `false` for any status != 200. |
+| **Missing API key or BaseUrl** | If `aiOptions.ApiKey` is empty, the `Authorization` header is sent as `Bearer ` (empty value). The Groq API returns 401. The endpoint correctly reports `groqStatus: 401, ok: false`. |
+| **Invalid BaseUrl** | `new Uri(aiOptions.BaseUrl)` throws `UriFormatException` at construction time if the config value is not a valid URI. This would be a startup concern, not a runtime issue — the app shouldn't start with an invalid URL. If it somehow isn't caught, the `catch (Exception ex)` block captures it. |
+| **DNS resolution failure** | `HttpClient` throws `HttpRequestException` with inner `SocketException`. Caught by the catch block. |
+| **TLS/SSL errors** | `HttpClient` throws `HttpRequestException`. Caught by the catch block. |
+| **Concurrent requests** | Each call creates a fresh `HttpClient` that is disposed after use. No shared state. Safe under concurrent load. |
 
 ---
 
 ## Existing patterns to follow
 
-The change follows the same pattern already proven in the test harness: no `CancellationToken` on `CompleteChatStreamingAsync`. The rest of the service (`OpenAIClient` construction, `ChatCompletionOptions`, response chunking, structured JSON extraction) is unchanged from the current implementation.
+- **IOptions\<AiOptions\> injection**: Same pattern as `GET /api/config` on line 89. The callback receives `IOptions<AiOptions> options` directly via ASP.NET DI.
+- **ILoggerFactory injection**: Same pattern as `POST /api/audit` on line 30 — create a named logger from `ILoggerFactory` rather than injecting `ILogger<T>`.
+- **Return Results.Ok**: Consistent with `/api/config` and `/api/test-error`.
+- **Serilog logging**: Uses `logger.LogInformation` / `logger.LogError` with structured properties (`{StatusCode}`, `{Elapsed}ms`), consistent with the existing pattern in line 32.
+- **No new middleware, no new services, no new DI registrations**: The endpoint uses only `HttpClient` directly (no `IHttpClientFactory`), which is appropriate for a one-shot diagnostic call that doesn't benefit from connection pooling.
 
 ---
 
 ## Verification steps
 
-```bash
+```powershell
 # 1. Build the backend (0 errors expected)
 dotnet build backend/backend.csproj
 
-# 2. Run tests (21/21 pass expected)
+# 2. Run all tests (all pass expected)
 dotnet test backend.Tests/backend.Tests.csproj
 
-# 3. Confirm the fix is in place (should show CancellationToken.None)
-rg -n "CompleteChatStreamingAsync" backend/src/Services/SpecAuditService.cs
+# 3. Start the full stack with Docker
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 
-# 4. Confirm no other SDK call passes a non-default CancellationToken
-rg -n "CompleteChatStreamingAsync.*ct[^N]" backend/src
+# 4. Hit the diagnostic endpoint
+curl http://localhost:5000/api/diagnose
 
-# 5. Confirm ai-test/ is gone
-if (Test-Path ai-test) { Write-Warning "ai-test still present" } else { Write-Host "OK - ai-test deleted" }
+# Expected success output:
+# {"groqStatus":200,"elapsedMs":850,"ok":true}
+#
+# Expected failure output (if networking is broken):
+# {"groqStatus":0,"elapsedMs":10000,"ok":false,"error":"...message..."}
 
-# 6. Docker smoke test: POST a spec and confirm audit completes in <15s
-docker compose build
-docker compose run --rm backend curl -s -X POST http://backend:8080/api/audit -H "Content-Type: application/json" -d '{"spec": "openapi: 3.0.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}"}'
+# 5. Verify the logs show the diagnostic entry
+docker compose logs backend | findstr "Diagnose"
 ```
-
-All commands must return exit code 0. The Docker smoke test must return a complete SSE stream ending with `[SPECAUDIT_STRUCTURED]{...}` within 15 seconds.
