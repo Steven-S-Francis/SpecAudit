@@ -1,14 +1,12 @@
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OpenAI;
-using OpenAI.Chat;
 using SpecAudit.Configuration;
 using SpecAudit.Models.Requests;
-using System.ClientModel;
 
 namespace SpecAudit.Services;
 
@@ -170,40 +168,86 @@ public sealed class SpecAuditService
         AuditRequest request,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var credential = new ApiKeyCredential(_options.ApiKey);
-        var clientOptions = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(_options.BaseUrl)
-            // NO NetworkTimeout — proven unnecessary
-        };
-        var client = new OpenAIClient(credential, clientOptions);
-        var chatClient = client.GetChatClient(_options.ModelId);
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(45);
 
-        var messages = new List<ChatMessage>
+        var systemMessage = new { role = "system", content = SystemPrompt };
+        var userMessage = new { role = "user", content = BuildUserMessage(request) };
+
+        var payload = new
         {
-            new SystemChatMessage(SystemPrompt),
-            new UserChatMessage(BuildUserMessage(request))
+            model = _options.ModelId,
+            messages = new[] { systemMessage, userMessage },
+            max_tokens = _options.MaxTokens,
+            temperature = 0.1f,
+            stream = true
         };
 
-        var options = new ChatCompletionOptions
+        var jsonPayload = JsonSerializer.Serialize(payload);
+
+        using var httpRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{_options.BaseUrl.TrimEnd('/')}/chat/completions")
         {
-            MaxOutputTokenCount = _options.MaxTokens,
-            Temperature = 0.1f
+            Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
         };
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
         _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
 
-        var fullText = new StringBuilder();
+        using var httpResponse = await client.SendAsync(
+            httpRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct);
 
-        await foreach (var update in chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
+        httpResponse.EnsureSuccessStatusCode();
+
+        using var responseStream = await httpResponse.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(responseStream);
+
+        var fullText = new StringBuilder();
+        string? line;
+
+        while ((line = await reader.ReadLineAsync(ct)) is not null)
         {
-            foreach (var part in update.ContentUpdate)
+            if (string.IsNullOrEmpty(line))
+                continue;
+
+            if (!line.StartsWith("data: ", StringComparison.Ordinal))
+                continue;
+
+            var data = line.AsSpan(6);
+
+            if (data is ['[', 'D', 'O', 'N', 'E', ']'])
+                break;
+
+            string? deltaContent = null;
+            try
             {
-                if (!string.IsNullOrEmpty(part.Text))
-                {
-                    fullText.Append(part.Text);
-                    yield return part.Text;
-                }
+                using var doc = JsonDocument.Parse(data.ToString());
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+                    continue;
+
+                if (!choices[0].TryGetProperty("delta", out var delta))
+                    continue;
+
+                if (!delta.TryGetProperty("content", out var contentEl) ||
+                    contentEl.ValueKind != JsonValueKind.String)
+                    continue;
+
+                deltaContent = contentEl.GetString();
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "SSE parse warning for chunk: {Data}", data.ToString());
+            }
+
+            if (!string.IsNullOrEmpty(deltaContent))
+            {
+                fullText.Append(deltaContent);
+                yield return deltaContent;
             }
         }
 

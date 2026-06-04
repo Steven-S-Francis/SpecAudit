@@ -1,301 +1,174 @@
-# Move OpenAI client creation per-request to fix HTTP/2 connection pool poisoning
+# Replace OpenAI SDK streaming with raw HttpClient + SSE parsing
 
-## Root cause
+## Background
 
-The `SpecAuditService` holds a **singleton `ChatClient`** (created once in the constructor and stored as `private readonly ChatClient _chatClient`). The `OpenAIClient` (and its internal `HttpClient`/`SocketsHttpHandler`) maintains an HTTP/2 connection pool to Groq. When a streaming request completes naturally or is aborted (e.g., user presses Escape), the pooled HTTP/2 connection enters a bad state (half-closed or reset). All subsequent requests that reuse that pooled connection silently fail — they never receive any chunks, even though no exception is thrown. The fix is to create a **fresh `OpenAIClient` + `ChatClient` per request**, so each audit request gets a clean connection pool.
+The OpenAI SDK v2.10.0's `CompleteChatStreamingAsync` yields zero chunks from Groq when any non-default `CancellationToken` is passed. This is a confirmed SDK-incompatibility with Groq's SSE streaming. Non-streaming SDK calls (`CompleteChatAsync`) work fine. Raw `HttpClient` POST to `/chat/completions` with `"stream":false` works fine.
 
----
+## Solution
 
-## File to modify
+Replace the SDK streaming call in `SpecAuditService.AuditAsync` with a raw `HttpClient` POST + manual SSE line-by-line parsing. Keep the OpenAI SDK package (`OpenAI` 2.10.0) as a dependency for the `GET /api/diagnose?mode=sdk` endpoint only.
 
-**Only one file:** `backend/src/Services/SpecAuditService.cs`
+## Files to Modify
 
-No changes to:
-- `backend/backend.csproj` (OpenAI SDK package stays)
-- `backend/src/Endpoints/AuditEndpoints.cs` (endpoint logic is unchanged)
-- `backend/src/Configuration/AiOptions.cs` (options class unchanged)
-- `backend.Tests/` (tests use `WebApplicationFactory<Program>` integration testing, no `ChatClient` mocking)
+### 1. `backend/src/Services/SpecAuditService.cs`
 
----
+**What changes:**
+- Remove `using OpenAI;`, `using OpenAI.Chat;`, `using System.ClientModel;` — no longer used in this file
+- Add `using System.Net.Http.Headers;`, `using System.Text.Json;` (the latter is already present)
+- Replace the body of `AuditAsync` (lines 169–233) with an SSE streaming implementation using `HttpClient`
+- Keep `BuildUserMessage` and `ExtractStructuredJson` unchanged
 
-## Exact changes
+**New `AuditAsync` method (conceptual):**
 
-### 1. Remove `private readonly ChatClient _chatClient;` field
-
-**Before (line 153):**
 ```csharp
-    private readonly ChatClient _chatClient;
-    private readonly AiOptions _options;
-    private readonly ILogger<SpecAuditService> _logger;
-```
+public async IAsyncEnumerable<string> AuditAsync(
+    AuditRequest request,
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    using var client = new HttpClient();
+    client.Timeout = TimeSpan.FromSeconds(45); // matches the endpoint CTS
 
-**After:**
-```csharp
-    private readonly AiOptions _options;
-    private readonly ILogger<SpecAuditService> _logger;
-```
-
-### 2. Remove OpenAI SDK initialization from the constructor
-
-**Before (lines 157–173):**
-```csharp
-    public SpecAuditService(IOptions<AiOptions> options, ILogger<SpecAuditService> logger)
+    var payload = new
     {
-        _options = options.Value;
-        _logger = logger;
-
-        var credential = new ApiKeyCredential(_options.ApiKey);
-        var clientOptions = new OpenAIClientOptions
+        model = _options.ModelId,
+        messages = new object[]
         {
-            Endpoint = new Uri(_options.BaseUrl)
-            // NO NetworkTimeout — test harness proves it's unnecessary
-        };
-        var client = new OpenAIClient(credential, clientOptions);
-        _chatClient = client.GetChatClient(_options.ModelId);
+            new { role = "system", content = SystemPrompt },
+            new { role = "user", content = BuildUserMessage(request) }
+        },
+        max_tokens = _options.MaxTokens,
+        temperature = 0.1f,
+        stream = true
+    };
 
-        _logger.LogInformation("SpecAuditService initialized for model {ModelId} at {BaseUrl}",
-            _options.ModelId, _options.BaseUrl);
-    }
-```
+    var jsonPayload = JsonSerializer.Serialize(payload);
 
-**After:**
-```csharp
-    public SpecAuditService(IOptions<AiOptions> options, ILogger<SpecAuditService> logger)
+    using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_options.BaseUrl}/chat/completions")
     {
-        _options = options.Value;
-        _logger = logger;
+        Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+    };
+    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
-        _logger.LogInformation("SpecAuditService initialized for model {ModelId} at {BaseUrl}",
-            _options.ModelId, _options.BaseUrl);
-    }
-```
+    _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
 
-### 3. Add client creation at the top of `AuditAsync`, before the `await foreach`
+    using var httpResponse = await client.SendAsync(
+        httpRequest,
+        HttpCompletionOption.ResponseHeadersRead,
+        ct);
 
-**Before (lines 177–232):**
-```csharp
-    public async IAsyncEnumerable<string> AuditAsync(
-        AuditRequest request,
-        [EnumeratorCancellation] CancellationToken ct)
+    httpResponse.EnsureSuccessStatusCode();
+
+    using var stream = await httpResponse.Content.ReadAsStreamAsync(ct);
+    using var reader = new StreamReader(stream);
+
+    var fullText = new StringBuilder();
+    string? line;
+
+    while ((line = await reader.ReadLineAsync(ct)) is not null)
     {
-        var messages = new List<ChatMessage>
+        if (string.IsNullOrEmpty(line))
+            continue;
+
+        if (line.StartsWith("data: ", StringComparison.Ordinal))
         {
-            new SystemChatMessage(SystemPrompt),
-            new UserChatMessage(BuildUserMessage(request))
-        };
+            var data = line[6..];
 
-        var options = new ChatCompletionOptions
-        {
-            MaxOutputTokenCount = _options.MaxTokens,
-            Temperature = 0.1f
-        };
+            if (data == "[DONE]")
+                break;
 
-        _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
-
-        var fullText = new StringBuilder();
-
-        await foreach (var update in _chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
-        {
-            foreach (var part in update.ContentUpdate)
-            {
-                if (!string.IsNullOrEmpty(part.Text))
-                {
-                    fullText.Append(part.Text);
-                    yield return part.Text;
-                }
-            }
-        }
-        // ... rest unchanged
-    }
-```
-
-**After:**
-```csharp
-    public async IAsyncEnumerable<string> AuditAsync(
-        AuditRequest request,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
-        var credential = new ApiKeyCredential(_options.ApiKey);
-        var clientOptions = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(_options.BaseUrl)
-            // NO NetworkTimeout — proven unnecessary
-        };
-        using var client = new OpenAIClient(credential, clientOptions);
-        var chatClient = client.GetChatClient(_options.ModelId);
-
-        var messages = new List<ChatMessage>
-        {
-            new SystemChatMessage(SystemPrompt),
-            new UserChatMessage(BuildUserMessage(request))
-        };
-
-        var options = new ChatCompletionOptions
-        {
-            MaxOutputTokenCount = _options.MaxTokens,
-            Temperature = 0.1f
-        };
-
-        _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
-
-        var fullText = new StringBuilder();
-
-        await foreach (var update in chatClient.CompleteChatStreamingAsync(messages, options, CancellationToken.None))
-        {
-            foreach (var part in update.ContentUpdate)
-            {
-                if (!string.IsNullOrEmpty(part.Text))
-                {
-                    fullText.Append(part.Text);
-                    yield return part.Text;
-                }
-            }
-        }
-
-        _logger.LogInformation("AI audit stream completed ({TokenCount} chars received)", fullText.Length);
-
-        var structuredJson = ExtractStructuredJson(fullText.ToString());
-        if (structuredJson is not null)
-        {
-            var findingsCount = 0;
+            // Parse JSON: { choices: [{ delta: { content: "..." } }] }
             try
             {
-                using var doc = JsonDocument.Parse(structuredJson);
-                if (doc.RootElement.TryGetProperty("summary", out var summary) &&
-                    summary.TryGetProperty("totalFindings", out var total))
+                using var doc = JsonDocument.Parse(data);
+                var choices = doc.RootElement.GetProperty("choices");
+                if (choices.GetArrayLength() > 0)
                 {
-                    findingsCount = total.GetInt32();
+                    var delta = choices[0].GetProperty("delta");
+                    if (delta.TryGetProperty("content", out var contentEl) &&
+                        contentEl.ValueKind == JsonValueKind.String)
+                    {
+                        var text = contentEl.GetString();
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            fullText.Append(text);
+                            yield return text;
+                        }
+                    }
                 }
             }
-            catch (JsonException) { }
-            _logger.LogInformation("Structured JSON extracted ({FindingsCount} findings)", findingsCount);
-            yield return $"[SPECAUDIT_STRUCTURED]{structuredJson}";
-        }
-        else
-        {
-            _logger.LogInformation("No structured JSON found in response");
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "SSE parse warning for chunk: {Data}", data);
+            }
         }
     }
+
+    _logger.LogInformation("AI audit stream completed ({TokenCount} chars received)", fullText.Length);
+
+    // Structured JSON extraction (unchanged)
+    var structuredJson = ExtractStructuredJson(fullText.ToString());
+    if (structuredJson is not null)
+    {
+        var findingsCount = 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(structuredJson);
+            if (doc.RootElement.TryGetProperty("summary", out var summary) &&
+                summary.TryGetProperty("totalFindings", out var total))
+            {
+                findingsCount = total.GetInt32();
+            }
+        }
+        catch (JsonException) { }
+        _logger.LogInformation("Structured JSON extracted ({FindingsCount} findings)", findingsCount);
+        yield return $"[SPECAUDIT_STRUCTURED]{structuredJson}";
+    }
+    else
+    {
+        _logger.LogInformation("No structured JSON found in response");
+    }
+}
 ```
 
-**Key differences in the `AuditAsync` method after the change:**
-- `var credential = new ApiKeyCredential(_options.ApiKey);` — moved inside
-- `var clientOptions = new OpenAIClientOptions { ... };` — moved inside
-- `using var client = new OpenAIClient(credential, clientOptions);` — new, disposed after each request
-- `var chatClient = client.GetChatClient(_options.ModelId);` — local variable instead of field
-- `chatClient.CompleteChatStreamingAsync(...)` — uses local variable instead of `_chatClient`
-- Everything after the `await foreach` (ExtractStructuredJson, logging) is **unchanged**
+**Additional changes in this file:**
+- Add `using System.Net.Http.Headers;` to the top
+- Remove `using OpenAI;`, `using OpenAI.Chat;`, `using System.ClientModel;`
+- Remove the `_logger.LogInformation("SpecAuditService initialized...")` message about model/URL (it can stay — harmless)
 
-### 4. What stays completely unchanged
+### 2. `backend/src/Endpoints/AuditEndpoints.cs`
 
-- All `using` directives at the top of the file (`OpenAI`, `OpenAI.Chat`, `System.ClientModel`, etc.)
-- The `SystemPrompt` constant
-- The `StructuredSentinel` constant
-- `MaxInputLength` property
-- `BuildUserMessage` method — stays `internal static`
-- `ExtractStructuredJson` method — stays `internal static`
-- All `_logger.LogInformation(...)` calls (signatures and messages unchanged)
-- `AuditRequest` parameter type and the `[EnumeratorCancellation] CancellationToken ct`
-- The `yield return` streaming pattern
+**No changes needed.** The existing endpoint code remains exactly as-is:
+- The `catch (OperationCanceledException)` blocks (client abort vs. server timeout) still work because `HttpClient.SendAsync` will throw `OperationCanceledException` when `ct` fires
+- The `try`/`catch`/`finally` structure for SSE output is unchanged
+- The diagnose endpoints are unchanged
 
----
+## Edge Cases the Implementation Must Handle
 
-## Edge cases the implementation must handle
+1. **`data: [DONE]`** — must break out of the read loop cleanly
+2. **Heartbeat/keepalive lines** — empty `data: ` lines or lines without `data: ` prefix are silently skipped
+3. **HTTP error from Groq** (429, 401, 500) — `httpResponse.EnsureSuccessStatusCode()` throws `HttpRequestException`, caught by the `catch (Exception ex)` block in `AuditEndpoints`
+4. **Cancellation during SSE read** — `await reader.ReadLineAsync(ct)` throws `OperationCanceledException`, caught by the existing catch blocks
+5. **Partial/broken JSON in chunk** — caught by `try/catch (JsonException)`, logged as warning, chunk skipped
+6. **Missing `choices` array or `delta.content`** — `TryGetProperty` / check array length to avoid `KeyNotFoundException`
+7. **Network error mid-stream** — `HttpClient.SendAsync` or `ReadLineAsync` throws, caught upstream
+8. **Empty response (no chunks before `[DONE]`)** — `fullText` will be empty, `ExtractStructuredJson` returns null, logging covers this
 
-| Edge case | Handling |
-|-----------|----------|
-| **Disposed client during streaming** | `using var client` is scoped to the entire `AuditAsync` method; the `await foreach` completes before `client.Dispose()` is called, so the client is alive for the entire stream |
-| **Cancellation during client creation** | Client creation happens before `CancellationToken.None` is used — no cancellation token during setup means no risk of partial initialization |
-| **Exception before `using var client` disposes** | `using` guarantees disposal even if an exception is thrown mid-stream (the `finally` block runs) |
-| **Rapid successive requests** | Each request creates + disposes its own connection pool; no pooled connections to poison across requests |
-| **HTTP/2 connection reset** | Fresh client = fresh connection; previous request's connection state cannot affect the new one |
-| **`ApiKeyCredential` with null/empty key** | Will throw at `CompleteChatStreamingAsync` call (not at construction) — same behavior as before, caught by the endpoint's catch block |
-| **`OpenAIClient` constructor with invalid endpoint** | Same as above — throws at first network call, not at construction |
-| **Client disposal after SSE stream ends** | `using var client` ensures the HttpClient is disposed after all `yield return` statements complete, including the final `yield return` for structured JSON |
+## Existing Patterns to Follow
 
----
+- **HttpClient usage per request**: same pattern as `DiagnoseRawMode` in `AuditEndpoints.cs` — create local `using var client = new HttpClient()`, set `Timeout`, use `AuthenticationHeaderValue`
+- **SSE line-by-line reading**: standard pattern from the `DiagnoseRawMode` approach, extended with `StreamReader.ReadLineAsync` in a `while` loop
+- **Cancellation propagation**: `ct` is passed to every async call (`SendAsync`, `ReadAsStreamAsync`, `ReadLineAsync`) — same as the current approach
 
-## Test implications
+## No Files to Create
 
-### Unaffected tests (pass without changes)
+No new files are needed. Everything goes into `SpecAuditService.cs`.
 
-| Test file | Reason |
-|-----------|--------|
-| `backend.Tests/ExtractStructuredJsonTests.cs` | Tests `SpecAuditService.ExtractStructuredJson` — a `static` method, no dependency on `ChatClient` |
-| `backend.Tests/UserMessageBuilderTests.cs` | Tests `SpecAuditService.BuildUserMessage` — a `static` method, no dependency on `ChatClient` |
-| `backend.Tests/DiagnoseEndpointTests.cs` | Tests `/api/diagnose` endpoint, which has its own client creation logic — not affected |
-| `backend.Tests/SentryStartupTests.cs` | Tests Sentry integration, not `SpecAuditService` |
-| `backend.Tests/AiOptionsValidationTests.cs` | Tests configuration validation, not `SpecAuditService` |
+## Verification
 
-### Potentially affected tests
-
-| Test file | Impact | Notes |
-|-----------|--------|-------|
-| `backend.Tests/EndpointValidationTests.cs` | **Should pass unchanged** | Uses `WebApplicationFactory<Program>` which resolves `SpecAuditService` via DI. The test's `BaseUrl` is `https://test.example.com/v1` — the HTTP call will fail (no real server), but the test only checks status codes (400, 413, 200). The 200 test (`PostAudit_TrimmedSpec_AcceptsSpec`) passes because the endpoint catches the exception and returns `Results.Empty` with status 200. This behavior is unchanged. |
-
-### No tests directly mock `ChatClient`
-A review of all test files confirms none of them inject a mock `ChatClient` into `SpecAuditService`. All tests use `WebApplicationFactory<Program>` integration testing with in-memory configuration. No test updates are needed.
-
----
-
-## Verification steps
-
-### 1. Build
-```powershell
-cd backend
-dotnet build
-# Expected: 0 errors, 0 warnings
-```
-
-### 2. Run all tests
-```powershell
-cd backend.Tests
-dotnet test
-# Expected: all tests pass
-```
-
-### 3. Manual integration test (sequential audits)
-```powershell
-# Start fresh stack
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-
-# Run 3 audits in a row — every one must complete in <15 seconds
-curl -X POST http://localhost:5000/api/audit `
-  -H "Content-Type: application/json" `
-  -d '{\"spec\": \"openapi: 3.0.3\ninfo:\n  title: Test\n  version: \"1.0.0\"\npaths: {}\"}'
-
-# Repeat twice more — all must succeed
-```
-
-### 4. Manual integration test (abort then retry)
-```powershell
-# Start an audit and press Escape/Ctrl+C during streaming
-# Then immediately run another audit — it MUST complete successfully
-```
-
-### 5. Check diagnose endpoint still works
-```powershell
-Invoke-RestMethod "http://localhost:5000/api/diagnose?mode=sdk"
-Invoke-RestMethod "http://localhost:5000/api/diagnose?mode=raw"
-# Both should return 200
-```
-
----
-
-## Existing patterns to follow
-
-| Pattern | Reference |
-|---------|-----------|
-| `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `ChatClient` initialization | `AuditEndpoints.cs` `DiagnoseSdkMode` method (lines 167–174) — already does the same per-request pattern |
-| `using var client = new OpenAIClient(...)` | Standard .NET `IDisposable` pattern; ensures the `HttpClient`/`HttpMessageHandler` is disposed |
-| `CancellationToken.None` in `CompleteChatStreamingAsync` | Kept as-is to avoid cancellation token issues with SSE streaming |
-| `ChatCompletionOptions` with `MaxOutputTokenCount` and `Temperature` | `SpecAuditService.cs` lines 187–191 (unchanged) |
-| IAsyncEnumerable streaming with `yield return` | `SpecAuditService.cs` entire `AuditAsync` method (unchanged) |
-
----
-
-## Open Questions
-
-None. All details are specified above.
+1. `dotnet build` — 0 errors
+2. `dotnet test` — all existing tests pass (they test `BuildUserMessage`, `ExtractStructuredJson`, diagnose endpoints — none test the SDK streaming path directly, so they should be unaffected)
+3. Manual test: POST a 355-char spec → completes in <10s with visible chunks
+4. Manual test: POST a 6995-char spec → completes in <45s with visible chunks
+5. Manual test: Press Escape during streaming → next audit still works
+6. Manual test: `GET /api/diagnose?mode=sdk` still works (uses non-streaming SDK path, unchanged)
+7. Manual test: `GET /api/diagnose?mode=raw` still works (raw HttpClient non-streaming, unchanged)
