@@ -70,6 +70,8 @@ if (!string.IsNullOrWhiteSpace(builder.Configuration["Sentry:Dsn"]))
 }
 
 builder.Services.Configure<AiOptions>(builder.Configuration.GetSection("Ai"));
+builder.Services.Configure<AiProvidersConfig>(
+    builder.Configuration.GetSection("AiProviders"));
 builder.Services.AddSingleton<SpecAuditService>();
 builder.Services.AddCors(options =>
 {
@@ -108,8 +110,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapFallbackToFile("index.html");
 
 var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
-if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId) || string.IsNullOrWhiteSpace(aiOptions.ApiKey))
-    throw new InvalidOperationException("Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets.");
+if (string.IsNullOrWhiteSpace(aiOptions.ApiKey))
+    throw new InvalidOperationException("Ai:ApiKey must be configured in user-secrets or env vars.");
 
 try
 {

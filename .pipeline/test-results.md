@@ -3,47 +3,38 @@
 ## Summary
 PASS
 
-## Frontend Build
-- Status: ✅ Build succeeded
-- Errors: 0 (550 modules transformed, 0 errors)
-
-## Frontend Tests
-- Count: 298 tests across 21 files
-- Status: ✅ Pass
+## Backend Build
+- Status: ✅
 
 ## Backend Tests
-- Count: 29 tests across 6 files
-- Status: ✅ Pass
+- Count: 30 tests across 7 files (EndpointValidationTests, AiOptionsValidationTests, DiagnoseEndpointTests, etc.)
+- Status: ✅
+
+## Frontend Build
+- Status: ✅
+
+## Frontend Tests
+- Count: 306 tests across 22 test files
+- Status: ✅
 
 ## TypeScript
-- Status: ✅ Zero errors (tsc --noEmit passed)
-
-## Toast/Snackbar System Specific Results
-- `useToast` hook tests (11 tests): ✅ All passing
-  - starts with empty toast queue
-  - adds a toast with default type (info) and duration (4000ms)
-  - adds a toast with custom type and duration
-  - dismisses a toast by id
-  - auto-dismisses a toast after duration expires
-  - does NOT auto-dismiss a persistent toast (duration: 0)
-  - debounces duplicate messages within 2s window
-  - allows same message after debounce window expires
-  - enforces max 3 visible toasts — oldest dismissed first
-  - allows maximum 3 toasts when they have unique messages
-  - clears all timeouts on unmount
-
-- `ToastContainer` component tests (7 tests): ✅ All passing
-  - renders nothing when toasts queue is empty
-  - renders a single toast with message and type class
-  - renders multiple toasts stacked
-  - renders correct border color per type
-  - dismisses toast when close button is clicked
-  - has role="alert" and aria-live="polite" accessibility attributes
-  - renders persistent toast without auto-dismiss indicator
+- Status: ✅ Zero errors
 
 ## Total
-- **Total Tests**: 327 (298 frontend + 29 backend)
+- **Total Tests**: 336
 - **Status**: ✅ All passing
 
+## New Tests for Configurable Provider/Model Feature
+- `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` — 8 tests covering:
+  - Renders provider dropdown with given providers
+  - Renders model dropdown with models of selected provider
+  - Calls onProviderChange when provider is changed
+  - Calls onModelChange when model is changed
+  - Updates models when provider changes
+  - Renders nothing when providers array is empty
+  - Shows "No models available" when model list is empty
+  - Displays selected provider and model as current values
+- `backend.Tests/EndpointValidationTests.cs` — `GetProviders_ReturnsConfiguredProviders` test validates `/api/providers` response shape
+
 ## Timestamp
-2026-06-04 23:26 UTC
+2026-06-04 20:50:51 UTC

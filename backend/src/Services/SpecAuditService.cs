@@ -149,11 +149,16 @@ public sealed class SpecAuditService
     private const string StructuredSentinel = "[SPECAUDIT_STRUCTURED]";
 
     private readonly AiOptions _options;
+    private readonly AiProvidersConfig _providerConfig;
     private readonly ILogger<SpecAuditService> _logger;
 
-    public SpecAuditService(IOptions<AiOptions> options, ILogger<SpecAuditService> logger)
+    public SpecAuditService(
+        IOptions<AiOptions> options,
+        IOptions<AiProvidersConfig> providerConfig,
+        ILogger<SpecAuditService> logger)
     {
         _options = options.Value;
+        _providerConfig = providerConfig.Value;
         _logger = logger;
 
         // OpenAI client now created per-request in AuditAsync
@@ -171,12 +176,34 @@ public sealed class SpecAuditService
         using var client = new HttpClient();
         client.Timeout = TimeSpan.FromSeconds(45);
 
+        // Resolve provider and model
+        var providerId = request.Provider;
+        string? resolvedModel = request.Model;
+        string baseUrl;
+
+        if (!string.IsNullOrEmpty(providerId) &&
+            _providerConfig.Providers.TryGetValue(providerId, out var providerCfg))
+        {
+            // Use the provider config
+            baseUrl = !string.IsNullOrEmpty(providerCfg.BaseUrl)
+                ? providerCfg.BaseUrl.TrimEnd('/')
+                : $"{_options.BaseUrl.TrimEnd('/')}/chat/completions";
+            resolvedModel ??= providerCfg.DefaultModel;
+        }
+        else
+        {
+            // Fall back to AiOptions defaults
+            baseUrl = $"{_options.BaseUrl.TrimEnd('/')}/chat/completions";
+        }
+
+        resolvedModel ??= _options.ModelId;
+
         var systemMessage = new { role = "system", content = SystemPrompt };
         var userMessage = new { role = "user", content = BuildUserMessage(request) };
 
         var payload = new
         {
-            model = _options.ModelId,
+            model = resolvedModel,
             messages = new[] { systemMessage, userMessage },
             max_tokens = _options.MaxTokens,
             temperature = 0.1f,
@@ -185,15 +212,14 @@ public sealed class SpecAuditService
 
         var jsonPayload = JsonSerializer.Serialize(payload);
 
-        using var httpRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{_options.BaseUrl.TrimEnd('/')}/chat/completions")
+        _logger.LogInformation("Starting AI audit stream for provider={Provider} model={Model} ({Length} chars)",
+            providerId ?? "default", resolvedModel, request.Spec.Length);
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, baseUrl)
         {
             Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
         };
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
-
-        _logger.LogInformation("Starting AI audit stream for spec ({Length} chars)", request.Spec.Length);
 
         using var httpResponse = await client.SendAsync(
             httpRequest,

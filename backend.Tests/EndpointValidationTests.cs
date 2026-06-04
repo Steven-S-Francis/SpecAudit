@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -23,7 +24,11 @@ public class EndpointValidationTests : IClassFixture<WebApplicationFactory<Progr
                     ["Ai:BaseUrl"]        = "https://test.example.com/v1",
                     ["Ai:ModelId"]        = "test-model",
                     ["Ai:ApiKey"]         = "test-key",
-                    ["Ai:MaxInputLength"] = "100000"
+                    ["Ai:MaxInputLength"] = "100000",
+                    ["AiProviders:Providers:groq:baseUrl"] = "https://api.groq.com/openai/v1/chat/completions",
+                    ["AiProviders:Providers:groq:defaultModel"] = "llama-3.3-70b-versatile",
+                    ["AiProviders:Providers:groq:models:0"] = "llama-3.3-70b-versatile",
+                    ["AiProviders:Providers:groq:models:1"] = "mixtral-8x7b-32768"
                 })
             )
         ).CreateClient();
@@ -87,5 +92,22 @@ public class EndpointValidationTests : IClassFixture<WebApplicationFactory<Progr
         // apiKey must NOT be present in the response
         doc.RootElement.TryGetProperty("apiKey", out _).Should().BeFalse();
         doc.RootElement.TryGetProperty("ApiKey", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetProviders_ReturnsConfiguredProviders()
+    {
+        var response = await _client.GetAsync("/api/providers");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var arr = doc.RootElement.EnumerateArray().ToList();
+
+        arr.Should().NotBeEmpty();
+        arr.First().GetProperty("id").GetString().Should().NotBeNullOrEmpty();
+        arr.First().GetProperty("name").GetString().Should().NotBeNullOrEmpty();
+        arr.First().GetProperty("models").EnumerateArray().Should().NotBeEmpty();
+        arr.First().GetProperty("defaultModel").GetString().Should().NotBeNullOrEmpty();
     }
 }

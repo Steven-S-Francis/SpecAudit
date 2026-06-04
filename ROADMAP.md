@@ -32,7 +32,8 @@
 | Spec file upload (drag-and-drop + file picker) | `a059f4d` |
 | Session history (localStorage + sidebar) | `7d90689` |
 | Audit history sidebar | `7d90689` |
-| Toast/snackbar notification system | `PLACEHOLDER` |
+| Toast/snackbar notification system | `393aa77` |
+| Configurable provider/model in UI | `PLACEHOLDER` |
 
 ---
 
@@ -41,12 +42,6 @@
 ---
 
 ## Medium (more involved)
-
-### Configurable provider/model in UI
-Dropdown in the header to switch between Groq, Together AI, etc. without editing `appsettings.json`.
-- **Why:** Users want to compare different models/providers without server-side config changes.
-- **Affects:** `frontend/src/App.tsx` (dropdown + provider state), `frontend/src/api/auditClient.ts` (pass selected provider in request body), `backend/src/Endpoints/AuditEndpoints.cs` (accept provider param, create dynamic client).
-- **Risk:** Backend currently uses a single singleton `OpenAIClient` â€” switching providers at runtime requires factory pattern or disposing/recreating the client.
 
 ### Expandable findings
 Collapse/expand findings grouped by severity for easier navigation in long reports.

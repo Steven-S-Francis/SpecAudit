@@ -41,7 +41,7 @@ public static class AuditEndpoints
             httpContext.Response.Headers.CacheControl = "no-cache";
             httpContext.Response.Headers.Connection = "keep-alive";
 
-            var sanitizedRequest = new AuditRequest(spec, request.SpecFormat);
+            var sanitizedRequest = new AuditRequest(spec, request.SpecFormat, request.Provider, request.Model);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(45));
@@ -93,6 +93,18 @@ public static class AuditEndpoints
 
         app.MapGet("/api/config", (IOptions<AiOptions> options) =>
             Results.Ok(new { providerName = options.Value.ProviderName }));
+
+        app.MapGet("/api/providers", (IOptions<AiProvidersConfig> providerConfig) =>
+        {
+            var providers = providerConfig.Value.Providers.Select(kvp => new
+            {
+                id = kvp.Key,
+                name = FormatProviderName(kvp.Key),
+                models = kvp.Value.Models,
+                defaultModel = kvp.Value.DefaultModel
+            });
+            return Results.Ok(providers);
+        });
 
         app.MapGet("/api/diagnose", async (
             IOptions<AiOptions> options,
@@ -161,6 +173,15 @@ public static class AuditEndpoints
             return Results.Ok(new { groqStatus = 0, elapsedMs = sw.ElapsedMilliseconds, ok = false, error = ex.Message });
         }
     }
+
+    private static string FormatProviderName(string id) =>
+        id switch
+        {
+            "groq" => "Groq",
+            "together" => "Together AI",
+            "openai" => "OpenAI",
+            _ => char.ToUpper(id[0]) + id[1..]
+        };
 
     private static async Task<IResult> DiagnoseSdkMode(ILogger logger, AiOptions aiOptions)
     {

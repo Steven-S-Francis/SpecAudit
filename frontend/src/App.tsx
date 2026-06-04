@@ -12,6 +12,8 @@ import { Card } from './components/ui/Card';
 import { ThemeToggle } from './components/ui/ThemeToggle';
 import { ToastContainer } from './components/ui/ToastContainer';
 import { ToastProvider, useToastContext } from './hooks/useToast';
+import { ProviderSelector } from './components/ui/ProviderSelector';
+import type { ProviderInfo } from './components/ui/ProviderSelector';
 import { exportPdf } from './utils/exportPdf';
 import type { AuditResult } from './types/audit';
 
@@ -19,7 +21,13 @@ function AppContent() {
   const { state, audit, abort, restore } = useAudit();
   const { theme, toggle } = useTheme();
   const history = useHistory();
-  const [providerName, setProviderName] = useState<string | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>(() =>
+    localStorage.getItem('specaudit-provider') ?? 'groq'
+  );
+  const [selectedModel, setSelectedModel] = useState<string>(() =>
+    localStorage.getItem('specaudit-model') ?? ''
+  );
   const [currentAuditId, setCurrentAuditId] = useState<string | null>(null);
   const [spec, setSpec] = useState('');
   const [specFormat, setSpecFormat] = useState<'yaml' | 'json' | undefined>();
@@ -101,11 +109,32 @@ function AppContent() {
   }, [strippedResult, state.findings, state.summary, state.specFormat, addToast]);
 
   useEffect(() => {
-    fetch('/api/config')
+    fetch('/api/providers')
       .then(r => r.json())
-      .then(data => setProviderName(data.providerName))
-      .catch(() => setProviderName(null));
-  }, []);
+      .then(data => {
+        setProviders(data);
+        // If selectedProvider from localStorage is not in the list, reset
+        if (data.length > 0 && !data.some((p: ProviderInfo) => p.id === selectedProvider)) {
+          setSelectedProvider(data[0].id);
+          setSelectedModel(data[0].defaultModel);
+        }
+        // If selectedModel is empty, set to default of selected provider
+        const prov = data.find((p: ProviderInfo) => p.id === selectedProvider);
+        if (prov && !selectedModel) {
+          setSelectedModel(prov.defaultModel);
+        }
+      })
+      .catch(() => setProviders([]));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist selected provider and model to localStorage
+  useEffect(() => {
+    localStorage.setItem('specaudit-provider', selectedProvider);
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    localStorage.setItem('specaudit-model', selectedModel);
+  }, [selectedModel]);
 
   const handleLoadRecord = useCallback(
     (record: HistoryRecord) => {
@@ -129,9 +158,9 @@ function AppContent() {
         specName: null,
       });
       setCurrentAuditId(record.id);
-      audit({ spec: submitSpec, specFormat: format });
+      audit({ spec: submitSpec, specFormat: format, provider: selectedProvider, model: selectedModel });
     },
-    [history, audit]
+    [history, audit, selectedProvider, selectedModel]
   );
 
   // Save to history when audit completes or errors
@@ -198,9 +227,18 @@ function AppContent() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {providerName && (
+          {providers.length > 0 && (
+            <ProviderSelector
+              providers={providers}
+              selectedProvider={selectedProvider}
+              selectedModel={selectedModel}
+              onProviderChange={setSelectedProvider}
+              onModelChange={setSelectedModel}
+            />
+          )}
+          {providers.length > 0 && (
             <span className="text-xs text-slate-500 bg-slate-900 border border-slate-800 rounded px-2 py-1 light:text-slate-600 light:bg-slate-100 light:border-slate-300">
-              {providerName}
+              {providers.find(p => p.id === selectedProvider)?.name ?? selectedProvider}
             </span>
           )}
           <ThemeToggle theme={theme} onToggle={toggle} />

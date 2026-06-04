@@ -1,70 +1,59 @@
-# Changes Summary
+# Changes Summary — Configurable Provider/Model in UI
 
 ## Overview
-Implemented a Toast/snackbar notification system with context provider, rendering component, and full integration into App.tsx.
+Added provider and model dropdowns in the page header. Backend now accepts `provider`/`model` in audit requests and exposes a `GET /api/providers` endpoint. Frontend fetches providers, persists selection in localStorage, passes selected provider/model with each audit request.
 
-## Files Created
+---
 
-### `frontend/src/hooks/useToast.tsx` — Hook + Context Provider
-- Exports types: `ToastType`, `Toast`, `AddToast`
-- Exports `useToast()` — internal hook managing the toast queue with `useState` + `useRef`
-- Exports `ToastProvider` — context provider wrapping children with `ToastContext.Provider`
-- Exports `useToastContext()` — public consumer that throws if used outside `<ToastProvider>`
-- Behaviour:
-  - `addToast(message, type?, duration?)`: generates ID via `crypto.randomUUID()` (fallback: `Date.now().toString(36) + Math.random().toString(36).slice(2)`), debounces duplicates within 2000ms, enforces max 3 visible (oldest dismissed), auto-dismisses via `setTimeout` when `duration > 0`
-  - `dismissToast(id)`: removes toast, clears its timeout
-  - Cleanup all timeouts on unmount via `useEffect` return
-- Re-export shim at `frontend/src/hooks/useToast.ts` (`.ts` → `.tsx` bridge for import compatibility)
+## Files Changed
 
-### `frontend/src/components/ui/ToastContainer.tsx` — Toast Rendering Component
-- Reads `toasts` and `dismissToast` from `useToastContext()`
-- Returns `null` when no toasts
-- Container: `fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none`, `role="alert"`, `aria-live="polite"`
-- Each toast `<div>`:
-  - Colored left border: `border-l-emerald-500` (success), `border-l-red-500` (error), `border-l-amber-500` (warning), `border-l-blue-500` (info)
-  - Dark: `bg-slate-800 text-slate-200 border border-slate-700`
-  - Light: `light:bg-white light:text-slate-800 light:border-slate-300`
-  - `rounded-lg shadow-xl p-3 pr-10 pointer-events-auto relative`
-  - Close button: absolute `top-2 right-2`, `aria-label="Dismiss"`, content `×`
-- Slide-in animation via `<style>` block with `@keyframes toast-slide-in` (200ms ease-out)
+### Backend
 
-### `frontend/src/hooks/__tests__/useToast.test.tsx` — Hook Tests (11 tests)
-- starts with empty toast queue
-- adds a toast with default type (info) and duration (4000ms)
-- adds a toast with custom type and duration
-- dismisses a toast by id
-- auto-dismisses a toast after duration expires
-- does NOT auto-dismiss a persistent toast (duration: 0)
-- debounces duplicate messages within 2s window
-- allows same message after debounce window expires
-- enforces max 3 visible toasts — oldest dismissed first
-- allows maximum 3 toasts when they have unique messages
-- clears all timeouts on unmount
+| File | Action | Description |
+|------|--------|-------------|
+| `backend/src/Configuration/AiProviderOptions.cs` | **CREATE** | Defines `AiProviderOptions` (BaseUrl, DefaultModel, Models) and `AiProvidersConfig` (wraps `Dictionary<string, AiProviderOptions>`). Follows existing `init`-only property pattern. |
+| `backend/appsettings.json` | **MODIFY** | Added `"AiProviders"` section with `"Providers"` containing groq, together, and openai provider configs (baseUrl, defaultModel, models list). |
+| `backend/src/Models/Requests/AuditRequest.cs` | **MODIFY** | Added optional `Provider` and `Model` fields to the record. |
+| `backend/src/Endpoints/AuditEndpoints.cs` | **MODIFY** | Added `GET /api/providers` endpoint that returns configured providers (id, name, models, defaultModel — without baseUrl). Passes `request.Provider` and `request.Model` through to sanitized request. Added `FormatProviderName` helper. |
+| `backend/src/Services/SpecAuditService.cs` | **MODIFY** | Injects `IOptions<AiProvidersConfig>`. `AuditAsync` now resolves provider config dynamically — looks up provider ID in `_providerConfig.Providers`, uses its `BaseUrl` (full chat completions URL) and `DefaultModel`/requested model. Falls back to `AiOptions` legacy config. |
+| `backend/Program.cs` | **MODIFY** | Registered `AiProvidersConfig` with `.Configure<AiProvidersConfig>(builder.Configuration.GetSection("AiProviders"))`. Relaxed startup validation to only require `Ai:ApiKey` (no longer requires BaseUrl and ModelId). |
+| `backend.Tests/EndpointValidationTests.cs` | **MODIFY** | Added `AiProviders` in-memory config entries to test factory constructor. Added `GetProviders_ReturnsConfiguredProviders` test that validates `/api/providers` response shape. |
+| `backend.Tests/AiOptionsValidationTests.cs` | **MODIFY** | Updated `MissingBaseUrl` and `MissingModelId` tests to verify they DO NOT throw when AiProviders are configured (since validation is relaxed). |
 
-### `frontend/src/components/ui/__tests__/ToastContainer.test.tsx` — Component Tests (7 tests)
-- renders nothing when toasts queue is empty
-- renders a single toast with message and type class
-- renders multiple toasts stacked
-- renders correct border color per type
-- dismisses toast when close button is clicked
-- has `role="alert"` and `aria-live="polite"` accessibility attributes
-- renders persistent toast without auto-dismiss indicator
+### Frontend
 
-## Files Modified
+| File | Action | Description |
+|------|--------|-------------|
+| `frontend/src/types/audit.ts` | **MODIFY** | Added optional `provider` and `model` fields to `AuditRequest` interface. |
+| `frontend/src/components/ui/ProviderSelector.tsx` | **CREATE** | New component with two `<select>` dropdowns (provider + model). Exports `ProviderInfo` interface. Handles edge cases: empty providers (renders nothing), unknown provider (resets to first), empty model list (shows disabled "No models available"), invalid model (falls back to defaultModel). Matches existing header badge styling. |
+| `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` | **CREATE** | 8 tests covering render, provider/model change callbacks, model updates on provider change, empty providers, empty model list, and display of current selections. |
+| `frontend/src/App.tsx` | **MODIFY** | Replaced `providerName` state with `providers`, `selectedProvider`, `selectedModel` states. Fetches `/api/providers` on mount (instead of `/api/config`). Persists selection to localStorage (`specaudit-provider`, `specaudit-model`). Passes `provider` and `model` in audit requests. Replaced static provider badge with `ProviderSelector` component + dynamic badge showing selected provider's name. |
 
-### `frontend/src/App.tsx`
-- Added imports: `ToastContainer`, `ToastProvider`, `useToastContext`
-- Refactored `App` into `App` (provider wrapper) + `AppContent` (consumer) to avoid rendering `<ToastProvider>` inside the same component that consumes its context
-- Added `const { addToast } = useToastContext()` inside `AppContent`
-- Wired `addToast` into:
-  - `handleCopy`: `addToast('Copied to clipboard', 'success')` after successful copy
-  - `handleDownload`: `addToast('Report downloaded', 'success')` after download
-  - `handleExportPdf`: `addToast('PDF exported', 'success')` after success, `addToast('PDF export failed', 'error')` in catch
-  - `handleExportJson`: `addToast('JSON exported', 'success')` after success, `addToast('JSON export failed', 'error')` in catch
-- Added `useEffect` for audit errors: shows persistent error toast when `state.status === 'error'`
-- Wrapped root content in `<ToastProvider>`, added `<ToastContainer />` near end of root `<div>`
+### Files NOT changed (no changes needed)
 
-## Verification
-- `npx tsc --noEmit` — 0 errors
-- `npm run build` — builds successfully (550 modules, 0 errors)
-- `npx vitest run` — 298 tests pass across 21 test files (including 18 new tests)
+| File | Reason |
+|------|--------|
+| `frontend/src/api/auditClient.ts` | Already serializes `AuditRequest` as JSON body — `provider`/`model` fields pass through automatically. |
+| `frontend/src/hooks/useAudit.ts` | Already accepts `AuditRequest` payload — no signature change needed. |
+| `frontend/src/components/features/__tests__/App.test.tsx` | Existing hanging fetch mock prevents provider state updates; tests pass unchanged (Option B from spec). |
+| `backend/src/Configuration/AiOptions.cs` | No changes needed — legacy config kept as fallback. |
+
+---
+
+## Testing Focus
+
+1. **Backend `/api/providers` endpoint**: Returns configured providers with id, name, models, defaultModel (no baseUrl exposed).
+2. **Provider resolution in service**: Unknown provider ID falls back to default (`groq`). Null model falls back to provider's defaultModel, then `_options.ModelId`.
+3. **URL construction**: Provider config's `baseUrl` used directly (already full chat completions URL). Legacy `_options.BaseUrl` has `/chat/completions` appended.
+4. **Frontend ProviderSelector**: Edge cases for empty providers, unknown provider, empty model list, invalid model.
+5. **localStorage persistence**: Selection survives page reload.
+6. **Audit request payload**: `provider` and `model` fields are sent in POST body when present.
+
+---
+
+## Verification Results
+
+- `cd backend && dotnet build` — ✅ 0 errors
+- `cd backend && dotnet test` — ✅ 30 passed (29 existing + 1 new)
+- `cd frontend && npm run build` — ✅ 0 errors
+- `cd frontend && npm test` — ✅ 306 passed (all 298 existing + 8 new ProviderSelector tests)

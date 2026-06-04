@@ -1,6 +1,8 @@
 export interface AuditRequest {
   spec: string;
   specFormat?: 'yaml' | 'json';
+  provider?: string;
+  model?: string;
 }
 
 export type AuditStatus = 'idle' | 'loading' | 'streaming' | 'complete' | 'error';

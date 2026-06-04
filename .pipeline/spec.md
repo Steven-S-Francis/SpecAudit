@@ -1,9 +1,12 @@
-# Toast / Snackbar Notification System
+# Configurable AI Provider/Model Dropdown in UI
 
 ## OPEN QUESTIONS
 
-1. **Context vs. Props**: The existing codebase does not use React context — everything is passed as props. For toast, should we introduce a `ToastProvider` + `useToastContext` (extensible, avoids prop-drilling if other components need toasts later), or keep `useToast` as a local hook in `App.tsx` and wire `addToast` into handlers directly? **Recommendation: Use a lightweight `ToastProvider` context** so that any component can call `addToast` without prop-drilling. This is the standard pattern for toast systems in React.
-2. **Debounce threshold**: Exact debounce window for duplicate messages — **propose 2000ms** (matching the existing `setCopied` timeout pattern in `App.tsx`). Confirm if acceptable.
+1. **Provider name badge source**: Currently `GET /api/config` returns `{ providerName }` from `AiOptions.ProviderName`. After this change, should the badge reflect the *currently selected* provider (from the dropdown) rather than the server-configured default? **Recommendation**: Yes — once user selects a provider, the badge should show the selected provider's `name` field. The initial value (before user selection) should come from the first provider returned by `GET /api/providers` (or from localStorage if previously persisted).
+
+2. **`GET /api/config` repurposing**: With the new `GET /api/providers` endpoint, the old `/api/config` endpoint can either be removed (breaking change risk) or kept as a fallback. **Recommendation**: Keep `/api/config` for backward compatibility but the UI should switch to `/api/providers` for its primary data.
+
+3. **Existing test count**: The feature request says "all 29 tests pass" — verify exact count after changes. Current backend tests are across 6 files; frontend tests are in `__tests__` directories. Count may vary.
 
 ---
 
@@ -11,248 +14,546 @@
 
 | Action | Path |
 |--------|------|
-| **CREATE** | `frontend/src/hooks/useToast.ts` — hook + context provider |
-| **CREATE** | `frontend/src/components/ui/ToastContainer.tsx` — rendering component |
-| **MODIFY** | `frontend/src/App.tsx` — add `<ToastProvider>`, `<ToastContainer>`, wire into handlers |
-| **CREATE** | `frontend/src/hooks/__tests__/useToast.test.tsx` — hook tests |
-| **CREATE** | `frontend/src/components/ui/__tests__/ToastContainer.test.tsx` — component tests |
+| **MODIFY** | `backend/appsettings.json` — add `AiProviders` section |
+| **CREATE** | `backend/src/Configuration/AiProviderOptions.cs` — provider config model |
+| **MODIFY** | `backend/src/Configuration/AiOptions.cs` — keep existing, no changes needed |
+| **MODIFY** | `backend/src/Models/Requests/AuditRequest.cs` — add `provider` and `model` fields |
+| **MODIFY** | `backend/src/Services/SpecAuditService.cs` — accept provider/model, use dynamic config |
+| **MODIFY** | `backend/src/Endpoints/AuditEndpoints.cs` — add `/api/providers` endpoint, pass provider/model to service |
+| **MODIFY** | `backend/Program.cs` — register `AiProviders` config section |
+| **MODIFY** | `frontend/src/types/audit.ts` — add `provider` and `model` to `AuditRequest` |
+| **MODIFY** | `frontend/src/api/auditClient.ts` — no payload change needed (already uses `AuditRequest`) |
+| **MODIFY** | `frontend/src/hooks/useAudit.ts` — accept provider/model and pass through |
+| **MODIFY** | `frontend/src/App.tsx` — add provider/model state, dropdowns, fetch `/api/providers`, persist to localStorage |
+| **CREATE** | `frontend/src/components/ui/ProviderSelector.tsx` — provider + model dropdown component |
+| **CREATE** | `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` |
+| **MODIFY** | `frontend/src/components/features/__tests__/App.test.tsx` — update mocks for new fetch call |
+| **MODIFY** | `backend.Tests/EndpointValidationTests.cs` — add tests for `/api/providers` endpoint |
 
 ---
 
-## 1. `frontend/src/hooks/useToast.ts` — Hook + Provider
+## 1. `backend/appsettings.json` — Add `AiProviders` Section
+
+Replace the existing `"Ai"` section with the new structure. Keep the existing `"Ai"` section for backward-compatible defaults but add `"AiProviders"`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "Ai": {
+    "ProviderName": "Groq",
+    "BaseUrl": "https://api.groq.com/openai/v1",
+    "ModelId": "llama-3.3-70b-versatile",
+    "MaxTokens": 4096,
+    "MaxInputLength": 100000
+  },
+  "AiProviders": {
+    "groq": {
+      "baseUrl": "https://api.groq.com/openai/v1/chat/completions",
+      "defaultModel": "llama-3.3-70b-versatile",
+      "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it", "llama-3.3-70b-specdec", "llama-guard-3-8b"]
+    },
+    "together": {
+      "baseUrl": "https://api.together.xyz/v1/chat/completions",
+      "defaultModel": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+      "models": ["mistralai/Mixtral-8x7B-Instruct-v0.1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
+    },
+    "openai": {
+      "baseUrl": "https://api.openai.com/v1/chat/completions",
+      "defaultModel": "gpt-4o-mini",
+      "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]
+    }
+  }
+}
+```
+
+The provider ID is the key (e.g. `"groq"`). The `baseUrl` is the full chat completions URL (not the base API URL). The `models` array lists available models for the dropdown.
+
+---
+
+## 2. `backend/src/Configuration/AiProviderOptions.cs` — New File
+
+```csharp
+namespace SpecAudit.Configuration;
+
+public sealed class AiProviderOptions
+{
+    public string BaseUrl { get; init; } = string.Empty;
+    public string DefaultModel { get; init; } = string.Empty;
+    public List<string> Models { get; init; } = new();
+}
+
+public sealed class AiProvidersConfig
+{
+    public Dictionary<string, AiProviderOptions> Providers { get; init; } = new();
+}
+```
+
+Follow the same `init`-only property pattern as `AiOptions.cs`.
+
+**Note**: The `appsettings.json` section is named `"AiProviders"` with each provider ID as a key. The configuration binding matches `Dictionary<string, AiProviderOptions>` directly because ASP.NET Core's `IConfiguration` can bind nested keys to a dictionary.
+
+---
+
+## 3. `backend/src/Models/Requests/AuditRequest.cs` — Add `provider` and `model`
+
+```csharp
+namespace SpecAudit.Models.Requests;
+
+public sealed record AuditRequest(
+    string Spec,
+    string? SpecFormat,
+    string? Provider,     // new — e.g. "groq", "together", "openai"
+    string? Model         // new — e.g. "llama-3.3-70b-versatile"
+);
+```
+
+- Both are optional (`string?`).
+- Defaults are handled server-side (provider falls back to config default, model falls back to provider's defaultModel).
+- **Existing callers** that construct `AuditRequest` without these fields (e.g. in `AuditEndpoints.cs` line 44 where `new AuditRequest(spec, request.SpecFormat)` is used) must be updated to pass through `request.Provider` and `request.Model`.
+
+---
+
+## 4. `backend/src/Services/SpecAuditService.cs` — Accept Provider/Model
+
+### Constructor Changes
+
+Inject `IOptions<AiProvidersConfig>` in addition to the existing `IOptions<AiOptions>`:
+
+```csharp
+private readonly AiOptions _options;
+private readonly AiProvidersConfig _providerConfig;
+private readonly ILogger<SpecAuditService> _logger;
+
+public SpecAuditService(
+    IOptions<AiOptions> options,
+    IOptions<AiProvidersConfig> providerConfig,
+    ILogger<SpecAuditService> logger)
+{
+    _options = options.Value;
+    _providerConfig = providerConfig.Value;
+    _logger = logger;
+    // ...
+}
+```
+
+### `AuditAsync` Signature Change
+
+```csharp
+public async IAsyncEnumerable<string> AuditAsync(
+    AuditRequest request,
+    [EnumeratorCancellation] CancellationToken ct)
+```
+
+No signature change — the provider/model are now part of `AuditRequest`.
+
+### Logic Changes Inside `AuditAsync`
+
+Replace the hardcoded `_options.ModelId` and `_options.BaseUrl` usage with dynamic resolution:
+
+```csharp
+// Resolve provider and model
+var providerId = request.Provider ?? "groq";
+var model = request.Model ?? _options.ModelId;
+
+// Look up provider config
+if (!_providerConfig.Providers.TryGetValue(providerId, out var providerCfg))
+{
+    // Fall back to the configured default if unknown provider ID
+    providerCfg = _providerConfig.Providers.GetValueOrDefault("groq");
+}
+
+var baseUrl = providerCfg?.BaseUrl ?? _options.BaseUrl.TrimEnd('/');
+var resolvedModel = model ?? providerCfg?.DefaultModel ?? _options.ModelId;
+
+// Use baseUrl and resolvedModel in the HTTP request construction
+// e.g.:
+var payload = new
+{
+    model = resolvedModel,
+    messages = new[] { systemMessage, userMessage },
+    max_tokens = _options.MaxTokens,
+    temperature = 0.1f,
+    stream = true
+};
+
+// URL construction:
+$"{baseUrl.TrimEnd('/')}"  // baseUrl is already the full chat completions URL
+```
+
+**Key change**: The `baseUrl` in `AiProviderOptions` is the **full chat completions URL** (e.g. `https://api.groq.com/openai/v1/chat/completions`), so the existing code's `$"{_options.BaseUrl.TrimEnd('/')}/chat/completions"` pattern must be adjusted. When using a provider config's `baseUrl`, DO NOT append `/chat/completions` again. When falling back to `_options.BaseUrl` (old config), DO append `/chat/completions` as before.
+
+**Edge cases**:
+- Unknown provider ID → fall back to `"groq"` provider config
+- Provider config missing `baseUrl` → fall back to `_options.BaseUrl` with `/chat/completions` appended
+- Null model → use provider's `defaultModel`, then `_options.ModelId`
+- Empty `models` list → dropdown shows nothing; user can still type (if we made it a text input, but we use a select, so ensure at least defaultModel is in the list in config)
+
+---
+
+## 5. `backend/src/Endpoints/AuditEndpoints.cs` — Changes
+
+### a) Pass provider/model from request to sanitized request
+
+At line 44, change:
+```csharp
+var sanitizedRequest = new AuditRequest(spec, request.SpecFormat);
+```
+to:
+```csharp
+var sanitizedRequest = new AuditRequest(spec, request.SpecFormat, request.Provider, request.Model);
+```
+
+### b) Add `GET /api/providers` Endpoint
+
+```csharp
+app.MapGet("/api/providers", (IOptions<AiProvidersConfig> providerConfig) =>
+{
+    var providers = providerConfig.Value.Providers.Select(kvp => new
+    {
+        id = kvp.Key,
+        name = FormatProviderName(kvp.Key),  // "groq" → "Groq", "openai" → "OpenAI"
+        models = kvp.Value.Models,
+        defaultModel = kvp.Value.DefaultModel
+    });
+    return Results.Ok(providers);
+});
+```
+
+Helper method:
+```csharp
+private static string FormatProviderName(string id) =>
+    id switch
+    {
+        "groq" => "Groq",
+        "together" => "Together AI",
+        "openai" => "OpenAI",
+        _ => id   // fallback: return raw ID
+    };
+```
+
+Or keep it simpler — just capitalize the first letter: `char.ToUpper(id[0]) + id[1..]`.
+
+### c) Update `/api/diagnose` endpoints
+
+The diagnose endpoints (`DiagnoseRawMode` and `DiagnoseSdkMode`) currently use `aiOptions.BaseUrl` and `aiOptions.ModelId`. They should NOT be modified for this feature — they are diagnostic tools that test the configured default. If desired, they could accept optional `provider`/`model` query params as a future enhancement, but that is **out of scope** for this spec.
+
+---
+
+## 6. `backend/Program.cs` — Register `AiProviders` Config
+
+Add after line 72:
+```csharp
+builder.Services.Configure<AiProvidersConfig>(
+    builder.Configuration.GetSection("AiProviders"));
+```
+
+Also update the startup validation (lines 110-112) to be less strict — since the app can now work with just `AiProviders` config:
+```csharp
+// Relaxed validation: require either Ai:ApiKey is set, or at least one provider exists
+// The ApiKey check is still critical
+var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
+if (string.IsNullOrWhiteSpace(aiOptions.ApiKey))
+    throw new InvalidOperationException("Ai:ApiKey must be configured in user-secrets or env vars.");
+```
+
+---
+
+## 7. `frontend/src/types/audit.ts` — Add `provider` and `model`
+
+```typescript
+export interface AuditRequest {
+  spec: string;
+  specFormat?: 'yaml' | 'json';
+  provider?: string;    // new
+  model?: string;       // new
+}
+```
+
+No other types need changes.
+
+---
+
+## 8. `frontend/src/hooks/useAudit.ts` — Pass Through Provider/Model
+
+The `audit` function already accepts `AuditRequest` as its payload. Since `AuditRequest` now includes `provider` and `model`, they are automatically passed through to `auditStream`. No hook changes needed.
+
+---
+
+## 9. `frontend/src/components/ui/ProviderSelector.tsx` — New Component
 
 ### Exports
 
-```ts
-// --- Types ---
-
-type ToastType = 'info' | 'success' | 'warning' | 'error';
-
-type Toast = {
-  id: string;           // crypto.randomUUID()
-  message: string;
-  type: ToastType;
-  duration: number;     // ms; 0 = persistent
-  timestamp: number;    // Date.now()
-};
-
-type AddToast = (message: string, type?: ToastType, duration?: number) => void;
-
-// --- Hook ---
-function useToast(): {
-  toasts: Toast[];
-  addToast: AddToast;
-  dismissToast: (id: string) => void;
+```typescript
+interface ProviderInfo {
+  id: string;
+  name: string;
+  models: string[];
+  defaultModel: string;
 }
 
-// --- Provider ---
-function ToastProvider({ children }: { children: React.ReactNode }): JSX.Element;
-
-// --- Context consumer ---
-function useToastContext(): {
-  toasts: Toast[];
-  addToast: AddToast;
-  dismissToast: (id: string) => void;
+interface ProviderSelectorProps {
+  providers: ProviderInfo[];
+  selectedProvider: string;
+  selectedModel: string;
+  onProviderChange: (providerId: string) => void;
+  onModelChange: (model: string) => void;
 }
+
+function ProviderSelector(props: ProviderSelectorProps): JSX.Element;
 ```
 
 ### Behaviour
 
-- `useToast()` is the **internal** hook (used by `ToastProvider` and directly in `App.tsx` if context is deemed unnecessary).
-- `useToastContext()` is the public consumer — throws if used outside `<ToastProvider>`.
-- `addToast(message, type?, duration?)`:
-  - Generates `id` via `crypto.randomUUID()`.
-  - Sets `timestamp = Date.now()`.
-  - **Debounce**: If the same `message` string was added within the last 2000ms, skip silently (do not add duplicate).
-  - Enforces **max 3 visible** toasts: after adding, if `toasts.length > 3`, dismiss the oldest (lowest timestamp) by removing it from the queue.
-  - If `duration` is 0, the toast is *persistent* — never auto-dismissed.
-  - If `duration` is omitted, defaults to **4000ms**.
-  - When `duration > 0`, sets a `setTimeout` to auto-dismiss after `duration` ms.
-  - Returns the generated `id` (for potential programmatic dismissal).
-- `dismissToast(id)`:
-  - Removes the toast with matching `id` from the queue.
-  - Clears the associated timeout if one exists.
-- Cleanup: on unmount, all pending timeouts are cleared.
+- Renders two `<select>` elements side by side (or stacked on small screens):
+  - Provider dropdown: populated from `providers` prop, shows `provider.name` as display text, `provider.id` as value.
+  - Model dropdown: populated from `providers.find(p => p.id === selectedProvider)?.models ?? []`, shows each model string as both value and display text.
+- When the user changes the provider, automatically update the selected model to the new provider's `defaultModel` (call `onModelChange` with the default model).
+- When providers list changes (e.g., on re-fetch), if the current `selectedModel` is not in the new models list, reset to `defaultModel`.
+- Styling (Tailwind v4, matching the existing badge pattern in App.tsx):
+  ```tsx
+  <select className="text-xs bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-400 light:text-slate-600 light:bg-slate-100 light:border-slate-300 cursor-pointer focus:outline-none focus:border-slate-500" />
+  ```
 
 ### Edge cases
 
 | Scenario | Behaviour |
 |----------|-----------|
-| Duplicate message within 2s | Silently dropped; no duplicate toast |
-| >3 toasts added rapidly | Oldest dismissed first (by timestamp) |
-| `duration: 0` | Persistent — never auto-dismissed; must be manually dismissed |
-| Component unmount with active toasts | All timeouts cleared; no memory leak |
-| `crypto.randomUUID()` unavailable | Fallback: `Date.now().toString(36) + Math.random().toString(36).slice(2)` |
+| `providers` is empty or not loaded yet | Render nothing (return `null`) |
+| Selected provider ID not in providers list | Reset to first available provider |
+| Model list for selected provider is empty | Show a single `<option>` with "No models available" (disabled) |
+| `selectedModel` not in current model list | Reset to `defaultModel` of current provider |
 
 ---
 
-## 2. `frontend/src/components/ui/ToastContainer.tsx`
+## 10. `frontend/src/App.tsx` — Provider/Model State Management
 
-### Exports
+### New State Variables
 
-```ts
-function ToastContainer(): JSX.Element | null;
+```typescript
+const [providers, setProviders] = useState<ProviderInfo[]>([]);
+const [selectedProvider, setSelectedProvider] = useState<string>(() =>
+  localStorage.getItem('specaudit-provider') ?? 'groq'
+);
+const [selectedModel, setSelectedModel] = useState<string>(() =>
+  localStorage.getItem('specaudit-model') ?? ''
+);
 ```
 
-### Behaviour
+### Fetch Providers on Mount
 
-- Reads `toasts` and `dismissToast` from `useToastContext()`.
-- Renders **only** when `toasts.length > 0`; otherwise returns `null`.
-- Container element:
-  - `<div>` with classes: `fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none`
-  - `role="alert"` and `aria-live="polite"` for accessibility.
-  - `pointer-events-none` so clicks pass through the container; individual toasts have `pointer-events-auto`.
-- Each toast:
-  - `<div>` with:
-    - Colored left border via `border-l-4`:
-      - `success` → `border-l-emerald-500`
-      - `error` → `border-l-red-500`
-      - `warning` → `border-l-amber-500`
-      - `info` → `border-l-blue-500`
-    - Background: `bg-slate-800` dark / `light:bg-white` light
-    - Text: `text-slate-200` dark / `light:text-slate-800` light
-    - Border: `border border-slate-700` dark / `light:border-slate-300` light
-    - Rounded: `rounded-lg`
-    - Shadow: `shadow-xl`
-    - Padding: `p-3 pr-10` (leave room for close button)
-    - `pointer-events-auto`
-    - Close button: `<button>` absolutely positioned `top-2 right-2`, text `×`, `text-slate-400 hover:text-slate-200` dark / `light:text-slate-500 light:hover:text-slate-700` light, `aria-label="Dismiss"`
-  - **Animation**: Use CSS `@keyframes` (defined in a `<style>` tag or via Tailwind arbitrary values):
-    - Slide in from right: `translate-x-full → translate-x-0` over 200ms ease-out.
-    - On dismiss: immediately removed from array (state-driven removal).
-    - Use a CSS transition on `opacity` and `transform` for smooth exit? **Simpler**: just remove from state — React's reconciliation will unmount the element. If smoother exit is desired, implement a `leaving` state with 150ms fade-out before actual removal.
-    - **Proposed**: Keep it simple — instant removal on dismiss. Slide-in only on appear via `@starting-style` or a brief `animate-[slideIn_200ms_ease-out]` utility.
+Replace the existing `fetch('/api/config')` effect (lines 103-108) with:
 
-  ### Animation (detail)
+```typescript
+useEffect(() => {
+  fetch('/api/providers')
+    .then(r => r.json())
+    .then(data => {
+      setProviders(data);
+      // If selectedProvider from localStorage is not in the list, reset
+      if (data.length > 0 && !data.some((p: ProviderInfo) => p.id === selectedProvider)) {
+        setSelectedProvider(data[0].id);
+        setSelectedModel(data[0].defaultModel);
+      }
+      // If selectedModel is empty, set to default of selected provider
+      const prov = data.find((p: ProviderInfo) => p.id === selectedProvider);
+      if (prov && !selectedModel) {
+        setSelectedModel(prov.defaultModel);
+      }
+    })
+    .catch(() => setProviders([]));
+}, []); // eslint-disable-line react-hooks/exhaustive-deps
+```
 
-  Add a `<style>` block with:
-  ```css
-  @keyframes toast-slide-in {
-    from { transform: translateX(100%); opacity: 0; }
-    to   { transform: translateX(0); opacity: 1; }
+### Persist to localStorage
+
+```typescript
+useEffect(() => {
+  localStorage.setItem('specaudit-provider', selectedProvider);
+}, [selectedProvider]);
+
+useEffect(() => {
+  localStorage.setItem('specaudit-model', selectedModel);
+}, [selectedModel]);
+```
+
+### Update `handleSubmit`
+
+```typescript
+const handleSubmit = useCallback(
+  (submitSpec: string, format?: 'yaml' | 'json') => {
+    const record = history.addRecord({ ... });
+    setCurrentAuditId(record.id);
+    audit({ spec: submitSpec, specFormat: format, provider: selectedProvider, model: selectedModel });
+  },
+  [history, audit, selectedProvider, selectedModel]
+);
+```
+
+### Update Provider Name Badge
+
+Replace the existing provider badge (lines 201-205) to show the **currently selected** provider's name:
+
+```tsx
+{providers.length > 0 && (
+  <span className="text-xs text-slate-500 bg-slate-900 border border-slate-800 rounded px-2 py-1 light:text-slate-600 light:bg-slate-100 light:border-slate-300">
+    {providers.find(p => p.id === selectedProvider)?.name ?? selectedProvider}
+  </span>
+)}
+```
+
+### Add ProviderSelector to Header
+
+Insert the `<ProviderSelector>` into the header area, before the ThemeToggle:
+
+```tsx
+<div className="flex items-center gap-3">
+  {providers.length > 0 && (
+    <ProviderSelector
+      providers={providers}
+      selectedProvider={selectedProvider}
+      selectedModel={selectedModel}
+      onProviderChange={(id) => {
+        setSelectedProvider(id);
+        const prov = providers.find(p => p.id === id);
+        if (prov) setSelectedModel(prov.defaultModel);
+      }}
+      onModelChange={setSelectedModel}
+    />
+  )}
+  {providers.length > 0 && (
+    <span className="text-xs ...">
+      {providers.find(p => p.id === selectedProvider)?.name ?? selectedProvider}
+    </span>
+  )}
+  <ThemeToggle theme={theme} onToggle={toggle} />
+</div>
+```
+
+---
+
+## 11. `backend.Tests/EndpointValidationTests.cs` — Add Tests
+
+### New Test: `GetProviders_ReturnsConfiguredProviders`
+
+```csharp
+[Fact]
+public async Task GetProviders_ReturnsConfiguredProviders()
+{
+    // Uses the same factory with AiProviders added to InMemoryCollection
+    var response = await _client.GetAsync("/api/providers");
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+    var arr = doc.RootElement.EnumerateArray().ToList();
+    
+    arr.Should().NotBeEmpty();
+    arr.First().GetProperty("id").GetString().Should().NotBeNullOrEmpty();
+    arr.First().GetProperty("name").GetString().Should().NotBeNullOrEmpty();
+    arr.First().GetProperty("models").EnumerateArray().Should().NotBeEmpty();
+    arr.First().GetProperty("defaultModel").GetString().Should().NotBeNullOrEmpty();
+}
+```
+
+Update the constructor of `EndpointValidationTests` to also include `AiProviders` in the in-memory config:
+
+```csharp
+public EndpointValidationTests(WebApplicationFactory<Program> factory)
+{
+    _client = factory.WithWebHostBuilder(builder =>
+        builder.ConfigureAppConfiguration((_, cfg) =>
+            cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Ai:ProviderName"]   = ProviderName,
+                ["Ai:BaseUrl"]        = "https://test.example.com/v1",
+                ["Ai:ModelId"]        = "test-model",
+                ["Ai:ApiKey"]         = "test-key",
+                ["Ai:MaxInputLength"] = "100000",
+                ["AiProviders:groq:baseUrl"] = "https://api.groq.com/openai/v1/chat/completions",
+                ["AiProviders:groq:defaultModel"] = "llama-3.3-70b-versatile",
+                ["AiProviders:groq:models:0"] = "llama-3.3-70b-versatile",
+                ["AiProviders:groq:models:1"] = "mixtral-8x7b-32768"
+            })
+        )
+    ).CreateClient();
+}
+```
+
+### Existing Test Updates
+
+- **`GetConfig_ReturnsProviderName`**: Should still pass unchanged.
+- **`GetConfig_DoesNotReturnApiKey`**: Should still pass unchanged.
+- **`PostAudit_*` tests**: Should still pass unchanged — the `sanitizedRequest` now includes `Provider` and `Model` which will be null from the anonymous objects `{ spec = "" }`, and the service should handle nulls by falling back to defaults.
+
+---
+
+## 12. `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` — New Test File
+
+```
+describe('ProviderSelector')
+  ├── it('renders provider dropdown with given providers')
+  ├── it('renders model dropdown with models of selected provider')
+  ├── it('calls onProviderChange when provider is changed')
+  ├── it('calls onModelChange when model is changed')
+  ├── it('updates models when provider changes')
+  ├── it('renders nothing when providers array is empty')
+  ├── it('shows "No models available" when model list is empty')
+  └── it('displays selected provider and model as current values')
+```
+
+Follow the same testing pattern as `Button.test.tsx` and `ThemeToggle.test.tsx`.
+
+---
+
+## 13. `frontend/src/components/features/__tests__/App.test.tsx` — Update Mocks
+
+### Mock `/api/providers` fetch
+
+The existing mock uses `vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}))` which causes the fetch to hang indefinitely. This was done to avoid `act` warnings. For the provider dropdown tests, we need the fetch to resolve. Options:
+
+**Option A (Recommended)**: Replace the hanging promise with a resolved one pointing to `/api/providers`:
+
+```typescript
+// In beforeEach, replace:
+vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+
+// With:
+vi.spyOn(globalThis, 'fetch').mockImplementation((url: string) => {
+  if (url === '/api/providers') {
+    return Promise.resolve(new Response(JSON.stringify([
+      { id: 'groq', name: 'Groq', models: ['llama-3.3-70b-versatile'], defaultModel: 'llama-3.3-70b-versatile' }
+    ]), { status: 200, headers: { 'Content-Type': 'application/json' } }));
   }
-  .animate-toast-in {
-    animation: toast-slide-in 200ms ease-out;
-  }
-  ```
-  Apply `animate-toast-in` to each rendered toast `<div>`.
-
----
-
-## 3. `frontend/src/App.tsx` — Modifications
-
-### Changes
-
-1. **Wrap root content** with `<ToastProvider>`:
-   ```tsx
-   // Near top-level return
-   return (
-     <ToastProvider>
-       <div className="min-h-screen ...">
-         {/* existing content */}
-         <ToastContainer />   {/* add near end of root div */}
-       </div>
-     </ToastProvider>
-   );
-   ```
-2. **Add `addToast` import** from `'./hooks/useToast'` (or use `useToastContext` inside App if it's inside the provider).
-   - Simplest: Inside App (which is rendered under `<ToastProvider>`), call `const { addToast } = useToastContext()`.
-3. **Wire the handlers:**
-
-   **`handleCopy`** — add `addToast('Copied to clipboard', 'success')` after successful copy. Keep existing `setCopied(true); setTimeout(...)` for the button label feedback; toast is additive.
-   ```
-   // After await navigator.clipboard.writeText(...)
-   addToast('Copied to clipboard', 'success');
-   ```
-
-   **`handleDownload`** — add `addToast('Report downloaded', 'success')` after successful download.
-   ```
-   // After URL.revokeObjectURL(url)
-   addToast('Report downloaded', 'success');
-   ```
-
-   **`handleExportPdf`** — add `addToast('PDF exported', 'success')` after successful export.
-   ```
-   // After await exportPdf(...)
-   addToast('PDF exported', 'success');
-   ```
-   Also add a `catch` block that calls `addToast('PDF export failed', 'error')`.
-
-   **`handleExportJson`** — add `addToast('JSON exported', 'success')` after successful export.
-   ```
-   // After URL.revokeObjectURL(url)
-   addToast('JSON exported', 'success');
-   ```
-   Also add a `catch` block that calls `addToast('JSON export failed', 'error')`.
-
-4. **Audit error toast** — add a `useEffect` that watches `state.status === 'error'`:
-   ```tsx
-   useEffect(() => {
-     if (state.status === 'error' && state.error) {
-       addToast(state.error, 'error', 0); // persistent until dismissed
-     }
-   }, [state.status]); // only fire on status change, not on every render
-   ```
-
----
-
-## 4. `frontend/src/hooks/__tests__/useToast.test.tsx`
-
-### Test cases (follow pattern from `useTheme.test.tsx`)
-
-```
-describe('useToast')
-  ├── it('starts with empty toast queue')
-  ├── it('adds a toast with default type (info) and duration (4000ms)')
-  ├── it('adds a toast with custom type and duration')
-  ├── it('dismisses a toast by id')
-  ├── it('auto-dismisses a toast after duration expires')
-  ├── it('does NOT auto-dismiss a persistent toast (duration: 0)')
-  ├── it('debounces duplicate messages within 2s window')
-  ├── it('allows same message after debounce window expires')
-  ├── it('enforces max 3 visible toasts — oldest dismissed first')
-  ├── it('allows maximum 3 toasts when they have unique messages')
-  └── it('clears all timeouts on unmount')
+  return new Promise(() => {}); // hang for other requests
+});
 ```
 
-Use `vi.useFakeTimers()` for timeout tests. Use `renderHook` from `@testing-library/react`.
-
----
-
-## 5. `frontend/src/components/ui/__tests__/ToastContainer.test.tsx`
-
-### Test cases (follow pattern from `Button.test.tsx`)
-
-```
-describe('ToastContainer')
-  ├── it('renders nothing when toasts queue is empty')
-  ├── it('renders a single toast with message and type class')
-  ├── it('renders multiple toasts stacked')
-  ├── it('renders correct border color per type')
-  ├── it('dismisses toast when close button is clicked')
-  ├── it('has role="alert" and aria-live="polite" accessibility attributes')
-  └── it('renders persistent toast without auto-dismiss indicator')
-```
-
-Wrap `<ToastContainer />` in a `<ToastProvider>` for tests. Use `render`, `screen`, `fireEvent` from `@testing-library/react`. Access `addToast` via a small helper component or by rendering the provider and using `renderHook` in a coordinated way.
+**Option B**: Keep the hanging mock and simply don't test provider dropdown behavior in App tests (rely on ProviderSelector unit tests instead).
 
 ---
 
 ## Implementation Notes
 
 - **Follow existing patterns**:
-  - Named exports (no default exports).
-  - Props type defined as local `type Props = ...` (see `Card.tsx` for reference).
-  - Tailwind v4 class ordering: functional classes then color/size, as seen in `Button.tsx`.
-  - Dark mode via `light:` prefix (matching `.light` class toggled on `<html>` by `useTheme`).
-- **No additional dependencies** — use `crypto.randomUUID()` (available in all modern browsers); fallback for older environments.
-- **No backend changes.**
-- **No layout shift** — `fixed bottom-4 right-4` removes from document flow entirely.
-- **Streaming** — toasts are absolutely positioned, so they never block or shift audit result content while streaming.
+  - Named exports only (no default exports).
+  - Backend: `init`-only properties, records for request models, `IOptions<T>` injection, `WebApplicationFactory` for integration tests.
+  - Frontend: Props type defined as `interface ProviderSelectorProps`, Tailwind v4 class ordering (functional then color/size), dark mode via `light:` prefix.
+  - The `ProviderSelector` should be a **new component file**, not inline in `App.tsx`, following the pattern of `ThemeToggle.tsx`.
+- **No breaking changes**: Existing API consumers that omit `provider`/`model` from the request body will get defaults (`"groq"` and `"llama-3.3-70b-versatile"`).
+- **API key**: The existing `Ai:ApiKey` env var / user-secret is used for ALL providers. No per-provider key support in this change.
+- **Base URL handling**: The provider config's `baseUrl` is the **full chat completions URL** (e.g. `https://api.groq.com/openai/v1/chat/completions`). The old `Ai:BaseUrl` was just the base (e.g. `https://api.groq.com/openai/v1`). The code must handle both formats correctly.
+
+---
 
 ## Verification
 
-1. `cd frontend && npm run build` — 0 errors.
-2. `cd frontend && npm test` — all tests pass.
-3. Manual: trigger copy, download, export PDF, export JSON — toast appears, auto-dismisses after ~4s.
-4. Manual: trigger audit that errors — persistent error toast appears with the error message, dismissible via X button.
+1. `cd backend && dotnet build` — 0 errors
+2. `cd backend && dotnet test` — all existing tests pass (update `EndpointValidationTests` constructor and add new tests)
+3. `cd frontend && npm run build` — 0 errors
+4. `cd frontend && npm test` — all existing + new tests pass
+5. Manual: dropdown shows providers from config, selecting a provider updates the model list, submitting an audit sends the selected provider/model, preference survives page reload via localStorage

@@ -1,93 +1,122 @@
-# Review: Toast/Snackbar Notification System
+# Review: Configurable Provider/Model Dropdown in UI
 
 ## VERDICT: SHIP
+
+The implementation correctly delivers the feature as specified, with no security or correctness violations. All 336 tests pass (30 backend + 306 frontend).
 
 ---
 
 ## Checklist
 
-| Requirement | Status |
-|---|---|
-| Spec-conformant implementation | ✅ All spec requirements met |
-| No security vulnerabilities | ✅ Clean |
-| Correctness (async, state, types) | ✅ Correct |
-| `useToast.tsx` exports types + `useToast` + `ToastProvider` + `useToastContext` | ✅ |
-| `ToastContainer.tsx` reads context, renders slide-in, colored borders, close button, aria attrs | ✅ |
-| `App.tsx` wrapped in `<ToastProvider>`, `addToast` wired into all handlers | ✅ |
-| All 11 `useToast` hook tests passing | ✅ |
-| All 7 `ToastContainer` component tests passing | ✅ |
-| Frontend tests pass (298 tests) | ✅ |
-| Backend tests pass (29 tests) | ✅ |
-| TypeScript compiles (`tsc --noEmit`) | ✅ |
-| Build succeeds (0 errors) | ✅ |
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Spec conformance | ✅ | All files created/modified as specified. Minor JSON structure difference (see Findings). |
+| `GET /api/providers` returns providers without `baseUrl` | ✅ | Returns `id`, `name`, `models`, `defaultModel` only. No `baseUrl`, no API key. |
+| `POST /api/audit` passes `provider`/`model` through | ✅ | Line 44 of `AuditEndpoints.cs` passes `request.Provider` and `request.Model` to `AuditRequest`. |
+| Dynamic provider resolution in service | ✅ | `SpecAuditService.AuditAsync` resolves provider config by key; falls back to `AiOptions` legacy defaults. |
+| Frontend fetches providers on mount | ✅ | `App.tsx` `useEffect` fetches `/api/providers`, populates dropdowns. |
+| localStorage persistence | ✅ | `specaudit-provider` and `specaudit-model` persisted on every change. |
+| Selected provider/model in audit requests | ✅ | `handleSubmit` passes `selectedProvider` and `selectedModel` to `audit()`. |
+| Backward compatibility (no provider/model) | ✅ | Optional `string?` fields on `AuditRequest`; service handles null via fallback. |
+| No breaking changes to diagnose endpoints | ✅ | Not modified — correctly out of scope. |
+| Backend tests run (30 pass) | ✅ | 30 tests across files including new `GetProviders_ReturnsConfiguredProviders`. |
+| Frontend tests run (306 pass) | ✅ | 306 tests including 8 new `ProviderSelector` tests. |
+| Total tests: 336 pass | ✅ | |
 
 ---
 
 ## Findings
 
-### Spec Conformance — ✅ PASS
+### 1. appsettings.json structure — minor spec deviation (NOTE)
 
-All files specified in `.pipeline/spec.md` are created or modified correctly:
+The spec's sample JSON shows:
+```json
+"AiProviders": {
+    "groq": { ... },
+    "together": { ... }
+}
+```
 
-- `frontend/src/hooks/useToast.tsx` — hook + context provider (with re-export shim at `useToast.ts`)
-- `frontend/src/components/ui/ToastContainer.tsx` — rendering component
-- `frontend/src/App.tsx` — wrapped in `<ToastProvider>`, handlers wired
-- `frontend/src/hooks/__tests__/useToast.test.tsx` — 11 hook tests
-- `frontend/src/components/ui/__tests__/ToastContainer.test.tsx` — 7 component tests
+The actual implementation has:
+```json
+"AiProviders": {
+    "Providers": {
+        "groq": { ... },
+        "together": { ... }
+    }
+}
+```
 
-**Spec note:** The `ROADMAP.md` file was also modified (not listed in the spec). The change moves "Audit history sidebar" to the completed table and updates the "Toast/snackbar system" entry from planned to medium-priority. This is a harmless roadmap maintenance update unrelated to the feature.
+This is **not a bug** — it is a necessary correction. The `AiProvidersConfig` class defined in the spec has `public Dictionary<string, AiProviderOptions> Providers { get; init; }`, requiring the `"Providers"` wrapper for correct configuration binding. The spec's own class definition and sample JSON are inconsistent with each other; the implementation correctly chose the structure that matches the class definition. No change needed.
 
-### Security — ✅ No Issues
+### 2. Provider fallback behavior — equivalent design choice (NOTE)
 
-- No raw exception messages or stack traces exposed to users. Error toasts use developer-controlled messages like `'PDF export failed'`.
-- No new endpoints or routes — purely client-side.
-- Error messages from the audit API (`state.error`) are rendered as React text content (safe from XSS).
-- No secrets, API keys, or credentials in the source.
-- No `JSON.parse()` on untrusted input; no injection vectors.
+The spec's sample code defaults `providerId = request.Provider ?? "groq"` and falls back to the `"groq"` provider config for null/unknown providers. The actual code keeps `providerId` as-is (null/empty) and falls back to `_options.BaseUrl + "/chat/completions"` (the legacy config).
 
-### Correctness — ✅ No Blocking Issues
+In the default configuration, both approaches produce the **same final URL** (`https://api.groq.com/openai/v1/chat/completions`). The code's approach is more backward-compatible: users with custom `Ai:BaseUrl` values (not matching any provider config) will continue to work as before. This is a reasonable design choice, not a defect.
 
-- **Async discipline:** All async calls (`clipboard.writeText`, `exportPdf`) are properly awaited. No fire-and-forget.
-- **State safety:** Toast queue uses functional `setToasts(prev => ...)` updates, safe under concurrent calls.
-- **Debounce:** Duplicate messages within 2000ms are correctly suppressed using a `Map<string, number>` ref.
-- **Max-3 enforcement:** Oldest toast (by timestamp) is removed with proper timeout cleanup when a 4th toast is added.
-- **Cleanup:** `useEffect` return clears all pending timeouts on unmount.
-- **Persistent toasts:** `duration: 0` correctly skips auto-dismiss.
+### 3. Diagnose endpoints expose `ex.Message` (NOTE)
 
-### Code Quality — Non-Blocking Notes
+`DiagnoseRawMode` (line 173) and `DiagnoseSdkMode` (line 241) return `error = ex.Message` in their JSON responses. These are diagnostic-only endpoints not consumed by the frontend, and the spec explicitly marks them as out-of-scope. Low risk, not blocking.
 
-1. **`addToast` does not return the generated `id`** (`useToast.tsx:46-81`). The spec type defines `AddToast` as returning `void`, which matches the implementation. The spec prose says "Returns the generated `id`" but this contradicts the type signature. Not a bug, but the return value could be useful for programmatic dismissal.
+### 4. Test quality
 
-2. **Missing `border-l-4`** (`ToastContainer.tsx:38`). The spec describes a "colored left border via `border-l-4`" (4px thick accent bar), matching the existing pattern in `ResultPanel.tsx:31-41`. The implementation uses `border` (1px all sides) + `border-l-*` color, producing a 1px left accent instead of the 4px bar. Consider adding `border-l-4` for visual consistency.
+- **ProviderSelector tests**: 8 tests covering render, callbacks, provider change → model update, empty providers, empty model list, and current value display. All behavior-driven, no implementation mocking. Good coverage.
+- **Backend integration test**: `GetProviders_ReturnsConfiguredProviders` validates the `/api/providers` response shape (id, name, models, defaultModel). Ensures no sensitive fields leak.
+- **AiOptionsValidationTests**: Updated to reflect relaxed validation — tests now verify that missing `BaseUrl`/`ModelId` do NOT throw when `AiProviders` are configured.
+- **Gap**: `App.test.tsx` was not updated (by design — spec Option B). Provider dropdown behavior in the full App context is only tested via unit tests on the isolated `ProviderSelector` component. Acceptable given the scope.
 
-3. **Audit error `useEffect` dependency array** (`App.tsx:151-155`). The spec recommends `[state.status]` but the implementation uses `[state.status, state.error, addToast]`. The latter is more correct React-wise (satisfies exhaustive-deps), but if `state.error` changes while `state.status` is already `'error'`, a duplicate persistent toast could appear. In practice, the audit state machine sets both fields atomically, so this is unlikely to occur.
+### 5. No security issues
 
-4. **Re-export shim pattern** (`useToast.ts`). A `.ts` file re-exports from `.tsx`. This is an unusual pattern but serves import compatibility. Consider consolidating into a single file if the build tool supports `.tsx` imports.
+| Check | Result |
+|-------|--------|
+| `baseUrl` exposed in `/api/providers` | ❌ Not exposed — only `id`, `name`, `models`, `defaultModel` |
+| API key exposed in any response | ❌ Not exposed |
+| Raw exception messages to client | ❌ Sanitized — only "Rate limit", "timeout", or generic messages |
+| Injection vectors | ❌ None found — input validation on spec trim/length, no SQL/shell interpolation |
+| Secrets in source code | ❌ None found |
 
----
+### 6. No correctness issues
 
-## Required Actions
-
-None. All blocking criteria pass. The non-blocking notes above are cosmetic/preference-level recommendations for future improvement.
+| Check | Result |
+|-------|--------|
+| Async discipline | ✅ All async calls awaited, cancellation tokens properly linked |
+| State race conditions | ✅ No concurrent state mutations; React batches state updates |
+| Runtime type safety | ✅ `JSON.parse` results are validated before use in SSE parsing |
+| Error swallowing | ✅ All catch blocks log the error; empty catch only for clipboard/export failures |
+| localStorage persistence | ✅ Writes on every provider/model change; reads on mount with null-safe defaults |
 
 ---
 
 ## Suggested Commit Message
 
 ```
-feat: Add toast/snackbar notification system
+feat: configurable AI provider/model dropdown in UI
 
-- Create useToast hook with context provider (ToastProvider, useToastContext)
-- Create ToastContainer component with slide-in animation, colored borders, a11y
-- Wire addToast into copy/download/export handlers and audit error state
-- Add 18 tests (11 hook + 7 component)
-- No backend changes required
+- Add AiProvidersConfig with Dictionary<string, AiProviderOptions> for
+  provider configuration (baseUrl, defaultModel, models list)
+- Add GET /api/providers endpoint returning id/name/models/defaultModel
+  (baseUrl not exposed)
+- Pass provider/model from audit request through to SpecAuditService
+- Resolve provider config dynamically in service; fall back to legacy
+  AiOptions defaults for backward compatibility
+- Relax startup validation: only require Ai:ApiKey (BaseUrl/ModelId
+  are optional when AiProviders are configured)
+- Add ProviderSelector component with provider + model dropdowns,
+  handling edge cases (empty/unknown provider, empty model list,
+  invalid model fallback)
+- Fetch providers on mount, persist selection in localStorage
+- 336 tests passing (30 backend + 306 frontend)
+
+Breaking changes: none — provider/model fields are optional with
+null-safe defaults.
 ```
 
 ---
 
-## Sign Off
+## Sign-off
 
-**Reviewer:** Senior Code Review Agent  
-**Date:** 2026-06-04  
-**Verdict:** SHIP — No blocking issues found. Feature is spec-conformant, secure, correct, and well-tested.
+Reviewed by: Senior Code Reviewer
+Date: 2026-06-04
+
+All criteria satisfied. Feature is ready to ship.
