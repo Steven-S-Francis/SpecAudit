@@ -10,10 +10,12 @@ import { Spinner } from './components/ui/Spinner';
 import { Button } from './components/ui/Button';
 import { Card } from './components/ui/Card';
 import { ThemeToggle } from './components/ui/ThemeToggle';
+import { ToastContainer } from './components/ui/ToastContainer';
+import { ToastProvider, useToastContext } from './hooks/useToast';
 import { exportPdf } from './utils/exportPdf';
 import type { AuditResult } from './types/audit';
 
-function App() {
+function AppContent() {
   const { state, audit, abort, restore } = useAudit();
   const { theme, toggle } = useTheme();
   const history = useHistory();
@@ -24,6 +26,7 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const loadKeyRef = useRef(0);
+  const { addToast } = useToastContext();
   // Strip trailing ```json...``` block from displayed markdown (it's for JSON export only)
   const JSON_MARKER = '```json';
   const markerIndex = state.result.lastIndexOf(JSON_MARKER);
@@ -36,10 +39,11 @@ function App() {
       await navigator.clipboard.writeText(strippedResult);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+      addToast('Copied to clipboard', 'success');
     } catch {
-      // Clipboard API unavailable â€” silently ignore
+      // Clipboard API unavailable — silently ignore
     }
-  }, [strippedResult]);
+  }, [strippedResult, addToast]);
 
   const handleDownload = useCallback(() => {
     try {
@@ -52,18 +56,20 @@ function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      addToast('Report downloaded', 'success');
     } catch {
-      // Download API unavailable â€” silently ignore
+      // Download API unavailable — silently ignore
     }
-  }, [strippedResult]);
+  }, [strippedResult, addToast]);
 
   const handleExportPdf = useCallback(async () => {
     try {
       await exportPdf(strippedResult);
+      addToast('PDF exported', 'success');
     } catch {
-      // PDF generation failed â€” silently ignore
+      addToast('PDF export failed', 'error');
     }
-  }, [strippedResult]);
+  }, [strippedResult, addToast]);
 
   const handleExportJson = useCallback(() => {
     try {
@@ -88,10 +94,11 @@ function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      addToast('JSON exported', 'success');
     } catch {
-      // JSON export API unavailable â€” silently ignore
+      addToast('JSON export failed', 'error');
     }
-  }, [strippedResult, state.findings, state.summary, state.specFormat]);
+  }, [strippedResult, state.findings, state.summary, state.specFormat, addToast]);
 
   useEffect(() => {
     fetch('/api/config')
@@ -140,6 +147,12 @@ function App() {
       });
     }
   }, [state.status, currentAuditId, spec, specFormat, state.result, state.error, history]);
+
+  useEffect(() => {
+    if (state.status === 'error' && state.error) {
+      addToast(state.error, 'error', 0);
+    }
+  }, [state.status, state.error, addToast]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -278,7 +291,16 @@ function App() {
         </div>
       </div>
       </div>
+      <ToastContainer />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }
 

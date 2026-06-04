@@ -31,6 +31,8 @@
 | Replace OpenAI SDK streaming with raw HttpClient + SSE parsing | `80f5598` |
 | Spec file upload (drag-and-drop + file picker) | `a059f4d` |
 | Session history (localStorage + sidebar) | `7d90689` |
+| Audit history sidebar | `7d90689` |
+| Toast/snackbar notification system | `PLACEHOLDER` |
 
 ---
 
@@ -39,18 +41,6 @@
 ---
 
 ## Medium (more involved)
-
-### Audit history sidebar
-Persistent collapsible sidebar listing recent audits with date/summary.
-- **Why:** Quick access to past audits without modal popups or page navigation.
-- **Affects:** NEW `frontend/src/components/features/HistorySidebar.tsx`, `frontend/src/App.tsx` (layout shift to accommodate sidebar), new `useHistory` hook (shared with session history).
-- **Risk:** Layout shift on mobile â€” sidebar may need to be a modal/drawer on small screens.
-
-### Toast/snackbar system
-Non-blocking notifications for transient events (network errors, copy success, rate-limit backoff).
-- **Why:** Current error display is a static card â€” users may miss transient events during streaming.
-- **Affects:** NEW `frontend/src/components/ui/Toast.tsx`, `frontend/src/App.tsx` (toast state + render).
-- **Risk:** Toast stacking (multiple simultaneous toasts) and auto-dismiss timing.
 
 ### Configurable provider/model in UI
 Dropdown in the header to switch between Groq, Together AI, etc. without editing `appsettings.json`.
