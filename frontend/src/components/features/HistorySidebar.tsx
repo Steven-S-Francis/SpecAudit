@@ -140,9 +140,11 @@ export function HistorySidebar({ records, onLoad, onDelete, onClearAll, open, on
                           <>
                             <p className="text-sm font-medium text-slate-200 truncate light:text-slate-700">
                               {primary}
-                              {record.result === null && (
+                              {record.error ? (
+                                <span className="text-red-400 text-xs ml-2">(failed)</span>
+                              ) : record.result === null ? (
                                 <span className="text-yellow-400 text-xs ml-2">(pending)</span>
-                              )}
+                              ) : null}
                             </p>
                             {subtitle && (
                               <p className="text-xs text-slate-500 mt-0.5 truncate light:text-slate-400">
@@ -152,7 +154,11 @@ export function HistorySidebar({ records, onLoad, onDelete, onClearAll, open, on
                           </>
                         );
                       })()}
-                      {record.result === null ? (
+                      {record.error ? (
+                        <p className="text-xs text-red-400 mt-0.5" title={record.error}>
+                          Failed
+                        </p>
+                      ) : record.result === null ? (
                         <p className="text-xs text-yellow-400 mt-0.5">
                           Running...
                         </p>

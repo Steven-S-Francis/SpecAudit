@@ -8,6 +8,7 @@ export interface HistoryRecord {
   result: string | null;
   specName: string | null;
   title?: string;
+  error?: string;
 }
 
 const STORAGE_KEY = 'specaudit-history';

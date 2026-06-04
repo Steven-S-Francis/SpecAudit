@@ -127,18 +127,19 @@ function App() {
     [history, audit]
   );
 
-  // Save to history when audit completes
+  // Save to history when audit completes or errors
   useEffect(() => {
-    if (state.status === 'complete' && currentAuditId) {
+    if ((state.status === 'complete' || state.status === 'error') && currentAuditId) {
       history.addRecord({
         id: currentAuditId,
         spec,
         specFormat: specFormat ?? null,
         result: state.result,
+        error: state.status === 'error' ? (state.error ?? undefined) : undefined,
         specName: null,
       });
     }
-  }, [state.status, currentAuditId, spec, specFormat, state.result, history]);
+  }, [state.status, currentAuditId, spec, specFormat, state.result, state.error, history]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
