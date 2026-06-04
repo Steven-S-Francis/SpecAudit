@@ -64,10 +64,10 @@ public class DiagnoseEndpointTests : IClassFixture<WebApplicationFactory<Program
     }
 
     [Fact]
-    public async Task GetDiagnose_HandlesUnreachableEndpointGracefully()
+    public async Task GetDiagnose_HandlesChatCompletionsFailureGracefully()
     {
-        // Test 3: Verify the endpoint handles missing/invalid API key or
-        // unreachable endpoint gracefully (returns ok: false without throwing).
+        // Test 3: Verify the endpoint handles chat completions failure
+        // (connection refused) gracefully (returns ok: false without throwing).
         // The configured BaseUrl (http://localhost:1) will cause a connection
         // refused error, which is caught by the endpoint's catch block.
         var response = await _client.GetAsync("/api/diagnose");

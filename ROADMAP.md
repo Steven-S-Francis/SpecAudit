@@ -26,7 +26,7 @@
 | Keyboard shortcuts (Ctrl+Enter, Escape) | `75fd570` |
 | Remove NetworkTimeout from OpenAI client (fixes AI streaming hang) | `be75242` |
 | Fix AI streaming: don't pass CancellationToken to SDK | `5230ea8` |
-| Diagnostic endpoint (GET /api/diagnose) | `4be9fb5` |
+| Diagnostic endpoint (GET /api/diagnose → chat/completions) | `4be9fb5`, `<commit-hash>` |
 
 ---
 

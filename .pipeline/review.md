@@ -1,73 +1,65 @@
-# Review: `GET /api/diagnose` Diagnostic Endpoint
+# Review: Update `GET /api/diagnose` to hit Groq chat completions API
 
-## VERDICT
-**SHIP**
+## VERDICT: SHIP
 
 ## Findings
 
-### 1. Spec Conformance — ✅ PASS
+### Spec Conformance — ✅ PASS
 
-The implementation matches the specification exactly:
+- **Handler replacement**: The handler body has been replaced exactly as specified. The old `client.GetAsync("models")` pattern is replaced with `HttpRequestMessage` POST to `{BaseUrl}/chat/completions` with a minimal chat completion payload (`model`, `messages`, `max_tokens: 10`, `stream: false`).
+- **Response shape**:
+  - HTTP 200: returns `{ groqStatus, elapsedMs, ok: true, message: null }` ✓
+  - HTTP 4xx/5xx: returns `{ groqStatus, elapsedMs, ok: false, message: "<200-char excerpt>" }` ✓
+  - Exception path: returns `{ groqStatus: 0, elapsedMs, ok: false, error: "..." }` (no `message` field) ✓
+- **`using System.Text;`** added (line 2) for `Encoding.UTF8` ✓
+- **Test renamed**: `GetDiagnose_HandlesUnreachableEndpointGracefully` → `GetDiagnose_HandlesChatCompletionsFailureGracefully` with updated doc comment ✓
+- **Only the 5 expected files** were modified (2 source + 3 pipeline docs). No unexpected changes.
+- **No superset or subset** — the implementation exactly matches the spec's `After` code block.
 
-- **`using System.Net.Http.Headers;`** added at line 1, correctly placed alphabetically before `System.Text.Json`. ✓
-- **Endpoint placement**: `GET /api/diagnose` is inserted after `/api/config` (line 92) and before `/api/test-error` (line 136), exactly as specified. ✓
-- **HttpClient setup**: Uses `BaseAddress` from `AiOptions.BaseUrl`, `Authorization: Bearer` header from `AiOptions.ApiKey`, and a 10-second timeout. ✓
-- **Return values**: Success returns `{ groqStatus, elapsedMs, ok }`; failure returns `{ groqStatus: 0, elapsedMs, ok: false, error }`. ✓
-- **Logging**: Uses `ILoggerFactory.CreateLogger("SpecAudit.Diagnose")` with structured Serilog-compatible logging. ✓
-- **Exception handling**: Catch-all `Exception ex` block logs and returns the error message, matching all specified edge cases (timeout, DNS failure, TLS errors, HTTP error status codes). ✓
+### Security — ✅ PASS
 
-**All edge cases from the spec are accounted for:**
-| Spec edge case | Implementation | Status |
-|---|---|---|
-| Timeout (10s) | `client.Timeout = 10s` → `TaskCanceledException` caught | ✓ |
-| HTTP error status (401, 429, 500) | Non-200 status returned as `groqStatus`, `ok: false` | ✓ |
-| Missing API key | Empty `Bearer ` header, Groq returns 401 | ✓ |
-| Invalid BaseUrl | `new Uri()` throws, caught by catch block | ✓ |
-| DNS/TLS failures | `HttpRequestException` caught | ✓ |
-| Concurrent requests | Fresh `HttpClient` per call, no shared state | ✓ |
+- **No stack trace leakage**: The `catch` block returns `ex.Message` (not `ex.ToString()`). Standard .NET exception messages (e.g., "No connection could be made because the target machine actively refused it.") contain no stack frames, internal paths, or secrets.
+- **No API key exposure**: The API key is sent in the `Authorization` header (not in the URL, body, or response). The test suite confirms `GET /api/config` does not return the API key.
+- **No injection vectors**: The endpoint takes no user input (pure `GET` with no query parameters). The request body is constructed from configuration values, not user-supplied strings.
+- **No auth bypass**: The endpoint uses the same `IOptions<AiOptions>` injection and auth header pattern as the existing code.
+- **Response body excerpt safety**: The `message` field is at most 200 characters of the external API response body — self-limiting and diagnostic-only.
 
-### 2. Security — ✅ PASS
+### Correctness — ✅ PASS
 
-- **No new auth bypass**: The endpoint follows the same pattern as existing endpoints (`/api/config`, `/api/test-error`) — none have auth middleware. This is consistent and not a regression.
-- **No information disclosure**: The `error` field returns `ex.Message`, which for a *diagnostic endpoint* is intentional and appropriate. Exception messages from `TaskCanceledException`, `HttpRequestException`, etc. do not leak secrets (API keys, tokens, internal URLs). The entire purpose of this endpoint is to surface connectivity diagnostics.
-- **No injection vectors**: The endpoint accepts no user input (no query params, no body). Configuration values (`BaseUrl`, `ApiKey`) are used via `HttpClient` headers, not interpolated into scripts or HTML.
-- **No secrets in source/logs**: The API key is only used at runtime in the `Authorization` header; it is not logged or returned in responses.
+- **Async discipline**: All async calls (`client.SendAsync`, `response.Content.ReadAsStringAsync`) are properly awaited. No fire-and-forget patterns.
+- **Error handling**: The `try`/`catch` properly captures all `Exception` types. The `catch` block logs the error (with structured logging) and returns a well-formed response. No empty `catch` blocks; no error swallowing.
+- **State safety**: Each request creates a fresh `HttpClient` disposed via `using`. No shared mutable state. Safe under concurrent requests.
+- **Boundary safety**: The 200-char excerpt uses `responseBody[..200]` guarded by `responseBody.Length > 200`, preventing out-of-range exceptions.
+- **Disposal**: `HttpClient` and `HttpResponseMessage` are disposed via `using`. `HttpRequestMessage` is not disposed but this is acceptable — it has no unmanaged resources in modern .NET, and the pattern matches the spec exactly.
+- **Runtime type safety**: No `as` casts, no `JSON.parse` without validation (C# with `JsonSerializer`), no unguarded property access on external data.
 
-### 3. Correctness — ✅ PASS
+### Testing — ✅ PASS
 
-- **Async discipline**: `await client.GetAsync("models")` is properly awaited. The lambda is correctly marked `async`. No fire-and-forget calls.
-- **No race conditions**: Each invocation creates and disposes a fresh `HttpClient`. `Stopwatch` is local. No shared mutable state.
-- **Proper error handling**: The `catch` block stops the stopwatch, logs the error, and returns a structured JSON error response. No error swallowing.
-- **HttpClient disposal**: `using var client` ensures disposal even if an exception occurs at the `new Uri()` or header setup stage (well, after the `using` declaration — the `using` starts at line 98, so if `new Uri()` on line 99 throws, the client is disposed via the `using` pattern).
+- **Backend tests**: All **25** pass (including the renamed `GetDiagnose_HandlesChatCompletionsFailureGracefully`).
+- **Frontend tests**: All **245** pass across 17 test files (vitest).
+- **TypeScript**: `tsc --noEmit` passes with zero errors.
+- **Test coverage note**: All 4 diagnose tests exercise the exception path (connection refusal via `http://localhost:1`). The HTTP-error-path (`message` field from non-200 responses) is not covered. This gap is documented in `test-results.md` and acknowledged as a pre-existing limitation that was also present before this change. It is not a regression.
 
-### 4. Testing — ✅ PASS (25/25 passing)
+### Code Quality — ✅ PASS (non-blocking observations)
 
-**4 new tests** in `backend.Tests/DiagnoseEndpointTests.cs`:
-
-| Test | What it verifies | Quality |
-|---|---|---|
-| `GetDiagnose_ReturnsJsonWithGroqStatusElapsedMsAndOk` | JSON shape & value kinds | Good — validates the response contract |
-| `GetDiagnose_UsesOptionsInjection` | DI wiring (elapsedMs > 0) | Validates DI doesn't throw |
-| `GetDiagnose_HandlesUnreachableEndpointGracefully` | Error path: `ok: false`, `groqStatus: 0`, error message present | **Important** — covers the failure case |
-| `GetDiagnose_RespondsWithinReasonableTime` | Response time < 9s (within 10s timeout) | Validates timeout behavior |
-
-All tests use `WebApplicationFactory<Program>` with in-memory configuration pointing to `http://localhost:1` (a dead port), which exercises the actual error path. The tests are meaningful, cover both success-shape and error-path, and use realistic infrastructure (no mocked HTTP handlers that would paper over real behavior).
-
-**Total test count**: 25 passed (21 existing + 4 new). All backend tests pass.
-
-### 5. Production Safety — ✅ SAFE
-
-- **No new dependencies**: Uses `System.Net.Http.Headers` (in-box) and `System.Diagnostics.Stopwatch` (in-box).
-- **No side effects**: The endpoint is read-only with respect to application state. It only makes an outbound HTTP call.
-- **Self-limiting**: The 10-second timeout prevents resource accumulation on slow responses.
-- **Socket exhaustion risk**: Each call creates a new `HttpClient` (no `IHttpClientFactory`). This is a deliberate design choice per the spec ("appropriate for a one-shot diagnostic call"). Under normal diagnostic use (manual or infrequent), this is not a concern.
-- **No rate limiting**: Unlike `/api/audit`, this endpoint has no rate limiter. Acceptable for a diagnostic endpoint that is self-limited by the 10s timeout.
-
-## Notes (Non-blocking)
-
-- The test file `backend.Tests/DiagnoseEndpointTests.cs` is an untracked new file (not yet staged). It should be committed alongside the production code changes.
-- Pipeline file `changes.md` says "all 21 tests passed" while `test-results.md` shows 25 tests — this is because `changes.md` was written before the 4 new tests were run. This is a documentation inconsistency in the pipeline artifacts, not a code issue.
+- **No dead code**: All new code is referenced and used.
+- **No cross-platform issues**: No hardcoded path separators, no `\n`-only splits, no regex anchors.
+- **No performance concerns**: Single-shot diagnostic endpoint with a 10-second timeout. No loops, no allocations beyond the response body.
+- **No startup validation gaps**: Configuration validation (`AiOptions` missing fields) is separately covered by `AiOptionsValidationTests` (3 tests, all passing).
 
 ## Required Actions
 
-None. The implementation is correct, secure, well-tested, and matches the specification. Ready to ship.
+None. All criteria pass. This change is ready to commit.
+
+## Suggested Commit Message
+
+```
+fix: update /api/diagnose to test chat completions endpoint
+
+Replace the GET /v1/models ping with a POST /chat/completions request
+that exercises the full inference pipeline (auth, routing, serialization,
+deserialization). Returns a `message` field with a 200-char excerpt on
+HTTP errors, and `error` on exceptions.
+
+Closes: <ticket-if-applicable>
+```

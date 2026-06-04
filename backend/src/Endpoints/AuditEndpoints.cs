@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -96,40 +97,45 @@ public static class AuditEndpoints
             var aiOptions = options.Value;
 
             using var client = new HttpClient();
-            client.BaseAddress = new Uri(aiOptions.BaseUrl);
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
             client.Timeout = TimeSpan.FromSeconds(10);
+
+            var body = JsonSerializer.Serialize(new
+            {
+                model = aiOptions.ModelId,
+                messages = new[] { new { role = "user", content = "Say hi in one word" } },
+                max_tokens = 10,
+                stream = false
+            });
+
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{aiOptions.BaseUrl}/chat/completions")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                var response = await client.GetAsync("models");
+                using var response = await client.SendAsync(request);
                 sw.Stop();
                 var statusCode = (int)response.StatusCode;
-                logger.LogInformation(
-                    "Diagnose: Groq models endpoint returned {StatusCode} in {Elapsed}ms",
-                    statusCode, sw.ElapsedMilliseconds);
+                var responseBody = await response.Content.ReadAsStringAsync();
+                var excerpt = responseBody.Length > 200 ? responseBody[..200] : responseBody;
+
+                logger.LogInformation("Diagnose: chat completions returned {StatusCode} in {Elapsed}ms", statusCode, sw.ElapsedMilliseconds);
                 return Results.Ok(new
                 {
                     groqStatus = statusCode,
                     elapsedMs = sw.ElapsedMilliseconds,
-                    ok = statusCode == 200
+                    ok = statusCode == 200,
+                    message = statusCode == 200 ? null : excerpt
                 });
             }
             catch (Exception ex)
             {
                 sw.Stop();
-                logger.LogError(ex,
-                    "Diagnose: Groq models endpoint failed after {Elapsed}ms",
-                    sw.ElapsedMilliseconds);
-                return Results.Ok(new
-                {
-                    groqStatus = 0,
-                    elapsedMs = sw.ElapsedMilliseconds,
-                    ok = false,
-                    error = ex.Message
-                });
+                logger.LogError(ex, "Diagnose: chat completions failed after {Elapsed}ms", sw.ElapsedMilliseconds);
+                return Results.Ok(new { groqStatus = 0, elapsedMs = sw.ElapsedMilliseconds, ok = false, error = ex.Message });
             }
         });
 
