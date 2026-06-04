@@ -1,76 +1,52 @@
-# Update `GET /api/diagnose` to hit Groq chat completions API
+# Add SDK non-streaming diagnostic mode to `/api/diagnose`
 
 ## Why this change is needed
 
-The current diagnostic endpoint hits `GET /api/v1/models` which only tests connectivity and auth. It does **not** exercise the chat completion pipeline that the main audit feature uses. By sending a minimal chat completion request instead, we can:
+We need to isolate whether the streaming issue (zero chunks inside Docker) is in the OpenAI SDK's HTTP pipeline or in the SSE streaming parser. A non-streaming `CompleteChatAsync` call via the SDK (identical initialization to `SpecAuditService`) will reveal which:
 
-1. Verify the full request/response pipeline (auth, routing, serialization, deserialization) works end-to-end.
-2. Catch API contract issues (e.g., model name changes, request schema differences) early.
-3. Provide a more realistic health check that proves the Groq provider is actually serving inference, not just returning a static model list.
+- If SDK non-streaming **works** inside Docker → the bug is in the SSE streaming parser (buffer size, encoding, line endings)
+- If SDK non-streaming **fails** inside Docker → the bug is in the SDK's internal `HttpClient` pipeline (different TLS, HTTP version, proxy handling vs. raw `HttpClient`)
 
 ---
 
 ## File changes
 
-### 1. MODIFY: `backend/src/Endpoints/AuditEndpoints.cs` — lines 93–134
+### 1. MODIFY: `backend/src/Endpoints/AuditEndpoints.cs`
 
-**Replace the entire handler body** of the existing `/api/diagnose` endpoint. The endpoint signature (`app.MapGet`, parameter list) stays the same.
-
-**Before (current handler, lines 93–134):**
+**Add `using` directives** at top of file (insert after line 10, before `namespace`):
 
 ```csharp
-app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory loggerFactory) =>
+using OpenAI;
+using OpenAI.Chat;
+using System.ClientModel;
+```
+
+**Modify the `/api/diagnose` endpoint** (lines 94–140). Add a `mode` query parameter and branch logic:
+
+```csharp
+app.MapGet("/api/diagnose", async (
+    IOptions<AiOptions> options,
+    ILoggerFactory loggerFactory,
+    string? mode = null) =>       // ← new parameter
 {
     var logger = loggerFactory.CreateLogger("SpecAudit.Diagnose");
     var aiOptions = options.Value;
 
-    using var client = new HttpClient();
-    client.BaseAddress = new Uri(aiOptions.BaseUrl);
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
-    client.Timeout = TimeSpan.FromSeconds(10);
+    // Default to "raw" for backward compatibility
+    mode = mode?.ToLowerInvariant() ?? "raw";
 
-    var sw = System.Diagnostics.Stopwatch.StartNew();
-    try
-    {
-        var response = await client.GetAsync("models");
-        sw.Stop();
-        var statusCode = (int)response.StatusCode;
-        logger.LogInformation(
-            "Diagnose: Groq models endpoint returned {StatusCode} in {Elapsed}ms",
-            statusCode, sw.ElapsedMilliseconds);
-        return Results.Ok(new
-        {
-            groqStatus = statusCode,
-            elapsedMs = sw.ElapsedMilliseconds,
-            ok = statusCode == 200
-        });
-    }
-    catch (Exception ex)
-    {
-        sw.Stop();
-        logger.LogError(ex,
-            "Diagnose: Groq models endpoint failed after {Elapsed}ms",
-            sw.ElapsedMilliseconds);
-        return Results.Ok(new
-        {
-            groqStatus = 0,
-            elapsedMs = sw.ElapsedMilliseconds,
-            ok = false,
-            error = ex.Message
-        });
-    }
+    if (mode == "sdk")
+        return await DiagnoseSdkMode(logger, aiOptions);
+    else
+        return await DiagnoseRawMode(logger, aiOptions);
 });
 ```
 
-**After (replacement handler, lines 93–134):**
+**Extract two private static methods** inside `AuditEndpoints`:
 
 ```csharp
-app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory loggerFactory) =>
+private static async Task<IResult> DiagnoseRawMode(ILogger logger, AiOptions aiOptions)
 {
-    var logger = loggerFactory.CreateLogger("SpecAudit.Diagnose");
-    var aiOptions = options.Value;
-
     using var client = new HttpClient();
     client.Timeout = TimeSpan.FromSeconds(10);
 
@@ -97,7 +73,7 @@ app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory l
         var responseBody = await response.Content.ReadAsStringAsync();
         var excerpt = responseBody.Length > 200 ? responseBody[..200] : responseBody;
 
-        logger.LogInformation("Diagnose: chat completions returned {StatusCode} in {Elapsed}ms", statusCode, sw.ElapsedMilliseconds);
+        logger.LogInformation("Diagnose raw: chat completions returned {StatusCode} in {Elapsed}ms", statusCode, sw.ElapsedMilliseconds);
         return Results.Ok(new
         {
             groqStatus = statusCode,
@@ -109,28 +85,163 @@ app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory l
     catch (Exception ex)
     {
         sw.Stop();
-        logger.LogError(ex, "Diagnose: chat completions failed after {Elapsed}ms", sw.ElapsedMilliseconds);
+        logger.LogError(ex, "Diagnose raw: chat completions failed after {Elapsed}ms", sw.ElapsedMilliseconds);
         return Results.Ok(new { groqStatus = 0, elapsedMs = sw.ElapsedMilliseconds, ok = false, error = ex.Message });
     }
-});
+}
+
+private static async Task<IResult> DiagnoseSdkMode(ILogger logger, AiOptions aiOptions)
+{
+    var credential = new ApiKeyCredential(aiOptions.ApiKey);
+    var clientOptions = new OpenAIClientOptions
+    {
+        Endpoint = new Uri(aiOptions.BaseUrl)
+        // NO NetworkTimeout — matches SpecAuditService constructor
+    };
+    var client = new OpenAIClient(credential, clientOptions);
+    var chatClient = client.GetChatClient(aiOptions.ModelId);
+
+    var messages = new List<ChatMessage>
+    {
+        new SystemChatMessage("You are a helpful assistant."),
+        new UserChatMessage("Say the word HELLO")
+    };
+
+    var chatOptions = new ChatCompletionOptions
+    {
+        MaxOutputTokenCount = 10,
+        Temperature = 0.1f
+    };
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        var result = await chatClient.CompleteChatAsync(messages, chatOptions);
+        sw.Stop();
+
+        var statusCode = 200; // SDK didn't throw, so it's a success
+        var response = result.Value.Content[0].Text;
+        var finishReason = result.Value.FinishReason.ToString();
+
+        logger.LogInformation(
+            "Diagnose SDK: non-streaming chat completed in {Elapsed}ms, finishReason={FinishReason}",
+            sw.ElapsedMilliseconds, finishReason);
+
+        return Results.Ok(new
+        {
+            groqStatus = statusCode,
+            elapsedMs = sw.ElapsedMilliseconds,
+            ok = true,
+            response,
+            finishReason
+        });
+    }
+    catch (Exception ex)
+    {
+        sw.Stop();
+        logger.LogError(ex, "Diagnose SDK: non-streaming chat failed after {Elapsed}ms", sw.ElapsedMilliseconds);
+        return Results.Ok(new
+        {
+            groqStatus = 0,
+            elapsedMs = sw.ElapsedMilliseconds,
+            ok = false,
+            error = ex.Message
+        });
+    }
+}
 ```
 
-**New `using` directive required.** Add `using System.Text;` for `Encoding.UTF8`. The existing file already imports:
-- `System.Net.Http.Headers` (line 1) — for `AuthenticationHeaderValue`
-- `System.Text.Json` (line 2) — for `JsonSerializer`
+**Important implementation notes:**
 
-`StringContent` and `HttpClient` are in `System.Net.Http`, which is covered by `<ImplicitUsings>enable</ImplicitUsings>` in the Web SDK.
+- The `mode` parameter is a `string?` on the `MapGet` delegate — ASP.NET Core automatically binds query string parameters by name to delegate parameters. No `[FromQuery]` attribute is needed (ASP.NET Core minimal APIs do this by convention).
+- The extracted methods are `private static` inside the `AuditEndpoints` static class — no new class needed.
+- The existing raw mode logic is **identical** to the current implementation; only extracted into a named method for clarity.
+- The SDK mode response shape differs from raw mode: success returns `response` + `finishReason` instead of `message`. Failure returns `error` (same as raw mode failure).
 
 ---
 
-### 2. MODIFY: `backend.Tests/DiagnoseEndpointTests.cs` — update test names and assertions
+### 2. MODIFY: `backend.Tests/DiagnoseEndpointTests.cs`
 
-The existing tests need updating to reflect the new chat completions endpoint behavior:
+**Add new test methods** after the existing `GetDiagnose_RespondsWithinReasonableTime` test:
 
-- **Rename** `GetDiagnose_HandlesUnreachableEndpointGracefully` to `GetDiagnose_HandlesChatCompletionsFailureGracefully` to reflect the new endpoint.
-- **Update assertions**: The `message` field is now present on non-200 HTTP responses (e.g., 401). The test for the exception path (connection refused) still validates the `error` field but should no longer assert that `message` is absent — the response shape now always includes `message` for HTTP responses and `error` for exceptions.
-- The failing-to-connect test still exercises the catch block, which returns `{ groqStatus: 0, elapsedMs, ok: false, error }`. No `message` field in the exception path.
-- Other tests (success path) need to account for the new `message` field in the response (it will be `null` on 200).
+```csharp
+[Fact]
+public async Task GetDiagnoseDefault_IsRawMode()
+{
+    // The default (no mode param) should produce raw-mode response shape:
+    // { groqStatus, elapsedMs, ok, message } — NOT { response, finishReason }
+    var response = await _client.GetAsync("/api/diagnose");
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+
+    // Raw mode has "message" but not "response" or "finishReason"
+    doc.RootElement.TryGetProperty("message", out _).Should().BeTrue();
+    doc.RootElement.TryGetProperty("response", out _).Should().BeFalse();
+    doc.RootElement.TryGetProperty("finishReason", out _).Should().BeFalse();
+}
+
+[Fact]
+public async Task GetDiagnoseSdkMode_ReturnsExpectedContract()
+{
+    // SDK mode response shape: { groqStatus, elapsedMs, ok, error? }
+    // (The configured BaseUrl http://localhost:1 triggers connection refused,
+    //  so we test the failure contract.)
+    var response = await _client.GetAsync("/api/diagnose?mode=sdk");
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+
+    doc.RootElement.TryGetProperty("groqStatus", out var groqStatus).Should().BeTrue();
+    doc.RootElement.TryGetProperty("elapsedMs", out var elapsedMs).Should().BeTrue();
+    doc.RootElement.TryGetProperty("ok", out var ok).Should().BeTrue();
+
+    groqStatus.ValueKind.Should().Be(JsonValueKind.Number);
+    elapsedMs.ValueKind.Should().Be(JsonValueKind.Number);
+    ok.ValueKind.Should().BeOneOf(JsonValueKind.True, JsonValueKind.False);
+
+    // Since localhost:1 will fail, ok should be false
+    ok.GetBoolean().Should().BeFalse();
+    groqStatus.GetInt32().Should().Be(0);
+
+    // Error message should be present
+    doc.RootElement.TryGetProperty("error", out var error).Should().BeTrue();
+    error.GetString().Should().NotBeNullOrWhiteSpace();
+}
+
+[Fact]
+public async Task GetDiagnoseSdkMode_HandlesFailureGracefully()
+{
+    // Verify SDK mode handles connection failure without throwing
+    var response = await _client.GetAsync("/api/diagnose?mode=sdk");
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+
+    doc.RootElement.GetProperty("ok").GetBoolean().Should().BeFalse();
+    doc.RootElement.GetProperty("elapsedMs").GetInt64().Should().BeGreaterThan(0);
+}
+
+[Fact]
+public async Task GetDiagnose_InvalidModeFallsBackToRaw()
+{
+    // An unrecognized mode value should fall back to raw
+    var response = await _client.GetAsync("/api/diagnose?mode=invalid");
+    response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+
+    // Should have raw-mode fields
+    doc.RootElement.TryGetProperty("message", out _).Should().BeTrue();
+    doc.RootElement.TryGetProperty("response", out _).Should().BeFalse();
+}
+```
+
+**Existing tests remain unchanged** — they all hit the default (raw) mode and still validate correct behavior.
 
 ---
 
@@ -138,25 +249,30 @@ The existing tests need updating to reflect the new chat completions endpoint be
 
 | Edge case | Handling |
 |-----------|----------|
-| **HTTP 200 success** | Returns `{ groqStatus: 200, elapsedMs, ok: true }` |
-| **HTTP 4xx/5xx** (e.g., 401 Unauthorized, 404 Model Not Found, 429 Rate Limited) | Reads the response body, extracts first 200 chars, returns `{ groqStatus, elapsedMs, ok: false, message: "..." }` |
-| **Exception** (connection refused, DNS failure, TLS error, timeout) | Catch block returns `{ groqStatus: 0, elapsedMs, ok: false, error: "... " }` |
-| **Timeout** (Groq unreachable or slow) | `client.Timeout = 10s` causes `TaskCanceledException`. Caught by catch block. `elapsedMs` will be ~10000. |
-| **Empty response body on non-200** | `body` is empty string, `body.Length > 200` is false, excerpt is `""`. |
-| **Response body shorter than 200 chars** | Used as-is (no out-of-range error). |
-| **Invalid BaseUrl** | `new Uri(...)` throws at construction — this is a startup failure, not a runtime concern. If somehow reaching runtime, caught by catch block. |
+| **No `mode` param** | Defaults to `"raw"` (backward compatible) |
+| **`mode=raw`** | Explicit raw mode, same as default |
+| **`mode=sdk`** | Uses OpenAI SDK `CompleteChatAsync` |
+| **`mode=invalid`** | Falls back to raw (any unrecognized value triggers `else` branch) |
+| **`mode=RAW`/`mode=Raw`** | Case-insensitive via `.ToLowerInvariant()` |
+| **SDK mode: API key invalid** | `OpenAIClient` throws at `CompleteChatAsync`; caught by catch block → `{ groqStatus: 0, elapsedMs, ok: false, error }` |
+| **SDK mode: network failure** | Same as above — caught by catch block |
+| **SDK mode: API returns 4xx** | The OpenAI SDK throws `ClientResultException`; caught by catch block |
+| **SDK mode: null/empty response text** | `result.Value.Content[0].Text` could be `""` if model returns empty — unlikely but possible; returned as-is |
+| **SDK mode: FinishReason unexpected** | `result.Value.FinishReason.ToString()` — always a valid enum value (e.g., "stop", "length", "content_filter") |
 
 ---
 
 ## Existing patterns to follow
 
-- **`IOptions<AiOptions>` injection**: Same as `GET /api/config` and the current diagnose handler — injected directly as a parameter.
-- **`ILoggerFactory` injection**: Same pattern as `POST /api/audit` — create named logger from factory.
-- **`HttpClient` usage**: Direct instantiation with `using`, same as the current handler. No `IHttpClientFactory`.
-- **`Stopwatch`**: Same pattern as current handler — `System.Diagnostics.Stopwatch.StartNew()`.
-- **Serilog logging**: `logger.LogInformation` / `logger.LogWarning` / `logger.LogError` with structured properties (`{StatusCode}`, `{Elapsed}ms`, `{Body}`).
-- **Anonymous types for responses**: Same pattern as current handler and `/api/config`.
-- **No new middleware, services, or DI registrations**: All types used are either already imported or covered by implicit usings.
+| Pattern | Reference |
+|---------|-----------|
+| `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `ChatClient` | `SpecAuditService.cs` lines 162–169 |
+| `ChatCompletionOptions` with `MaxOutputTokenCount` and `Temperature` | `SpecAuditService.cs` lines 187–191 |
+| `IOptions<AiOptions>` injection | Current `/api/diagnose` handler (line 94) |
+| `ILoggerFactory` + named logger | Current `/api/diagnose` handler (lines 96–97) |
+| `Stopwatch` timing | Current `/api/diagnose` handler (line 116) |
+| Anonymous types for JSON responses | Current `/api/diagnose` handler (lines 126–132, 138) |
+| Test setup with `WebApplicationFactory<Program>` + `AddInMemoryCollection` | `DiagnoseEndpointTests.cs` lines 14–28 |
 
 ---
 
@@ -174,18 +290,36 @@ docker compose down
 docker compose build --no-cache
 docker compose up -d
 
-# 4. Hit the diagnostic endpoint
-curl http://localhost:5000/api/diagnose
+# 4. Test raw mode (default)
+Invoke-RestMethod "http://localhost:5000/api/diagnose?mode=raw"
 
-# Expected success output (Groq is reachable):
-# {"groqStatus":200,"elapsedMs":467,"ok":true,"message":null}
-
-# Expected failure output (if networking broken):
-# {"groqStatus":0,"elapsedMs":10000,"ok":false,"error":"...message..."}
-
-# Expected auth/model error (if key invalid or model missing):
-# {"groqStatus":401,"elapsedMs":350,"ok":false,"message":"...first 200 chars..."}
-
-# 5. Verify the logs show the diagnostic entry
-docker compose logs backend | findstr "Diagnose"
+# 5. Test SDK mode
+Invoke-RestMethod "http://localhost:5000/api/diagnose?mode=sdk"
 ```
+
+**SDK mode expected success:**
+```json
+{
+  "groqStatus": 200,
+  "elapsedMs": 219,
+  "ok": true,
+  "response": "HELLO",
+  "finishReason": "stop"
+}
+```
+
+**SDK mode expected failure (e.g., bad API key):**
+```json
+{
+  "groqStatus": 0,
+  "elapsedMs": 1042,
+  "ok": false,
+  "error": "...message..."
+}
+```
+
+---
+
+## Open Questions
+
+None. All details are specified above.

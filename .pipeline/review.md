@@ -1,65 +1,44 @@
-# Review: Update `GET /api/diagnose` to hit Groq chat completions API
+# Review: Add SDK non-streaming diagnostic mode to `/api/diagnose`
 
 ## VERDICT: SHIP
 
+## Summary
+
+The implementation faithfully follows the specification. The `/api/diagnose` endpoint now accepts an optional `mode` query parameter (`raw` or `sdk`) with backward-compatible default of `"raw"`. In SDK mode, it creates a fresh `OpenAIClient` + `ChatClient` matching the `SpecAuditService` initialization pattern, calls `CompleteChatAsync` with a simple prompt, and returns the diagnostic result. Four new tests cover default mode, SDK mode contract, SDK failure handling, and invalid mode fallback. All 274 tests (29 backend + 245 frontend) pass, and TypeScript type checking is clean.
+
+## Checklist
+
+- [x] **Spec compliance**: Implementation matches all spec requirements: `mode` query param (default `"raw"`), case-insensitive matching, SDK mode creates `ApiKeyCredential` + `OpenAIClientOptions` + `OpenAIClient` + `ChatClient`, uses `CompleteChatAsync` with `SystemChatMessage("You are a helpful assistant.")` + `UserChatMessage("Say the word HELLO")`, `MaxOutputTokenCount = 10`, `Temperature = 0.1f`, success response `{ groqStatus: 200, elapsedMs, ok: true, response, finishReason }`, failure response `{ groqStatus: 0, elapsedMs, ok: false, error }`.
+- [x] **Backward compatible**: No `mode` param defaults to `"raw"`, preserving original behavior exactly. The raw mode logic is extracted unchanged into `DiagnoseRawMode()`.
+- [x] **Tests pass**: 274 tests pass (29 backend + 245 frontend), 0 failures. The 4 new backend tests cover all key paths. Both frontend (`npm test`) and backend (`dotnet test`) suites were executed and reported.
+- [x] **Code quality**: Clean implementation. All usings are used and necessary. No dead code, no unused imports, no cross-platform issues, no performance problems. Tests cover both failure contracts and the default/fallback behavior.
+- [x] **Edge cases covered**: No `mode` param → raw (default), `mode=invalid` → raw fallback, `mode=RAW`/`mode=Raw` → case-insensitive matching, SDK failure (connection refused) → caught and returns `{ groqStatus: 0, ok: false, error }`. All documented in the spec's edge case table are handled.
+
 ## Findings
 
-### Spec Conformance — ✅ PASS
+### Spec Adaptation (documented, acceptable)
 
-- **Handler replacement**: The handler body has been replaced exactly as specified. The old `client.GetAsync("models")` pattern is replaced with `HttpRequestMessage` POST to `{BaseUrl}/chat/completions` with a minimal chat completion payload (`model`, `messages`, `max_tokens: 10`, `stream: false`).
-- **Response shape**:
-  - HTTP 200: returns `{ groqStatus, elapsedMs, ok: true, message: null }` ✓
-  - HTTP 4xx/5xx: returns `{ groqStatus, elapsedMs, ok: false, message: "<200-char excerpt>" }` ✓
-  - Exception path: returns `{ groqStatus: 0, elapsedMs, ok: false, error: "..." }` (no `message` field) ✓
-- **`using System.Text;`** added (line 2) for `Encoding.UTF8` ✓
-- **Test renamed**: `GetDiagnose_HandlesUnreachableEndpointGracefully` → `GetDiagnose_HandlesChatCompletionsFailureGracefully` with updated doc comment ✓
-- **Only the 5 expected files** were modified (2 source + 3 pipeline docs). No unexpected changes.
-- **No superset or subset** — the implementation exactly matches the spec's `After` code block.
+The spec's original test code for `GetDiagnoseDefault_IsRawMode` and `GetDiagnose_InvalidModeFallsBackToRaw` checked for the `message` property to identify raw mode. However, because the test environment configures `BaseUrl = http://localhost:1` (which always produces a connection refused exception), the raw mode error path returns `error` (not `message`). The tests were correctly adapted to check for `error` instead of `message`, while still verifying that SDK-only fields (`response`, `finishReason`) are absent. This is a correct and necessary adjustment — the tests still validate the mode routing behavior. This change is documented in `changes.md` under "Spec Issues."
 
-### Security — ✅ PASS
+### Security
 
-- **No stack trace leakage**: The `catch` block returns `ex.Message` (not `ex.ToString()`). Standard .NET exception messages (e.g., "No connection could be made because the target machine actively refused it.") contain no stack frames, internal paths, or secrets.
-- **No API key exposure**: The API key is sent in the `Authorization` header (not in the URL, body, or response). The test suite confirms `GET /api/config` does not return the API key.
-- **No injection vectors**: The endpoint takes no user input (pure `GET` with no query parameters). The request body is constructed from configuration values, not user-supplied strings.
-- **No auth bypass**: The endpoint uses the same `IOptions<AiOptions>` injection and auth header pattern as the existing code.
-- **Response body excerpt safety**: The `message` field is at most 200 characters of the external API response body — self-limiting and diagnostic-only.
+- **No information disclosure**: Exception messages (`ex.Message`) are returned as `error` in responses, which is intentional for this diagnostic endpoint. Stack traces are not exposed. The API key is used to create credentials but is never logged or returned in responses.
+- **No new auth gaps**: The `/api/diagnose` endpoint existed before this change and was not mentioned in the spec as requiring new auth middleware. No new routes were created.
+- **No injection vectors**: No user-supplied strings are interpolated into HTML, SQL, shell, or regex contexts. The `mode` parameter is safely compared against known values.
+- **No secrets exposure**: API key is used only in `ApiKeyCredential` construction and HTTP Authorization header — never logged or echoed.
 
-### Correctness — ✅ PASS
+### Correctness
 
-- **Async discipline**: All async calls (`client.SendAsync`, `response.Content.ReadAsStringAsync`) are properly awaited. No fire-and-forget patterns.
-- **Error handling**: The `try`/`catch` properly captures all `Exception` types. The `catch` block logs the error (with structured logging) and returns a well-formed response. No empty `catch` blocks; no error swallowing.
-- **State safety**: Each request creates a fresh `HttpClient` disposed via `using`. No shared mutable state. Safe under concurrent requests.
-- **Boundary safety**: The 200-char excerpt uses `responseBody[..200]` guarded by `responseBody.Length > 200`, preventing out-of-range exceptions.
-- **Disposal**: `HttpClient` and `HttpResponseMessage` are disposed via `using`. `HttpRequestMessage` is not disposed but this is acceptable — it has no unmanaged resources in modern .NET, and the pattern matches the spec exactly.
-- **Runtime type safety**: No `as` casts, no `JSON.parse` without validation (C# with `JsonSerializer`), no unguarded property access on external data.
-
-### Testing — ✅ PASS
-
-- **Backend tests**: All **25** pass (including the renamed `GetDiagnose_HandlesChatCompletionsFailureGracefully`).
-- **Frontend tests**: All **245** pass across 17 test files (vitest).
-- **TypeScript**: `tsc --noEmit` passes with zero errors.
-- **Test coverage note**: All 4 diagnose tests exercise the exception path (connection refusal via `http://localhost:1`). The HTTP-error-path (`message` field from non-200 responses) is not covered. This gap is documented in `test-results.md` and acknowledged as a pre-existing limitation that was also present before this change. It is not a regression.
-
-### Code Quality — ✅ PASS (non-blocking observations)
-
-- **No dead code**: All new code is referenced and used.
-- **No cross-platform issues**: No hardcoded path separators, no `\n`-only splits, no regex anchors.
-- **No performance concerns**: Single-shot diagnostic endpoint with a 10-second timeout. No loops, no allocations beyond the response body.
-- **No startup validation gaps**: Configuration validation (`AiOptions` missing fields) is separately covered by `AiOptionsValidationTests` (3 tests, all passing).
+- **Async discipline**: All async calls are properly awaited. No fire-and-forget patterns. The `catch` blocks correctly stop the `Stopwatch` before reading `ElapsedMilliseconds`.
+- **No race conditions**: Each request creates its own `HttpClient` (raw mode) or `OpenAIClient` (SDK mode). No shared mutable state between concurrent requests.
+- **Runtime type safety**: Anonymous types are used for JSON serialization, which is safe. `result.Value.Content[0].Text` accesses the OpenAI SDK response with proper null guards (the SDK guarantees at least one choice in non-streaming responses).
+- **No error swallowing**: All catch blocks log the exception and return a structured error response. No empty catch blocks.
 
 ## Required Actions
 
-None. All criteria pass. This change is ready to commit.
+None. The implementation is complete, correct, and ready to ship.
 
-## Suggested Commit Message
+## Notes
 
-```
-fix: update /api/diagnose to test chat completions endpoint
-
-Replace the GET /v1/models ping with a POST /chat/completions request
-that exercises the full inference pipeline (auth, routing, serialization,
-deserialization). Returns a `message` field with a 200-char excerpt on
-HTTP errors, and `error` on exceptions.
-
-Closes: <ticket-if-applicable>
-```
+- The `using Sentry;` import (line 9) was already present before this change and is used by the existing `POST /api/audit` handler's catch block — no issue.
+- `ROADMAP.md` was updated with the commit hash for this feature, which is a minor expected housekeeping change outside the spec scope.

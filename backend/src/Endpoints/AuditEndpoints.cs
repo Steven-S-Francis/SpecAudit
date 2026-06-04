@@ -4,10 +4,13 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OpenAI;
+using OpenAI.Chat;
 using Sentry;
 using SpecAudit.Configuration;
 using SpecAudit.Models.Requests;
 using SpecAudit.Services;
+using System.ClientModel;
 
 namespace SpecAudit.Endpoints;
 
@@ -91,58 +94,132 @@ public static class AuditEndpoints
         app.MapGet("/api/config", (IOptions<AiOptions> options) =>
             Results.Ok(new { providerName = options.Value.ProviderName }));
 
-        app.MapGet("/api/diagnose", async (IOptions<AiOptions> options, ILoggerFactory loggerFactory) =>
+        app.MapGet("/api/diagnose", async (
+            IOptions<AiOptions> options,
+            ILoggerFactory loggerFactory,
+            string? mode = null) =>
         {
             var logger = loggerFactory.CreateLogger("SpecAudit.Diagnose");
             var aiOptions = options.Value;
 
-            using var client = new HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(10);
+            // Default to "raw" for backward compatibility
+            mode = mode?.ToLowerInvariant() ?? "raw";
 
-            var body = JsonSerializer.Serialize(new
-            {
-                model = aiOptions.ModelId,
-                messages = new[] { new { role = "user", content = "Say hi in one word" } },
-                max_tokens = 10,
-                stream = false
-            });
-
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{aiOptions.BaseUrl}/chat/completions")
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
-
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            try
-            {
-                using var response = await client.SendAsync(request);
-                sw.Stop();
-                var statusCode = (int)response.StatusCode;
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var excerpt = responseBody.Length > 200 ? responseBody[..200] : responseBody;
-
-                logger.LogInformation("Diagnose: chat completions returned {StatusCode} in {Elapsed}ms", statusCode, sw.ElapsedMilliseconds);
-                return Results.Ok(new
-                {
-                    groqStatus = statusCode,
-                    elapsedMs = sw.ElapsedMilliseconds,
-                    ok = statusCode == 200,
-                    message = statusCode == 200 ? null : excerpt
-                });
-            }
-            catch (Exception ex)
-            {
-                sw.Stop();
-                logger.LogError(ex, "Diagnose: chat completions failed after {Elapsed}ms", sw.ElapsedMilliseconds);
-                return Results.Ok(new { groqStatus = 0, elapsedMs = sw.ElapsedMilliseconds, ok = false, error = ex.Message });
-            }
+            if (mode == "sdk")
+                return await DiagnoseSdkMode(logger, aiOptions);
+            else
+                return await DiagnoseRawMode(logger, aiOptions);
         });
 
         app.MapGet("/api/test-error", () =>
         {
             throw new Exception("This is a SpecAudit test exception to verify Sentry integration.");
         });
+    }
+
+    private static async Task<IResult> DiagnoseRawMode(ILogger logger, AiOptions aiOptions)
+    {
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(10);
+
+        var body = JsonSerializer.Serialize(new
+        {
+            model = aiOptions.ModelId,
+            messages = new[] { new { role = "user", content = "Say hi in one word" } },
+            max_tokens = 10,
+            stream = false
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{aiOptions.BaseUrl}/chat/completions")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", aiOptions.ApiKey);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var response = await client.SendAsync(request);
+            sw.Stop();
+            var statusCode = (int)response.StatusCode;
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var excerpt = responseBody.Length > 200 ? responseBody[..200] : responseBody;
+
+            logger.LogInformation("Diagnose raw: chat completions returned {StatusCode} in {Elapsed}ms", statusCode, sw.ElapsedMilliseconds);
+            return Results.Ok(new
+            {
+                groqStatus = statusCode,
+                elapsedMs = sw.ElapsedMilliseconds,
+                ok = statusCode == 200,
+                message = statusCode == 200 ? null : excerpt
+            });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            logger.LogError(ex, "Diagnose raw: chat completions failed after {Elapsed}ms", sw.ElapsedMilliseconds);
+            return Results.Ok(new { groqStatus = 0, elapsedMs = sw.ElapsedMilliseconds, ok = false, error = ex.Message });
+        }
+    }
+
+    private static async Task<IResult> DiagnoseSdkMode(ILogger logger, AiOptions aiOptions)
+    {
+        var credential = new ApiKeyCredential(aiOptions.ApiKey);
+        var clientOptions = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(aiOptions.BaseUrl)
+            // NO NetworkTimeout — matches SpecAuditService constructor
+        };
+        var client = new OpenAIClient(credential, clientOptions);
+        var chatClient = client.GetChatClient(aiOptions.ModelId);
+
+        var messages = new List<ChatMessage>
+        {
+            new SystemChatMessage("You are a helpful assistant."),
+            new UserChatMessage("Say the word HELLO")
+        };
+
+        var chatOptions = new ChatCompletionOptions
+        {
+            MaxOutputTokenCount = 10,
+            Temperature = 0.1f
+        };
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var result = await chatClient.CompleteChatAsync(messages, chatOptions);
+            sw.Stop();
+
+            var statusCode = 200; // SDK didn't throw, so it's a success
+            var response = result.Value.Content[0].Text;
+            var finishReason = result.Value.FinishReason.ToString();
+
+            logger.LogInformation(
+                "Diagnose SDK: non-streaming chat completed in {Elapsed}ms, finishReason={FinishReason}",
+                sw.ElapsedMilliseconds, finishReason);
+
+            return Results.Ok(new
+            {
+                groqStatus = statusCode,
+                elapsedMs = sw.ElapsedMilliseconds,
+                ok = true,
+                response,
+                finishReason
+            });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            logger.LogError(ex, "Diagnose SDK: non-streaming chat failed after {Elapsed}ms", sw.ElapsedMilliseconds);
+            return Results.Ok(new
+            {
+                groqStatus = 0,
+                elapsedMs = sw.ElapsedMilliseconds,
+                ok = false,
+                error = ex.Message
+            });
+        }
     }
 }
 
