@@ -30,7 +30,7 @@
 | Fresh OpenAI client per request (fixes HTTP/2 connection poisoning) | `7642f2c` |
 | Replace OpenAI SDK streaming with raw HttpClient + SSE parsing | `80f5598` |
 | Spec file upload (drag-and-drop + file picker) | `a059f4d` |
-| Session history (localStorage + sidebar) | pending |
+| Session history (localStorage + sidebar) | `7d90689` |
 
 ---
 
