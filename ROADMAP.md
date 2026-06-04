@@ -33,7 +33,7 @@
 | Session history (localStorage + sidebar) | `7d90689` |
 | Audit history sidebar | `7d90689` |
 | Toast/snackbar notification system | `393aa77` |
-| Configurable provider/model in UI | `PLACEHOLDER` |
+| Configurable provider/model in UI | `81761c9` |
 
 ---
 

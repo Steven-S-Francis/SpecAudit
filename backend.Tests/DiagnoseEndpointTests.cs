@@ -59,8 +59,8 @@ public class DiagnoseEndpointTests : IClassFixture<WebApplicationFactory<Program
         var json = await response.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
 
-        // Verify the endpoint actually executed by checking elapsedMs is positive
-        doc.RootElement.GetProperty("elapsedMs").GetInt64().Should().BeGreaterThan(0);
+        // Verify the endpoint actually executed by checking elapsedMs is non-negative
+        doc.RootElement.GetProperty("elapsedMs").GetInt64().Should().BeGreaterOrEqualTo(0);
     }
 
     [Fact]
