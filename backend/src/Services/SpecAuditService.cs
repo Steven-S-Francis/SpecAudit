@@ -226,7 +226,14 @@ public sealed class SpecAuditService
             HttpCompletionOption.ResponseHeadersRead,
             ct);
 
-        httpResponse.EnsureSuccessStatusCode();
+        if (!httpResponse.IsSuccessStatusCode)
+        {
+            var errorBody = await httpResponse.Content.ReadAsStringAsync(ct);
+            _logger.LogError("AI provider returned {StatusCode}: {ErrorBody}",
+                (int)httpResponse.StatusCode, errorBody);
+            throw new HttpRequestException(
+                $"AI provider returned {(int)httpResponse.StatusCode}: {errorBody}");
+        }
 
         using var responseStream = await httpResponse.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(responseStream);
