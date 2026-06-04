@@ -29,16 +29,11 @@
 | Diagnostic endpoint (GET /api/diagnose → chat/completions) | `4be9fb5`, `e1207a3`, `8c6b3f7` |
 | Fresh OpenAI client per request (fixes HTTP/2 connection poisoning) | `7642f2c` |
 | Replace OpenAI SDK streaming with raw HttpClient + SSE parsing | `80f5598` |
+| Spec file upload (drag-and-drop + file picker) | pending |
 
 ---
 
 ## Small (quick wins)
-
-### Spec file upload
-Drag-and-drop or file picker for YAML/JSON spec files, instead of paste-only input.
-- **Why:** Users have spec files on disk; pasting large specs is error-prone.
-- **Affects:** `frontend/src/components/features/InputPanel.tsx` (file input + drag zone), `frontend/src/App.tsx` (pass file content).
-- **Risk:** File reading is async; need loading state while reading. Must handle non-YAML/JSON files gracefully.
 
 ---
 
