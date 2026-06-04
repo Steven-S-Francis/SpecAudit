@@ -36,9 +36,11 @@ describe('ResultPanel', () => {
   it('renders CRITICAL severity with red styling', () => {
     const markdown = '### [CRITICAL] Missing Auth';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
-    // Scope query to the markdown content area to find the badge (not the toggle button)
+    // Scope query to the markdown content area to find the badge (not the group header)
     const markdownArea = container.querySelector<HTMLElement>('.font-mono');
-    const badge = within(markdownArea!).getByText('CRITICAL');
+    const badges = within(markdownArea!).getAllByText('CRITICAL');
+    // The finding badge has the bg-red-500/20 class; the group header label doesn't
+    const badge = badges.find((el) => el.className.includes('bg-red-500/20'))!;
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-red-300');
     expect(badge.className).toContain('bg-red-500/20');
@@ -50,7 +52,8 @@ describe('ResultPanel', () => {
     const markdown = '### [WARNING] Missing 404 Response';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
     const markdownArea = container.querySelector<HTMLElement>('.font-mono');
-    const badge = within(markdownArea!).getByText('WARNING');
+    const badges = within(markdownArea!).getAllByText('WARNING');
+    const badge = badges.find((el) => el.className.includes('bg-amber-500/20'))!;
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-amber-300');
     expect(badge.className).toContain('bg-amber-500/20');
@@ -61,7 +64,8 @@ describe('ResultPanel', () => {
     const markdown = '### [INFO] Missing Contact Block';
     const { container } = render(<ResultPanel content={markdown} isStreaming={false} />);
     const markdownArea = container.querySelector<HTMLElement>('.font-mono');
-    const badge = within(markdownArea!).getByText('INFO');
+    const badges = within(markdownArea!).getAllByText('INFO');
+    const badge = badges.find((el) => el.className.includes('bg-blue-400/20'))!;
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-blue-300');
     expect(badge.className).toContain('bg-blue-400/20');
@@ -253,6 +257,100 @@ describe('ResultPanel', () => {
     const highlights = container.querySelectorAll('mark.search-highlight');
     expect(highlights.length).toBe(0);
     expect(screen.getByText('Governance Score')).toBeInTheDocument();
+  });
+
+  // --- Collapsible severity group tests ---
+
+  it('renders collapsible group headers for each severity present', () => {
+    const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404\n---\n### [INFO] Missing Contact';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    // Each severity should have a group header button — filter by aria-expanded
+    // to distinguish from the severity toggle filter buttons
+    const headers = screen.getAllByRole('button', { expanded: true });
+    expect(headers.some(h => h.textContent?.includes('CRITICAL'))).toBe(true);
+    expect(headers.some(h => h.textContent?.includes('WARNING'))).toBe(true);
+    expect(headers.some(h => h.textContent?.includes('INFO'))).toBe(true);
+  });
+
+  it('group header shows finding count', () => {
+    const markdown = '### [CRITICAL] Missing Auth\n### [CRITICAL] No Rate Limit\n---\n### [WARNING] Missing 404';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    // CRITICAL header should show (2)
+    expect(screen.getByText('(2)')).toBeInTheDocument();
+    // WARNING header should show (1)
+    expect(screen.getByText('(1)')).toBeInTheDocument();
+  });
+
+  it('clicking severity group header hides its findings', () => {
+    const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    expect(screen.getByText('Missing Auth')).toBeInTheDocument();
+    // Click the CRITICAL group header (find the button by its aria-controls)
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    fireEvent.click(criticalHeader);
+    // CRITICAL finding is hidden via CSS (opacity: 0, max-height: 0)
+    const groupContainer = document.getElementById('finding-group-critical')!;
+    expect(groupContainer).toHaveStyle({ opacity: '0', maxHeight: '0px' });
+    // WARNING should still be visible
+    expect(screen.getByText('Missing 404')).toBeInTheDocument();
+  });
+
+  it('clicking collapsed group header re-shows findings', () => {
+    const markdown = '### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    // Collapse
+    fireEvent.click(criticalHeader);
+    const groupContainer = document.getElementById('finding-group-critical')!;
+    expect(groupContainer).toHaveStyle({ opacity: '0', maxHeight: '0px' });
+    // Re-expand (same button now has aria-expanded false)
+    const collapsedHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: false });
+    fireEvent.click(collapsedHeader);
+    expect(groupContainer).toHaveStyle({ opacity: '1' });
+  });
+
+  it('group header toggles on Enter key', () => {
+    const markdown = '### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    fireEvent.keyDown(criticalHeader, { key: 'Enter' });
+    const groupContainer = document.getElementById('finding-group-critical')!;
+    expect(groupContainer).toHaveStyle({ opacity: '0', maxHeight: '0px' });
+    // Second Enter re-expands
+    const collapsedHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: false });
+    fireEvent.keyDown(collapsedHeader, { key: 'Enter' });
+    expect(groupContainer).toHaveStyle({ opacity: '1' });
+  });
+
+  it('group header toggles on Space key', () => {
+    const markdown = '### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    fireEvent.keyDown(criticalHeader, { key: ' ' });
+    const groupContainer = document.getElementById('finding-group-critical')!;
+    expect(groupContainer).toHaveStyle({ opacity: '0', maxHeight: '0px' });
+  });
+
+  it('non-finding content remains visible when severity groups are collapsed', () => {
+    const markdown = '## Governance Score\nScore: 8.5\n---\n### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    fireEvent.click(criticalHeader);
+    expect(screen.getByText('Governance Score')).toBeInTheDocument();
+    // Finding text still in DOM but hidden
+    expect(screen.getByText('Missing Auth')).toBeInTheDocument();
+    const groupContainer = document.getElementById('finding-group-critical')!;
+    expect(groupContainer).toHaveStyle({ opacity: '0', maxHeight: '0px' });
+  });
+
+  it('group header has correct aria-expanded state', () => {
+    const markdown = '### [CRITICAL] Missing Auth';
+    render(<ResultPanel content={markdown} isStreaming={false} />);
+    const criticalHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: true });
+    expect(criticalHeader).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(criticalHeader);
+    const collapsedHeader = screen.getByRole('button', { name: /CRITICAL/i, expanded: false });
+    expect(collapsedHeader).toHaveAttribute('aria-expanded', 'false');
   });
 
   // --- Individual copy feature tests ---

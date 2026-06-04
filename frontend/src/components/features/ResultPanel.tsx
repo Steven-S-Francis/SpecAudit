@@ -1,4 +1,4 @@
-import { useState, useCallback, useDeferredValue, isValidElement, Children, type ReactNode, type ComponentPropsWithoutRef } from 'react';
+import { useState, useCallback, useMemo, useDeferredValue, isValidElement, Children, type ReactNode, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,7 +6,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from 'rehype-sanitize';
 import type { SeverityLevel } from '../../types/audit';
 import { parseSeverity } from '../../utils/parseSeverity';
-import { filterMarkdownBySeverity, splitIntoBlocks } from '../../utils/filterMarkdown';
+import { filterMarkdownBySeverity, splitIntoBlocks, type MarkdownBlock } from '../../utils/filterMarkdown';
 import { highlightText } from '../../utils/highlightText';
 import { useAutoScroll } from '../../hooks/useAutoScroll';
 import { ScrollButton } from '../ui/ScrollButton';
@@ -71,6 +71,58 @@ function extractTextContent(node: ReactNode): string {
   return '';
 }
 
+function SeverityGroupHeader({
+  severity,
+  count,
+  isExpanded,
+  onToggle,
+  headerId,
+}: {
+  severity: SeverityLevel;
+  count: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+  headerId: string;
+}) {
+  const styles = SEVERITY_STYLES[severity];
+
+  return (
+    <button
+      id={headerId}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      aria-expanded={isExpanded}
+      aria-controls={`finding-group-${severity.toLowerCase()}`}
+      className={`
+        flex items-center gap-2 w-full text-left cursor-pointer
+        px-4 py-2 mb-2 rounded-lg border transition-colors
+        ${styles.wrapper.replace('mb-3', '').replace('px-4 py-3', 'px-4 py-2')}
+        hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400
+      `}
+    >
+      <span className={`font-semibold text-sm ${styles.label}`}>
+        {severity}
+      </span>
+      <span className="text-xs text-slate-400 light:text-slate-500 ml-1">
+        ({count})
+      </span>
+      <span
+        className="ml-auto transition-transform duration-200 text-slate-400"
+        style={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
 export function ResultPanel({ content, isStreaming }: Props) {
   const showSkeleton = content === '' && !isStreaming;
   const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll({ deps: [content], isStreaming });
@@ -94,6 +146,22 @@ export function ResultPanel({ content, isStreaming }: Props) {
 
   const [copiedBlockText, setCopiedBlockText] = useState<string | null>(null);
 
+  const [expandedGroups, setExpandedGroups] = useState<Set<SeverityLevel>>(
+    () => new Set<SeverityLevel>(['CRITICAL', 'WARNING', 'INFO'])
+  );
+
+  const toggleGroup = useCallback((severity: SeverityLevel) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(severity)) {
+        next.delete(severity);
+      } else {
+        next.add(severity);
+      }
+      return next;
+    });
+  }, []);
+
   const handleCopyBlock = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -106,6 +174,139 @@ export function ResultPanel({ content, isStreaming }: Props) {
 
   const filteredContent = filterMarkdownBySeverity(content, hiddenSeverities);
   const blocks = splitIntoBlocks(filteredContent);
+
+  const findingCounts = useMemo(() => {
+    const counts: Record<SeverityLevel, number> = { CRITICAL: 0, WARNING: 0, INFO: 0 };
+    for (const block of blocks) {
+      if (block.severity) counts[block.severity]++;
+    }
+    return counts;
+  }, [blocks]);
+
+  type BlockSection = {
+    type: 'finding-group';
+    severity: SeverityLevel;
+    blocks: MarkdownBlock[];
+  } | {
+    type: 'non-finding';
+    block: MarkdownBlock;
+  };
+
+  const sections = useMemo(() => {
+    const sections: BlockSection[] = [];
+    let currentSeverity: SeverityLevel | null = null;
+    let currentGroup: MarkdownBlock[] = [];
+
+    for (const block of blocks) {
+      if (block.severity) {
+        if (block.severity !== currentSeverity) {
+          if (currentGroup.length > 0 && currentSeverity) {
+            sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+          }
+          currentSeverity = block.severity;
+          currentGroup = [block];
+        } else {
+          currentGroup.push(block);
+        }
+      } else {
+        if (currentGroup.length > 0 && currentSeverity) {
+          sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+          currentSeverity = null;
+          currentGroup = [];
+        }
+        sections.push({ type: 'non-finding', block });
+      }
+    }
+    if (currentGroup.length > 0 && currentSeverity) {
+      sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+    }
+    return sections;
+  }, [blocks]);
+
+  function renderBlock(
+    block: MarkdownBlock,
+    query: string,
+    copiedText: string | null,
+    onCopy: (text: string) => void
+  ) {
+    const highlightedBlock = highlightText(block.text, query);
+    const isFinding = block.severity !== null;
+
+    return (
+      <>
+        {isFinding && (
+          <button
+            onClick={() => onCopy(block.text)}
+            className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 light:bg-slate-200 light:hover:bg-slate-300 light:border-slate-300 text-slate-400 hover:text-slate-200 light:text-slate-500 light:hover:text-slate-700"
+            aria-label={copiedText === block.text ? 'Copied!' : 'Copy finding'}
+            title={copiedText === block.text ? 'Copied!' : 'Copy finding'}
+          >
+            {copiedText === block.text ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            )}
+          </button>
+        )}
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[
+            [rehypeRaw],
+            [rehypeSanitize, SANITIZE_SCHEMA],
+          ]}
+          components={{
+            h3({ children }: HeadingProps) {
+              const text = extractTextContent(children);
+              const severity = parseSeverity(text);
+
+              if (severity) {
+                const styles = SEVERITY_STYLES[severity];
+                const prefix = `[${severity}]`;
+                // Filter out the severity prefix from children to keep
+                // <mark> highlighting elements intact when search is active
+                const contentChildren = Children.map(children, (child) => {
+                  if (typeof child === 'string' && child.startsWith(prefix)) {
+                    const rest = child.slice(prefix.length).trimStart();
+                    return rest || undefined;
+                  }
+                  return child;
+                });
+                return (
+                  <div className={styles.wrapper}>
+                    <span className={styles.badge}>{severity}</span>
+                    <span className={`font-semibold ${styles.label}`}>{contentChildren}</span>
+                  </div>
+                );
+              }
+              return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
+            },
+            code({ children, className }: CodeProps) {
+              const isBlock = className?.includes('language-');
+              return isBlock
+                ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
+                : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
+            },
+            hr(_props: HrProps) {
+              return <hr className="border-slate-700 my-4 light:border-slate-300" />;
+            },
+            strong({ children }: StrongProps) {
+              return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
+            },
+            p({ children }: ParaProps) {
+              return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
+            },
+          }}
+        >
+          {highlightedBlock}
+        </ReactMarkdown>
+      </>
+    );
+  }
 
   return (
     <div
@@ -182,82 +383,41 @@ export function ResultPanel({ content, isStreaming }: Props) {
           </>
         )}
         <div className="font-mono text-sm text-slate-200 light:text-slate-800">
-          {blocks.map((block, index) => {
-            const highlightedBlock = highlightText(block.text, deferredQuery);
-            const isFinding = block.severity !== null;
+          {sections.map((section, index) => {
+            if (section.type === 'non-finding') {
+              return (
+                <div key={index}>
+                  {renderBlock(section.block, deferredQuery, copiedBlockText, handleCopyBlock)}
+                </div>
+              );
+            }
 
+            const isExpanded = expandedGroups.has(section.severity);
             return (
-              <div key={index} className={isFinding ? 'relative group' : ''}>
-                {isFinding && (
-                  <button
-                    onClick={() => handleCopyBlock(block.text)}
-                    className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 light:bg-slate-200 light:hover:bg-slate-300 light:border-slate-300 text-slate-400 hover:text-slate-200 light:text-slate-500 light:hover:text-slate-700"
-                    aria-label={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
-                    title={copiedBlockText === block.text ? 'Copied!' : 'Copy finding'}
-                  >
-                    {copiedBlockText === block.text ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                    ) : (
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
-                    )}
-                  </button>
-                )}
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[
-                    [rehypeRaw],
-                    [rehypeSanitize, SANITIZE_SCHEMA],
-                  ]}
-                  components={{
-                    h3({ children }: HeadingProps) {
-                      const text = extractTextContent(children);
-                      const severity = parseSeverity(text);
-
-                      if (severity) {
-                        const styles = SEVERITY_STYLES[severity];
-                        const prefix = `[${severity}]`;
-                        // Filter out the severity prefix from children to keep
-                        // <mark> highlighting elements intact when search is active
-                        const contentChildren = Children.map(children, (child) => {
-                          if (typeof child === 'string' && child.startsWith(prefix)) {
-                            const rest = child.slice(prefix.length).trimStart();
-                            return rest || undefined;
-                          }
-                          return child;
-                        });
-                        return (
-                          <div className={styles.wrapper}>
-                            <span className={styles.badge}>{severity}</span>
-                            <span className={`font-semibold ${styles.label}`}>{contentChildren}</span>
-                          </div>
-                        );
-                      }
-                      return <h3 className="text-slate-100 font-semibold text-base mt-6 mb-2 light:text-slate-900">{children}</h3>;
-                    },
-                    code({ children, className }: CodeProps) {
-                      const isBlock = className?.includes('language-');
-                      return isBlock
-                        ? <pre className="bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto my-3 text-xs text-slate-300 light:bg-slate-100 light:border-slate-300 light:text-slate-600"><code>{children}</code></pre>
-                        : <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded text-xs light:bg-slate-200 light:text-amber-700">{children}</code>;
-                    },
-                    hr(_props: HrProps) {
-                      return <hr className="border-slate-700 my-4 light:border-slate-300" />;
-                    },
-                    strong({ children }: StrongProps) {
-                      return <strong className="text-slate-100 font-semibold light:text-slate-900">{children}</strong>;
-                    },
-                    p({ children }: ParaProps) {
-                      return <p className="text-slate-400 text-sm leading-relaxed mb-2 light:text-slate-500">{children}</p>;
-                    },
+              <div key={index} className="mb-4">
+                <SeverityGroupHeader
+                  severity={section.severity}
+                  count={section.blocks.length}
+                  isExpanded={isExpanded}
+                  onToggle={() => toggleGroup(section.severity)}
+                  headerId={`finding-group-header-${section.severity.toLowerCase()}`}
+                />
+                <div
+                  id={`finding-group-${section.severity.toLowerCase()}`}
+                  role="region"
+                  aria-labelledby={`finding-group-header-${section.severity.toLowerCase()}`}
+                  className="overflow-hidden transition-all duration-300 ease-in-out"
+                  style={{
+                    maxHeight: isExpanded ? `${Math.max(findingCounts[section.severity] * 500, 300)}px` : '0',
+                    opacity: isExpanded ? 1 : 0,
                   }}
                 >
-                  {highlightedBlock}
-                </ReactMarkdown>
+                  {section.blocks.map((block, bi) => (
+                    <div key={bi} className="relative group">
+                      {renderBlock(block, deferredQuery, copiedBlockText, handleCopyBlock)}
+                    </div>
+                  ))}
+                </div>
               </div>
             );
           })}

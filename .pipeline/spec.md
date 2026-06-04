@@ -1,559 +1,460 @@
-# Configurable AI Provider/Model Dropdown in UI
+# Expandable/Collapsible Findings Grouped by Severity
 
 ## OPEN QUESTIONS
 
-1. **Provider name badge source**: Currently `GET /api/config` returns `{ providerName }` from `AiOptions.ProviderName`. After this change, should the badge reflect the *currently selected* provider (from the dropdown) rather than the server-configured default? **Recommendation**: Yes — once user selects a provider, the badge should show the selected provider's `name` field. The initial value (before user selection) should come from the first provider returned by `GET /api/providers` (or from localStorage if previously persisted).
+1. **Per-finding severity badge inside collapsed sections**: Should the individual finding's severity badge (e.g. `[CRITICAL]` inside the styled `.wrapper` div) remain visible when inside a collapsible group whose header already shows the severity? **Assumption**: Keep the per-finding badge as-is. The group header is for collapse control; the per-finding badge provides visual consistency within each finding card. No changes to the existing `h3` handler in `ReactMarkdown` components.
 
-2. **`GET /api/config` repurposing**: With the new `GET /api/providers` endpoint, the old `/api/config` endpoint can either be removed (breaking change risk) or kept as a fallback. **Recommendation**: Keep `/api/config` for backward compatibility but the UI should switch to `/api/providers` for its primary data.
-
-3. **Existing test count**: The feature request says "all 29 tests pass" — verify exact count after changes. Current backend tests are across 6 files; frontend tests are in `__tests__` directories. Count may vary.
+2. **Count computation**: Where should the finding count per severity be computed? **Assumption**: Pre-compute by scanning `blocks` once after filtering, before rendering. Store in a `Record<SeverityLevel, number>`.
 
 ---
 
-## Files to Create or Modify
+## Files to Modify
 
 | Action | Path |
 |--------|------|
-| **MODIFY** | `backend/appsettings.json` — add `AiProviders` section |
-| **CREATE** | `backend/src/Configuration/AiProviderOptions.cs` — provider config model |
-| **MODIFY** | `backend/src/Configuration/AiOptions.cs` — keep existing, no changes needed |
-| **MODIFY** | `backend/src/Models/Requests/AuditRequest.cs` — add `provider` and `model` fields |
-| **MODIFY** | `backend/src/Services/SpecAuditService.cs` — accept provider/model, use dynamic config |
-| **MODIFY** | `backend/src/Endpoints/AuditEndpoints.cs` — add `/api/providers` endpoint, pass provider/model to service |
-| **MODIFY** | `backend/Program.cs` — register `AiProviders` config section |
-| **MODIFY** | `frontend/src/types/audit.ts` — add `provider` and `model` to `AuditRequest` |
-| **MODIFY** | `frontend/src/api/auditClient.ts` — no payload change needed (already uses `AuditRequest`) |
-| **MODIFY** | `frontend/src/hooks/useAudit.ts` — accept provider/model and pass through |
-| **MODIFY** | `frontend/src/App.tsx` — add provider/model state, dropdowns, fetch `/api/providers`, persist to localStorage |
-| **CREATE** | `frontend/src/components/ui/ProviderSelector.tsx` — provider + model dropdown component |
-| **CREATE** | `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` |
-| **MODIFY** | `frontend/src/components/features/__tests__/App.test.tsx` — update mocks for new fetch call |
-| **MODIFY** | `backend.Tests/EndpointValidationTests.cs` — add tests for `/api/providers` endpoint |
+| **MODIFY** | `frontend/src/components/features/ResultPanel.tsx` |
+| **MODIFY** | `frontend/src/components/features/__tests__/ResultPanel.test.tsx` |
+
+No backend changes. No new files. No type changes.
 
 ---
 
-## 1. `backend/appsettings.json` — Add `AiProviders` Section
+## 1. `frontend/src/components/features/ResultPanel.tsx` — Changes
 
-Replace the existing `"Ai"` section with the new structure. Keep the existing `"Ai"` section for backward-compatible defaults but add `"AiProviders"`:
+### 1a. New State
 
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft.AspNetCore": "Warning"
+Add after `const [copiedBlockText, setCopiedBlockText] = useState...` (line 95):
+
+```typescript
+const [expandedGroups, setExpandedGroups] = useState<Set<SeverityLevel>>(
+  () => new Set<SeverityLevel>(['CRITICAL', 'WARNING', 'INFO'])
+);
+```
+
+- Default: all three severity groups expanded.
+- Resets on every mount (i.e., every new audit produces a new `ResultPanel` instance via React key or parent state change).
+
+### 1b. Toggle Handler
+
+```typescript
+const toggleGroup = useCallback((severity: SeverityLevel) => {
+  setExpandedGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(severity)) {
+      next.delete(severity);
+    } else {
+      next.add(severity);
     }
-  },
-  "Ai": {
-    "ProviderName": "Groq",
-    "BaseUrl": "https://api.groq.com/openai/v1",
-    "ModelId": "llama-3.3-70b-versatile",
-    "MaxTokens": 4096,
-    "MaxInputLength": 100000
-  },
-  "AiProviders": {
-    "groq": {
-      "baseUrl": "https://api.groq.com/openai/v1/chat/completions",
-      "defaultModel": "llama-3.3-70b-versatile",
-      "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it", "llama-3.3-70b-specdec", "llama-guard-3-8b"]
-    },
-    "together": {
-      "baseUrl": "https://api.together.xyz/v1/chat/completions",
-      "defaultModel": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-      "models": ["mistralai/Mixtral-8x7B-Instruct-v0.1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"]
-    },
-    "openai": {
-      "baseUrl": "https://api.openai.com/v1/chat/completions",
-      "defaultModel": "gpt-4o-mini",
-      "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]
-    }
+    return next;
+  });
+}, []);
+```
+
+### 1c. Pre-compute Finding Counts Per Severity
+
+After the existing `const blocks = splitIntoBlocks(filteredContent);` (line 108), add:
+
+```typescript
+const findingCounts = useMemo(() => {
+  const counts: Record<SeverityLevel, number> = { CRITICAL: 0, WARNING: 0, INFO: 0 };
+  for (const block of blocks) {
+    if (block.severity) counts[block.severity]++;
   }
-}
+  return counts;
+}, [blocks]);
 ```
 
-The provider ID is the key (e.g. `"groq"`). The `baseUrl` is the full chat completions URL (not the base API URL). The `models` array lists available models for the dropdown.
+This must be `useMemo` to avoid re-computation on every render. Import `useMemo` from React (add to the existing import on line 1).
 
----
+### 1d. Grouped Rendering Logic
 
-## 2. `backend/src/Configuration/AiProviderOptions.cs` — New File
+Replace the existing `blocks.map(...)` at line 185 with a grouped render that tracks severity group transitions.
 
-```csharp
-namespace SpecAudit.Configuration;
+**Approach**: Walk `blocks` linearly. Track `currentGroup: SeverityLevel | null`. When a block's severity differs from `currentGroup`:
+- If the block has a severity, and this is the first block of that severity in the current walk, emit a **group header** before the block.
+- If the block has NO severity (non-finding), it always renders as-is and resets `currentGroup` to null.
 
-public sealed class AiProviderOptions
-{
-    public string BaseUrl { get; init; } = string.Empty;
-    public string DefaultModel { get; init; } = string.Empty;
-    public List<string> Models { get; init; } = new();
-}
+**Pseudo-structure**:
 
-public sealed class AiProvidersConfig
-{
-    public Dictionary<string, AiProviderOptions> Providers { get; init; } = new();
-}
+```
+let currentGroup: SeverityLevel | null = null;
+
+{blocks.map((block, index) => {
+  const isFinding = block.severity !== null;
+  const isNewGroup = isFinding && block.severity !== currentGroup;
+
+  // Update tracker
+  const prevGroup = currentGroup;
+  currentGroup = isFinding ? block.severity : null;
+
+  return (
+    <Fragment key={index}>
+      {/* Group header at transition into a new severity */}
+      {isNewGroup && block.severity && (
+        <SeverityGroupHeader
+          severity={block.severity}
+          count={findingCounts[block.severity]}
+          isExpanded={expandedGroups.has(block.severity)}
+          onToggle={() => toggleGroup(block.severity!)}
+        />
+      )}
+      
+      {/* Finding block — conditionally visible */}
+      {(!isFinding || expandedGroups.has(block.severity!)) && (
+        <div className={isFinding ? 'relative group overflow-hidden transition-all duration-300' : ''}
+          style={!isFinding ? undefined : {
+            maxHeight: expandedGroups.has(block.severity!) ? '2000px' : '0',
+            opacity: expandedGroups.has(block.severity!) ? 1 : 0,
+            paddingTop: expandedGroups.has(block.severity!) ? undefined : '0',
+            paddingBottom: expandedGroups.has(block.severity!) ? undefined : '0',
+          }}
+        >
+          {/* EXISTING finding rendering (copy button + ReactMarkdown) — unchanged */}
+          ...
+        </div>
+      )}
+    </Fragment>
+  );
+})}
 ```
 
-Follow the same `init`-only property pattern as `AiOptions.cs`.
+**Key detail**: The existing `isFinding` check on line 191 and the copy button rendering inside that block must be preserved. Only the outer wrapper changes.
 
-**Note**: The `appsettings.json` section is named `"AiProviders"` with each provider ID as a key. The configuration binding matches `Dictionary<string, AiProviderOptions>` directly because ASP.NET Core's `IConfiguration` can bind nested keys to a dictionary.
+**Animation**: Use CSS transition on `max-height` and `opacity` for a simple expand/collapse. The class `overflow-hidden transition-all duration-300` with dynamic `maxHeight` (0 vs a large value like `2000px`) and `opacity` (0 vs 1) achieves a smooth effect. Do NOT use `display: none` because it cannot be animated.
 
----
+**Edge case — single finding group spanning multiple blocks**: Only one header is emitted at the transition. All consecutive blocks of the same severity share one group header.
 
-## 3. `backend/src/Models/Requests/AuditRequest.cs` — Add `provider` and `model`
+**Edge case — non-finding block between two CRITICAL groups**: Because `currentGroup` resets to null on non-finding blocks, if a CRITICAL block appears again later, a new group header is emitted. This is correct.
 
-```csharp
-namespace SpecAudit.Models.Requests;
+### 1e. `SeverityGroupHeader` Component (Inline or Co-located)
 
-public sealed record AuditRequest(
-    string Spec,
-    string? SpecFormat,
-    string? Provider,     // new — e.g. "groq", "together", "openai"
-    string? Model         // new — e.g. "llama-3.3-70b-versatile"
-);
-```
-
-- Both are optional (`string?`).
-- Defaults are handled server-side (provider falls back to config default, model falls back to provider's defaultModel).
-- **Existing callers** that construct `AuditRequest` without these fields (e.g. in `AuditEndpoints.cs` line 44 where `new AuditRequest(spec, request.SpecFormat)` is used) must be updated to pass through `request.Provider` and `request.Model`.
-
----
-
-## 4. `backend/src/Services/SpecAuditService.cs` — Accept Provider/Model
-
-### Constructor Changes
-
-Inject `IOptions<AiProvidersConfig>` in addition to the existing `IOptions<AiOptions>`:
-
-```csharp
-private readonly AiOptions _options;
-private readonly AiProvidersConfig _providerConfig;
-private readonly ILogger<SpecAuditService> _logger;
-
-public SpecAuditService(
-    IOptions<AiOptions> options,
-    IOptions<AiProvidersConfig> providerConfig,
-    ILogger<SpecAuditService> logger)
-{
-    _options = options.Value;
-    _providerConfig = providerConfig.Value;
-    _logger = logger;
-    // ...
-}
-```
-
-### `AuditAsync` Signature Change
-
-```csharp
-public async IAsyncEnumerable<string> AuditAsync(
-    AuditRequest request,
-    [EnumeratorCancellation] CancellationToken ct)
-```
-
-No signature change — the provider/model are now part of `AuditRequest`.
-
-### Logic Changes Inside `AuditAsync`
-
-Replace the hardcoded `_options.ModelId` and `_options.BaseUrl` usage with dynamic resolution:
-
-```csharp
-// Resolve provider and model
-var providerId = request.Provider ?? "groq";
-var model = request.Model ?? _options.ModelId;
-
-// Look up provider config
-if (!_providerConfig.Providers.TryGetValue(providerId, out var providerCfg))
-{
-    // Fall back to the configured default if unknown provider ID
-    providerCfg = _providerConfig.Providers.GetValueOrDefault("groq");
-}
-
-var baseUrl = providerCfg?.BaseUrl ?? _options.BaseUrl.TrimEnd('/');
-var resolvedModel = model ?? providerCfg?.DefaultModel ?? _options.ModelId;
-
-// Use baseUrl and resolvedModel in the HTTP request construction
-// e.g.:
-var payload = new
-{
-    model = resolvedModel,
-    messages = new[] { systemMessage, userMessage },
-    max_tokens = _options.MaxTokens,
-    temperature = 0.1f,
-    stream = true
-};
-
-// URL construction:
-$"{baseUrl.TrimEnd('/')}"  // baseUrl is already the full chat completions URL
-```
-
-**Key change**: The `baseUrl` in `AiProviderOptions` is the **full chat completions URL** (e.g. `https://api.groq.com/openai/v1/chat/completions`), so the existing code's `$"{_options.BaseUrl.TrimEnd('/')}/chat/completions"` pattern must be adjusted. When using a provider config's `baseUrl`, DO NOT append `/chat/completions` again. When falling back to `_options.BaseUrl` (old config), DO append `/chat/completions` as before.
-
-**Edge cases**:
-- Unknown provider ID → fall back to `"groq"` provider config
-- Provider config missing `baseUrl` → fall back to `_options.BaseUrl` with `/chat/completions` appended
-- Null model → use provider's `defaultModel`, then `_options.ModelId`
-- Empty `models` list → dropdown shows nothing; user can still type (if we made it a text input, but we use a select, so ensure at least defaultModel is in the list in config)
-
----
-
-## 5. `backend/src/Endpoints/AuditEndpoints.cs` — Changes
-
-### a) Pass provider/model from request to sanitized request
-
-At line 44, change:
-```csharp
-var sanitizedRequest = new AuditRequest(spec, request.SpecFormat);
-```
-to:
-```csharp
-var sanitizedRequest = new AuditRequest(spec, request.SpecFormat, request.Provider, request.Model);
-```
-
-### b) Add `GET /api/providers` Endpoint
-
-```csharp
-app.MapGet("/api/providers", (IOptions<AiProvidersConfig> providerConfig) =>
-{
-    var providers = providerConfig.Value.Providers.Select(kvp => new
-    {
-        id = kvp.Key,
-        name = FormatProviderName(kvp.Key),  // "groq" → "Groq", "openai" → "OpenAI"
-        models = kvp.Value.Models,
-        defaultModel = kvp.Value.DefaultModel
-    });
-    return Results.Ok(providers);
-});
-```
-
-Helper method:
-```csharp
-private static string FormatProviderName(string id) =>
-    id switch
-    {
-        "groq" => "Groq",
-        "together" => "Together AI",
-        "openai" => "OpenAI",
-        _ => id   // fallback: return raw ID
-    };
-```
-
-Or keep it simpler — just capitalize the first letter: `char.ToUpper(id[0]) + id[1..]`.
-
-### c) Update `/api/diagnose` endpoints
-
-The diagnose endpoints (`DiagnoseRawMode` and `DiagnoseSdkMode`) currently use `aiOptions.BaseUrl` and `aiOptions.ModelId`. They should NOT be modified for this feature — they are diagnostic tools that test the configured default. If desired, they could accept optional `provider`/`model` query params as a future enhancement, but that is **out of scope** for this spec.
-
----
-
-## 6. `backend/Program.cs` — Register `AiProviders` Config
-
-Add after line 72:
-```csharp
-builder.Services.Configure<AiProvidersConfig>(
-    builder.Configuration.GetSection("AiProviders"));
-```
-
-Also update the startup validation (lines 110-112) to be less strict — since the app can now work with just `AiProviders` config:
-```csharp
-// Relaxed validation: require either Ai:ApiKey is set, or at least one provider exists
-// The ApiKey check is still critical
-var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
-if (string.IsNullOrWhiteSpace(aiOptions.ApiKey))
-    throw new InvalidOperationException("Ai:ApiKey must be configured in user-secrets or env vars.");
-```
-
----
-
-## 7. `frontend/src/types/audit.ts` — Add `provider` and `model`
+Define a helper component inside the same file (before `ResultPanel`), or as a private component following the pattern of other small UI co-located in the file:
 
 ```typescript
-export interface AuditRequest {
-  spec: string;
-  specFormat?: 'yaml' | 'json';
-  provider?: string;    // new
-  model?: string;       // new
-}
-```
+function SeverityGroupHeader({
+  severity,
+  count,
+  isExpanded,
+  onToggle,
+}: {
+  severity: SeverityLevel;
+  count: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const styles = SEVERITY_STYLES[severity];
 
-No other types need changes.
-
----
-
-## 8. `frontend/src/hooks/useAudit.ts` — Pass Through Provider/Model
-
-The `audit` function already accepts `AuditRequest` as its payload. Since `AuditRequest` now includes `provider` and `model`, they are automatically passed through to `auditStream`. No hook changes needed.
-
----
-
-## 9. `frontend/src/components/ui/ProviderSelector.tsx` — New Component
-
-### Exports
-
-```typescript
-interface ProviderInfo {
-  id: string;
-  name: string;
-  models: string[];
-  defaultModel: string;
-}
-
-interface ProviderSelectorProps {
-  providers: ProviderInfo[];
-  selectedProvider: string;
-  selectedModel: string;
-  onProviderChange: (providerId: string) => void;
-  onModelChange: (model: string) => void;
-}
-
-function ProviderSelector(props: ProviderSelectorProps): JSX.Element;
-```
-
-### Behaviour
-
-- Renders two `<select>` elements side by side (or stacked on small screens):
-  - Provider dropdown: populated from `providers` prop, shows `provider.name` as display text, `provider.id` as value.
-  - Model dropdown: populated from `providers.find(p => p.id === selectedProvider)?.models ?? []`, shows each model string as both value and display text.
-- When the user changes the provider, automatically update the selected model to the new provider's `defaultModel` (call `onModelChange` with the default model).
-- When providers list changes (e.g., on re-fetch), if the current `selectedModel` is not in the new models list, reset to `defaultModel`.
-- Styling (Tailwind v4, matching the existing badge pattern in App.tsx):
-  ```tsx
-  <select className="text-xs bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-400 light:text-slate-600 light:bg-slate-100 light:border-slate-300 cursor-pointer focus:outline-none focus:border-slate-500" />
-  ```
-
-### Edge cases
-
-| Scenario | Behaviour |
-|----------|-----------|
-| `providers` is empty or not loaded yet | Render nothing (return `null`) |
-| Selected provider ID not in providers list | Reset to first available provider |
-| Model list for selected provider is empty | Show a single `<option>` with "No models available" (disabled) |
-| `selectedModel` not in current model list | Reset to `defaultModel` of current provider |
-
----
-
-## 10. `frontend/src/App.tsx` — Provider/Model State Management
-
-### New State Variables
-
-```typescript
-const [providers, setProviders] = useState<ProviderInfo[]>([]);
-const [selectedProvider, setSelectedProvider] = useState<string>(() =>
-  localStorage.getItem('specaudit-provider') ?? 'groq'
-);
-const [selectedModel, setSelectedModel] = useState<string>(() =>
-  localStorage.getItem('specaudit-model') ?? ''
-);
-```
-
-### Fetch Providers on Mount
-
-Replace the existing `fetch('/api/config')` effect (lines 103-108) with:
-
-```typescript
-useEffect(() => {
-  fetch('/api/providers')
-    .then(r => r.json())
-    .then(data => {
-      setProviders(data);
-      // If selectedProvider from localStorage is not in the list, reset
-      if (data.length > 0 && !data.some((p: ProviderInfo) => p.id === selectedProvider)) {
-        setSelectedProvider(data[0].id);
-        setSelectedModel(data[0].defaultModel);
-      }
-      // If selectedModel is empty, set to default of selected provider
-      const prov = data.find((p: ProviderInfo) => p.id === selectedProvider);
-      if (prov && !selectedModel) {
-        setSelectedModel(prov.defaultModel);
-      }
-    })
-    .catch(() => setProviders([]));
-}, []); // eslint-disable-line react-hooks/exhaustive-deps
-```
-
-### Persist to localStorage
-
-```typescript
-useEffect(() => {
-  localStorage.setItem('specaudit-provider', selectedProvider);
-}, [selectedProvider]);
-
-useEffect(() => {
-  localStorage.setItem('specaudit-model', selectedModel);
-}, [selectedModel]);
-```
-
-### Update `handleSubmit`
-
-```typescript
-const handleSubmit = useCallback(
-  (submitSpec: string, format?: 'yaml' | 'json') => {
-    const record = history.addRecord({ ... });
-    setCurrentAuditId(record.id);
-    audit({ spec: submitSpec, specFormat: format, provider: selectedProvider, model: selectedModel });
-  },
-  [history, audit, selectedProvider, selectedModel]
-);
-```
-
-### Update Provider Name Badge
-
-Replace the existing provider badge (lines 201-205) to show the **currently selected** provider's name:
-
-```tsx
-{providers.length > 0 && (
-  <span className="text-xs text-slate-500 bg-slate-900 border border-slate-800 rounded px-2 py-1 light:text-slate-600 light:bg-slate-100 light:border-slate-300">
-    {providers.find(p => p.id === selectedProvider)?.name ?? selectedProvider}
-  </span>
-)}
-```
-
-### Add ProviderSelector to Header
-
-Insert the `<ProviderSelector>` into the header area, before the ThemeToggle:
-
-```tsx
-<div className="flex items-center gap-3">
-  {providers.length > 0 && (
-    <ProviderSelector
-      providers={providers}
-      selectedProvider={selectedProvider}
-      selectedModel={selectedModel}
-      onProviderChange={(id) => {
-        setSelectedProvider(id);
-        const prov = providers.find(p => p.id === id);
-        if (prov) setSelectedModel(prov.defaultModel);
+  return (
+    <button
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          onToggle();
+        }
       }}
-      onModelChange={setSelectedModel}
-    />
-  )}
-  {providers.length > 0 && (
-    <span className="text-xs ...">
-      {providers.find(p => p.id === selectedProvider)?.name ?? selectedProvider}
-    </span>
-  )}
-  <ThemeToggle theme={theme} onToggle={toggle} />
+      aria-expanded={isExpanded}
+      aria-controls={`finding-group-${severity.toLowerCase()}`}
+      className={`
+        flex items-center gap-2 w-full text-left cursor-pointer
+        px-4 py-2 mb-2 rounded-lg border transition-colors
+        ${styles.wrapper.replace('mb-3', '').replace('px-4 py-3', 'px-4 py-2')}
+        hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400
+      `}
+    >
+      <span className={`font-semibold text-sm ${styles.label}`}>
+        {severity}
+      </span>
+      <span className="text-xs text-slate-400 light:text-slate-500 ml-1">
+        ({count})
+      </span>
+      <span className="ml-auto transition-transform duration-200" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+        {/* Chevron down SVG */}
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+```
+
+**Important**: The `aria-controls` attribute should reference an `id` on the wrapper div of the findings group. The wrapping container for each severity group's findings needs an `id` attribute like `finding-group-critical`.
+
+### 1f. Group Container with `id`
+
+When emitting the group header + findings, wrap the findings container with:
+```tsx
+<div
+  id={`finding-group-${block.severity!.toLowerCase()}`}
+  role="region"
+  aria-labelledby={`finding-group-header-${block.severity!.toLowerCase()}`}
+  className="overflow-hidden transition-all duration-300"
+  style={{
+    maxHeight: expandedGroups.has(block.severity!) ? `${findingCounts[block.severity!] * 500}px` : '0',
+    opacity: expandedGroups.has(block.severity!) ? 1 : 0,
+  }}
+>
+  {/* existing finding blocks for this severity */}
 </div>
 ```
 
----
+But this means we need to collect ALL consecutive same-severity blocks into one container. The current `blocks.map` renders each block separately with its own `<ReactMarkdown>`. To wrap them together, we need a different approach:
 
-## 11. `backend.Tests/EndpointValidationTests.cs` — Add Tests
-
-### New Test: `GetProviders_ReturnsConfiguredProviders`
-
-```csharp
-[Fact]
-public async Task GetProviders_ReturnsConfiguredProviders()
-{
-    // Uses the same factory with AiProviders added to InMemoryCollection
-    var response = await _client.GetAsync("/api/providers");
-    response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-    var json = await response.Content.ReadAsStringAsync();
-    using var doc = JsonDocument.Parse(json);
-    var arr = doc.RootElement.EnumerateArray().ToList();
-    
-    arr.Should().NotBeEmpty();
-    arr.First().GetProperty("id").GetString().Should().NotBeNullOrEmpty();
-    arr.First().GetProperty("name").GetString().Should().NotBeNullOrEmpty();
-    arr.First().GetProperty("models").EnumerateArray().Should().NotBeEmpty();
-    arr.First().GetProperty("defaultModel").GetString().Should().NotBeNullOrEmpty();
-}
-```
-
-Update the constructor of `EndpointValidationTests` to also include `AiProviders` in the in-memory config:
-
-```csharp
-public EndpointValidationTests(WebApplicationFactory<Program> factory)
-{
-    _client = factory.WithWebHostBuilder(builder =>
-        builder.ConfigureAppConfiguration((_, cfg) =>
-            cfg.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Ai:ProviderName"]   = ProviderName,
-                ["Ai:BaseUrl"]        = "https://test.example.com/v1",
-                ["Ai:ModelId"]        = "test-model",
-                ["Ai:ApiKey"]         = "test-key",
-                ["Ai:MaxInputLength"] = "100000",
-                ["AiProviders:groq:baseUrl"] = "https://api.groq.com/openai/v1/chat/completions",
-                ["AiProviders:groq:defaultModel"] = "llama-3.3-70b-versatile",
-                ["AiProviders:groq:models:0"] = "llama-3.3-70b-versatile",
-                ["AiProviders:groq:models:1"] = "mixtral-8x7b-32768"
-            })
-        )
-    ).CreateClient();
-}
-```
-
-### Existing Test Updates
-
-- **`GetConfig_ReturnsProviderName`**: Should still pass unchanged.
-- **`GetConfig_DoesNotReturnApiKey`**: Should still pass unchanged.
-- **`PostAudit_*` tests**: Should still pass unchanged — the `sanitizedRequest` now includes `Provider` and `Model` which will be null from the anonymous objects `{ spec = "" }`, and the service should handle nulls by falling back to defaults.
-
----
-
-## 12. `frontend/src/components/ui/__tests__/ProviderSelector.test.tsx` — New Test File
-
-```
-describe('ProviderSelector')
-  ├── it('renders provider dropdown with given providers')
-  ├── it('renders model dropdown with models of selected provider')
-  ├── it('calls onProviderChange when provider is changed')
-  ├── it('calls onModelChange when model is changed')
-  ├── it('updates models when provider changes')
-  ├── it('renders nothing when providers array is empty')
-  ├── it('shows "No models available" when model list is empty')
-  └── it('displays selected provider and model as current values')
-```
-
-Follow the same testing pattern as `Button.test.tsx` and `ThemeToggle.test.tsx`.
-
----
-
-## 13. `frontend/src/components/features/__tests__/App.test.tsx` — Update Mocks
-
-### Mock `/api/providers` fetch
-
-The existing mock uses `vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}))` which causes the fetch to hang indefinitely. This was done to avoid `act` warnings. For the provider dropdown tests, we need the fetch to resolve. Options:
-
-**Option A (Recommended)**: Replace the hanging promise with a resolved one pointing to `/api/providers`:
+**Alternative approach**: After computing `blocks`, group them into "sections" where each section is either a non-finding block or a severity group. Then map over sections instead of individual blocks.
 
 ```typescript
-// In beforeEach, replace:
-vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+interface BlockSection {
+  type: 'finding-group';
+  severity: SeverityLevel;
+  blocks: MarkdownBlock[];
+} | {
+  type: 'non-finding';
+  block: MarkdownBlock;
+}
+```
 
-// With:
-vi.spyOn(globalThis, 'fetch').mockImplementation((url: string) => {
-  if (url === '/api/providers') {
-    return Promise.resolve(new Response(JSON.stringify([
-      { id: 'groq', name: 'Groq', models: ['llama-3.3-70b-versatile'], defaultModel: 'llama-3.3-70b-versatile' }
-    ]), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+Compute sections:
+
+```typescript
+const sections = useMemo(() => {
+  const sections: BlockSection[] = [];
+  let currentSeverity: SeverityLevel | null = null;
+  let currentGroup: MarkdownBlock[] = [];
+
+  for (const block of blocks) {
+    if (block.severity) {
+      if (block.severity !== currentSeverity) {
+        if (currentGroup.length > 0 && currentSeverity) {
+          sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+        }
+        currentSeverity = block.severity;
+        currentGroup = [block];
+      } else {
+        currentGroup.push(block);
+      }
+    } else {
+      // Flush any pending group
+      if (currentGroup.length > 0 && currentSeverity) {
+        sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+        currentSeverity = null;
+        currentGroup = [];
+      }
+      sections.push({ type: 'non-finding', block });
+    }
   }
-  return new Promise(() => {}); // hang for other requests
+  // Flush last group
+  if (currentGroup.length > 0 && currentSeverity) {
+    sections.push({ type: 'finding-group', severity: currentSeverity, blocks: currentGroup });
+  }
+  return sections;
+}, [blocks]);
+```
+
+Then render:
+
+```tsx
+{sections.map((section, index) => {
+  if (section.type === 'non-finding') {
+    return (
+      <div key={index} className="">
+        {renderBlock(section.block, deferredQuery, copiedBlockText, handleCopyBlock)}
+      </div>
+    );
+  }
+
+  const isExpanded = expandedGroups.has(section.severity);
+  return (
+    <div key={index} className="mb-4">
+      <SeverityGroupHeader
+        severity={section.severity}
+        count={section.blocks.length}
+        isExpanded={isExpanded}
+        onToggle={() => toggleGroup(section.severity)}
+        headerId={`finding-group-header-${section.severity.toLowerCase()}`}
+      />
+      <div
+        id={`finding-group-${section.severity.toLowerCase()}`}
+        role="region"
+        aria-labelledby={`finding-group-header-${section.severity.toLowerCase()}`}
+        className="overflow-hidden transition-all duration-300"
+        style={{
+          maxHeight: isExpanded ? `${section.blocks.length * 500}px` : '0',
+          opacity: isExpanded ? 1 : 0,
+        }}
+      >
+        {section.blocks.map((block, bi) => (
+          <div key={bi} className="relative group">
+            {renderBlock(block, deferredQuery, copiedBlockText, handleCopyBlock)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+})}
+```
+
+**Recommendation**: Use the `sections` approach — it is cleaner, produces correct DOM, and enables proper `aria-controls` / `role="region"` relationships.
+
+### 1g. Extraction of Block Rendering Logic
+
+To avoid duplicating the block rendering code, extract the inner block JSX into a helper function (inside `ResultPanel` or as a separate component). The existing code between lines 186 and 263 (inside `blocks.map`) becomes the body of `renderBlock(block, deferredQuery, copiedBlockText, handleCopyBlock)`.
+
+### 1h. Import Changes
+
+Add `useMemo` and `Fragment` to the React import on line 1:
+
+```typescript
+import { useState, useCallback, useMemo, useDeferredValue, Fragment, isValidElement, Children, type ReactNode, type ComponentPropsWithoutRef } from 'react';
+```
+
+### 1i. Streaming Behavior
+
+No special handling. The user can toggle freely even during streaming. If findings are mid-arrival, the `blocks` array updates, `sections` recomputes via `useMemo`, and the UI updates accordingly. If a new severity appears mid-stream and the group was previously collapsed, it stays collapsed. This matches the "toggle freely" requirement.
+
+---
+
+## 2. `frontend/src/components/features/__tests__/ResultPanel.test.tsx` — New Tests
+
+Add the following test cases after the existing "search works together with severity filter" block (after line 256).
+
+### Test: Renders severity group headers
+
+```typescript
+it('renders collapsible group headers for each severity present', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404\n---\n### [INFO] Missing Contact';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  // Each severity should have a group header button
+  expect(screen.getByRole('button', { name: /CRITICAL/i })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /WARNING/i })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /INFO/i })).toBeInTheDocument();
 });
 ```
 
-**Option B**: Keep the hanging mock and simply don't test provider dropdown behavior in App tests (rely on ProviderSelector unit tests instead).
+### Test: Group headers show finding count
+
+```typescript
+it('group header shows finding count', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n### [CRITICAL] No Rate Limit\n---\n### [WARNING] Missing 404';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  // CRITICAL header should show (2)
+  expect(screen.getByText('(2)')).toBeInTheDocument();
+  // WARNING header should show (1)
+  expect(screen.getByText('(1)')).toBeInTheDocument();
+});
+```
+
+### Test: Clicking group header collapses findings
+
+```typescript
+it('clicking severity group header hides its findings', () => {
+  const markdown = '### [CRITICAL] Missing Auth\n---\n### [WARNING] Missing 404';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  expect(screen.getByText('Missing Auth')).toBeInTheDocument();
+  // Click the CRITICAL group header (find the button that also matches the role pattern)
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  fireEvent.click(criticalHeaders[0]);
+  // CRITICAL finding should be hidden
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+  // WARNING should still be visible
+  expect(screen.getByText('Missing 404')).toBeInTheDocument();
+});
+```
+
+### Test: Clicking again re-expands
+
+```typescript
+it('clicking collapsed group header re-shows findings', () => {
+  const markdown = '### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  // Collapse
+  fireEvent.click(criticalHeaders[0]);
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+  // Expand
+  fireEvent.click(criticalHeaders[0]);
+  expect(screen.getByText('Missing Auth')).toBeInTheDocument();
+});
+```
+
+### Test: Keyboard accessibility
+
+```typescript
+it('group header toggles on Enter key', () => {
+  const markdown = '### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  fireEvent.keyDown(criticalHeaders[0], { key: 'Enter' });
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+  fireEvent.keyDown(criticalHeaders[0], { key: 'Enter' });
+  expect(screen.getByText('Missing Auth')).toBeInTheDocument();
+});
+
+it('group header toggles on Space key', () => {
+  const markdown = '### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  fireEvent.keyDown(criticalHeaders[0], { key: ' ' });
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+});
+```
+
+### Test: Non-finding content unaffected by collapse
+
+```typescript
+it('non-finding content remains visible when severity groups are collapsed', () => {
+  const markdown = '## Governance Score\nScore: 8.5\n---\n### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  fireEvent.click(criticalHeaders[0]);
+  expect(screen.getByText('Governance Score')).toBeInTheDocument();
+  expect(screen.queryByText('Missing Auth')).not.toBeInTheDocument();
+});
+```
+
+### Test: `aria-expanded` attribute reflects state
+
+```typescript
+it('group header has correct aria-expanded state', () => {
+  const markdown = '### [CRITICAL] Missing Auth';
+  render(<ResultPanel content={markdown} isStreaming={false} />);
+  const criticalHeaders = screen.getAllByRole('button').filter(b => b.textContent?.includes('CRITICAL'));
+  expect(criticalHeaders[0]).toHaveAttribute('aria-expanded', 'true');
+  fireEvent.click(criticalHeaders[0]);
+  expect(criticalHeaders[0]).toHaveAttribute('aria-expanded', 'false');
+});
+```
 
 ---
 
-## Implementation Notes
+## Edge Cases
 
-- **Follow existing patterns**:
-  - Named exports only (no default exports).
-  - Backend: `init`-only properties, records for request models, `IOptions<T>` injection, `WebApplicationFactory` for integration tests.
-  - Frontend: Props type defined as `interface ProviderSelectorProps`, Tailwind v4 class ordering (functional then color/size), dark mode via `light:` prefix.
-  - The `ProviderSelector` should be a **new component file**, not inline in `App.tsx`, following the pattern of `ThemeToggle.tsx`.
-- **No breaking changes**: Existing API consumers that omit `provider`/`model` from the request body will get defaults (`"groq"` and `"llama-3.3-70b-versatile"`).
-- **API key**: The existing `Ai:ApiKey` env var / user-secret is used for ALL providers. No per-provider key support in this change.
-- **Base URL handling**: The provider config's `baseUrl` is the **full chat completions URL** (e.g. `https://api.groq.com/openai/v1/chat/completions`). The old `Ai:BaseUrl` was just the base (e.g. `https://api.groq.com/openai/v1`). The code must handle both formats correctly.
+| Scenario | Behaviour |
+|----------|-----------|
+| All findings filtered out via existing severity toggle | Group headers are also filtered out (because `filterMarkdownBySeverity` removes those blocks before they reach `splitIntoBlocks`) |
+| Zero findings of a severity | No group header rendered for that severity |
+| Only non-finding content (no findings) | No group headers rendered at all |
+| Streaming mid-finding | `useMemo` recomputes sections when blocks change; collapsed groups stay collapsed, expanded groups show new findings as they arrive |
+| Consecutive same-severity findings separated by non-finding content | Each run gets its own group header (not merged across non-finding content) |
+| Search + collapse interaction | Hidden findings cannot be searched; visible findings highlight normally. No further coupling needed |
+| Single finding | Group header shows `(1)` and wraps the single finding |
+| Very large number of findings in one group | `maxHeight` is computed as `count * 500px` which should accommodate most cases. For extreme cases, set to a very large number (e.g. `9999px`) |
+| Multiple severity groups in sequence | Each group has its own header, findings wrapped separately |
+
+---
+
+## Patterns to Follow
+
+- **Component structure**: Named export `ResultPanel`, no default exports (same as `ResultPanel.tsx`).
+- **State management**: `useState` for UI toggle state (same as `severityFilter`), `useCallback` for handlers (same as `toggleSeverity`), `useMemo` for derived data (same pattern as `hiddenSeverities`).
+- **Dark mode**: Use existing `light:` prefix classes and `SEVERITY_STYLES` map for color values.
+- **Tailwind v4**: Use `@import "tailwindcss"` (already configured). Use functional-first class ordering.
+- **Tests**: Follow existing patterns in `ResultPanel.test.tsx` — `@testing-library/react`, `fireEvent`, `screen.getByText`, `container.querySelector`, `waitFor` where needed.
 
 ---
 
 ## Verification
 
-1. `cd backend && dotnet build` — 0 errors
-2. `cd backend && dotnet test` — all existing tests pass (update `EndpointValidationTests` constructor and add new tests)
-3. `cd frontend && npm run build` — 0 errors
-4. `cd frontend && npm test` — all existing + new tests pass
-5. Manual: dropdown shows providers from config, selecting a provider updates the model list, submitting an audit sends the selected provider/model, preference survives page reload via localStorage
+1. `cd frontend && npm run build` — 0 errors
+2. `cd frontend && npm test` — all existing + new tests pass
+3. Manual: audit loads → Findings appear grouped with severity headers → Click a severity header → Findings collapse with animation → Click again → Re-expand → Keyboard Space/Enter works → Non-finding content unaffected → New audit mounts → Groups default to expanded

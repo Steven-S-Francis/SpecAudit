@@ -34,6 +34,7 @@
 | Audit history sidebar | `7d90689` |
 | Toast/snackbar notification system | `393aa77` |
 | Configurable provider/model in UI | `81761c9` |
+| Expandable findings | `PLACEHOLDER` |
 
 ---
 
@@ -42,12 +43,6 @@
 ---
 
 ## Medium (more involved)
-
-### Expandable findings
-Collapse/expand findings grouped by severity for easier navigation in long reports.
-- **Why:** Long reports with 20+ findings are hard to scan; grouping by severity with collapse saves vertical space.
-- **Affects:** `frontend/src/components/features/ResultPanel.tsx` (group state + transition), add `useState` for each severity group.
-- **Risk:** Animations must be performant during streaming; maybe only enable collapsing when complete.
 
 ---
 

@@ -1,122 +1,147 @@
-# Review: Configurable Provider/Model Dropdown in UI
+# Review: Expandable/Collapsible Findings Grouped by Severity
 
 ## VERDICT: SHIP
-
-The implementation correctly delivers the feature as specified, with no security or correctness violations. All 336 tests pass (30 backend + 306 frontend).
 
 ---
 
 ## Checklist
 
-| Criterion | Status | Notes |
-|-----------|--------|-------|
-| Spec conformance | ✅ | All files created/modified as specified. Minor JSON structure difference (see Findings). |
-| `GET /api/providers` returns providers without `baseUrl` | ✅ | Returns `id`, `name`, `models`, `defaultModel` only. No `baseUrl`, no API key. |
-| `POST /api/audit` passes `provider`/`model` through | ✅ | Line 44 of `AuditEndpoints.cs` passes `request.Provider` and `request.Model` to `AuditRequest`. |
-| Dynamic provider resolution in service | ✅ | `SpecAuditService.AuditAsync` resolves provider config by key; falls back to `AiOptions` legacy defaults. |
-| Frontend fetches providers on mount | ✅ | `App.tsx` `useEffect` fetches `/api/providers`, populates dropdowns. |
-| localStorage persistence | ✅ | `specaudit-provider` and `specaudit-model` persisted on every change. |
-| Selected provider/model in audit requests | ✅ | `handleSubmit` passes `selectedProvider` and `selectedModel` to `audit()`. |
-| Backward compatibility (no provider/model) | ✅ | Optional `string?` fields on `AuditRequest`; service handles null via fallback. |
-| No breaking changes to diagnose endpoints | ✅ | Not modified — correctly out of scope. |
-| Backend tests run (30 pass) | ✅ | 30 tests across files including new `GetProviders_ReturnsConfiguredProviders`. |
-| Frontend tests run (306 pass) | ✅ | 306 tests including 8 new `ProviderSelector` tests. |
-| Total tests: 336 pass | ✅ | |
+| Criteria | Status | Notes |
+|----------|--------|-------|
+| **Spec conformance** | ✅ Pass | All spec requirements implemented; minor non-functional deviations documented below |
+| **Security** | ✅ Pass | No new attack surface; no secrets, injection, or info-disclosure vectors |
+| **Correctness** | ✅ Pass | State management is race-free; async discipline correct; runtime type safety maintained |
+| **Accessibility** | ✅ Pass | `aria-expanded`, `aria-controls`, `role="region"`, `aria-labelledby`, keyboard Space/Enter all present |
+| **Animation** | ✅ Pass | CSS `max-height`/`opacity` transition; no `display: none` |
+| **Grouping logic** | ✅ Pass | Consecutive same-severity blocks grouped; non-finding blocks standalone; groups separated by non-finding blocks |
+| **Tests** | ✅ Pass | 8 new tests + 3 existing tests adapted; all 314 pass |
+| **No regressions** | ✅ Pass | Copy, markdown rendering, severity filter, search all preserved |
+| **Backend tests** | ✅ N/A | No backend changes in this feature |
 
 ---
 
 ## Findings
 
-### 1. appsettings.json structure — minor spec deviation (NOTE)
+### 1. Spec Conformance — ✅
 
-The spec's sample JSON shows:
-```json
-"AiProviders": {
-    "groq": { ... },
-    "together": { ... }
-}
-```
+The implementation matches the specification exactly in all critical aspects:
 
-The actual implementation has:
-```json
-"AiProviders": {
-    "Providers": {
-        "groq": { ... },
-        "together": { ... }
-    }
-}
-```
+- **`SeverityGroupHeader`** component defined as a co-located function before `ResultPanel` — fully accessible with `aria-expanded`, `aria-controls`, `role="region"`, `aria-labelledby`, and keyboard handling for Space/Enter. ✓
+- **`expandedGroups`** state initialized to `new Set(['CRITICAL', 'WARNING', 'INFO'])`. ✓
+- **`toggleGroup`** handler uses `useCallback` with immutable `Set` updates. ✓
+- **`findingCounts`** pre-computed via `useMemo`. ✓
+- **`sections`** approach used (recommended alternative in spec) — groups consecutive same-severity blocks, treats non-finding blocks as standalone. ✓
+- **`renderBlock`** helper extracted. ✓
+- **`useMemo`** added to React imports. ✓
+- **`MarkdownBlock`** type imported from `filterMarkdown`. ✓
+- **8 new tests** covering headers, count, click collapse/expand, Enter/Space keyboard, non-finding unaffected, `aria-expanded` state. ✓
+- **3 existing tests** adapted to `getAllByText` + className filtering for severity badge disambiguation. ✓
 
-This is **not a bug** — it is a necessary correction. The `AiProvidersConfig` class defined in the spec has `public Dictionary<string, AiProviderOptions> Providers { get; init; }`, requiring the `"Providers"` wrapper for correct configuration binding. The spec's own class definition and sample JSON are inconsistent with each other; the implementation correctly chose the structure that matches the class definition. No change needed.
+**Non-functional deviations (acceptable):**
+| Spec | Actual | Impact |
+|------|--------|--------|
+| `Fragment` in import | Not imported, uses `<>...</>` | None — JSX fragments are equivalent |
+| Chevron `rotate(0deg)` / `rotate(180deg)` | `rotate(0deg)` / `rotate(-90deg)` | Chevron points right when collapsed, down when expanded — arguably more conventional |
+| SVG 16x16 | SVG 12x12 | Trivial visual difference |
+| `maxHeight: count * 500` | `Math.max(count * 500, 300)` | Adds a 300px minimum, strictly better |
+| `transition-all duration-300` | `transition-all duration-300 ease-in-out` | Adds easing function, strictly better |
+| Tests use `not.toBeInTheDocument()` | Tests use `toHaveStyle({ opacity: '0', maxHeight: '0px' })` | Correct for the sections/animations approach — elements stay in DOM |
 
-### 2. Provider fallback behavior — equivalent design choice (NOTE)
+### 2. Security — ✅ (No issues)
 
-The spec's sample code defaults `providerId = request.Provider ?? "groq"` and falls back to the `"groq"` provider config for null/unknown providers. The actual code keeps `providerId` as-is (null/empty) and falls back to `_options.BaseUrl + "/chat/completions"` (the legacy config).
+- No new endpoints, routes, or API handlers.
+- No user input interpolated into HTML, SQL, shell commands, or regex.
+- `SeverityLevel` is a constrained TypeScript type — no unvalidated external input reaching the new code.
+- Error handling in `handleCopyBlock` silently ignores clipboard failures (pre-existing pattern).
+- No secrets, keys, or internal configuration exposed.
 
-In the default configuration, both approaches produce the **same final URL** (`https://api.groq.com/openai/v1/chat/completions`). The code's approach is more backward-compatible: users with custom `Ai:BaseUrl` values (not matching any provider config) will continue to work as before. This is a reasonable design choice, not a defect.
+### 3. Correctness — ✅ (No issues)
 
-### 3. Diagnose endpoints expose `ex.Message` (NOTE)
+- **State**: `setExpandedGroups` uses a functional updater `(prev) => { ... }` — no stale closure risk.
+- **Async**: `handleCopyBlock` is correctly awaited-to-fire (fire-and-forget via `onCopy` call) — same pre-existing pattern.
+- **Types**: No `as` casts, no `JSON.parse` results in new code. `BlockSection` is a local discriminated union type.
+- **Error handling**: Empty `catch` in clipboard handler is pre-existing and acceptable (clipboard API fails silently if permission denied).
+- **Animation states**: `maxHeight` computed as `Math.max(count * 500, 300)` — reasonable for typical finding lengths.
 
-`DiagnoseRawMode` (line 173) and `DiagnoseSdkMode` (line 241) return `error = ex.Message` in their JSON responses. These are diagnostic-only endpoints not consumed by the frontend, and the spec explicitly marks them as out-of-scope. Low risk, not blocking.
+**Pre-existing concern (not introduced by this feature):**
+- `blocks` on line 176 is computed every render without `useMemo`, so `findingCounts` and `sections` `useMemo` wrappers are technically no-ops (their `[blocks]` dependency is a new array each render). This is harmless but means the memoization doesn't provide a skip benefit. Fixing this (memoizing `blocks`) is out of scope.
 
-### 4. Test quality
+### 4. Accessibility — ✅
 
-- **ProviderSelector tests**: 8 tests covering render, callbacks, provider change → model update, empty providers, empty model list, and current value display. All behavior-driven, no implementation mocking. Good coverage.
-- **Backend integration test**: `GetProviders_ReturnsConfiguredProviders` validates the `/api/providers` response shape (id, name, models, defaultModel). Ensures no sensitive fields leak.
-- **AiOptionsValidationTests**: Updated to reflect relaxed validation — tests now verify that missing `BaseUrl`/`ModelId` do NOT throw when `AiProviders` are configured.
-- **Gap**: `App.test.tsx` was not updated (by design — spec Option B). Provider dropdown behavior in the full App context is only tested via unit tests on the isolated `ProviderSelector` component. Acceptable given the scope.
+| Attribute | Element | Present |
+|-----------|---------|---------|
+| `aria-expanded` | `<button id="finding-group-header-...">` | ✓ |
+| `aria-controls` | `<button aria-controls="finding-group-{severity}">` | ✓ |
+| `id` | `<button id="finding-group-header-{severity}">` | ✓ |
+| `role="region"` | `<div id="finding-group-{severity}">` | ✓ |
+| `aria-labelledby` | `<div aria-labelledby="finding-group-header-{severity}">` | ✓ |
+| Keyboard Space/Enter | `onKeyDown` handler with `e.preventDefault()` | ✓ |
+| Button semantics | `<button>` elements (implicitly `type="button"` outside form context) | ✓ |
 
-### 5. No security issues
+**Minor recommendation (non-blocking):** Add `type="button"` explicitly to the `<button>` elements. While the component is not rendered inside a `<form>`, explicit `type` prevents unintended form submission if the component is ever nested in a form context.
 
-| Check | Result |
-|-------|--------|
-| `baseUrl` exposed in `/api/providers` | ❌ Not exposed — only `id`, `name`, `models`, `defaultModel` |
-| API key exposed in any response | ❌ Not exposed |
-| Raw exception messages to client | ❌ Sanitized — only "Rate limit", "timeout", or generic messages |
-| Injection vectors | ❌ None found — input validation on spec trim/length, no SQL/shell interpolation |
-| Secrets in source code | ❌ None found |
+### 5. Animation — ✅
 
-### 6. No correctness issues
+- Uses `overflow-hidden transition-all duration-300 ease-in-out` on the group container.
+- Collapsed state: `maxHeight: 0`, `opacity: 0`.
+- Expanded state: `maxHeight: ${computed}px`, `opacity: 1`.
+- **No `display: none` anywhere** — correct for CSS animation.
+- Chevron icon rotates with `transition-transform duration-200` for smooth indicator animation.
 
-| Check | Result |
-|-------|--------|
-| Async discipline | ✅ All async calls awaited, cancellation tokens properly linked |
-| State race conditions | ✅ No concurrent state mutations; React batches state updates |
-| Runtime type safety | ✅ `JSON.parse` results are validated before use in SSE parsing |
-| Error swallowing | ✅ All catch blocks log the error; empty catch only for clipboard/export failures |
-| localStorage persistence | ✅ Writes on every provider/model change; reads on mount with null-safe defaults |
+### 6. Grouping Logic — ✅
+
+The `sections` algorithm correctly handles all edge cases per spec:
+
+| Scenario | Behavior | Verified |
+|----------|----------|----------|
+| Consecutive same-severity blocks | One group header for the run | ✓ (sections algorithm) |
+| Non-finding block between findings | Resets group, separate headers | ✓ (non-finding block flushes currentGroup, resets to null) |
+| Only non-finding content | No headers rendered | ✓ (no finding-group sections) |
+| Single finding | Header with `(1)` | ✓ |
+| Mixed severities | Each gets its own header | ✓ |
+
+### 7. Tests — ✅
+
+- **8 new tests** covering: headers rendering, count display, click collapse/expand, Enter/Space toggle, non-finding content unaffected, `aria-expanded` state.
+- **3 existing tests** adapted: severity styling tests updated to use `getAllByText` + className filtering to disambiguate finding badges from group header labels.
+- **All 314 tests pass** (306 existing + 8 new).
+- Tests test behavior, not implementation details. They verify `toHaveStyle()` for collapse state (correct for CSS-animated elements) and `aria-expanded` attributes.
+- **Gap noted**: No tests for streaming scenarios with group collapse (e.g., findings arriving while a group is collapsed). However, the spec says "No special handling" for streaming, and the `useMemo`-based sections approach naturally handles it.
+
+### 8. Code Quality — ✅ (Minor notes only)
+
+- **Dead code**: None in the changed files.
+- **Cross-platform**: No path separators, regex anchors, or line-splitting in new code.
+- **Performance**: `findingCounts` and `sections` `useMemo` are technically no-ops due to pre-existing un-memoized `blocks` — minor, pre-existing concern.
+- **Startup validation**: No new config validation needed (feature is purely UI).
+- **Test quality**: Tests are behavior-oriented, cover both happy and failure paths (collapse/expand cycle, keyboard interaction).
+
+---
+
+## Required Actions
+
+None. The implementation is correct, secure, accessible, and well-tested.
 
 ---
 
 ## Suggested Commit Message
 
 ```
-feat: configurable AI provider/model dropdown in UI
+feat: add expandable/collapsible severity group headers to ResultPanel
 
-- Add AiProvidersConfig with Dictionary<string, AiProviderOptions> for
-  provider configuration (baseUrl, defaultModel, models list)
-- Add GET /api/providers endpoint returning id/name/models/defaultModel
-  (baseUrl not exposed)
-- Pass provider/model from audit request through to SpecAuditService
-- Resolve provider config dynamically in service; fall back to legacy
-  AiOptions defaults for backward compatibility
-- Relax startup validation: only require Ai:ApiKey (BaseUrl/ModelId
-  are optional when AiProviders are configured)
-- Add ProviderSelector component with provider + model dropdowns,
-  handling edge cases (empty/unknown provider, empty model list,
-  invalid model fallback)
-- Fetch providers on mount, persist selection in localStorage
-- 336 tests passing (30 backend + 306 frontend)
-
-Breaking changes: none — provider/model fields are optional with
-null-safe defaults.
+- New SeverityGroupHeader component with aria-expanded/aria-controls
+- Findings grouped by severity into collapsible sections
+- CSS transition animation (max-height + opacity, no display:none)
+- Non-finding content remains standalone and always visible
+- Full keyboard accessibility (Space/Enter toggle)
+- 8 new tests, 3 existing tests adapted
+- 314 tests passing, 0 build errors
 ```
 
 ---
 
-## Sign-off
+## Sign Off
 
-Reviewed by: Senior Code Reviewer
-Date: 2026-06-04
-
-All criteria satisfied. Feature is ready to ship.
+**Reviewer**: Senior Code Review Agent  
+**Date**: 2026-06-05  
+**Verdict**: SHIP — feature is complete, correct, and production-ready.
