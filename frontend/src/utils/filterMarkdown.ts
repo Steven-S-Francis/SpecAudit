@@ -12,7 +12,7 @@ export function filterMarkdownBySeverity(
 ): string {
   if (hiddenSeverities.size === 0) return content;
 
-  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
+  const blockSplitter = /\n(?=### )/;
   const blocks = content.split(blockSplitter);
 
   const filtered = blocks.filter((block) => {
@@ -46,7 +46,7 @@ export interface MarkdownBlock {
 export function splitIntoBlocks(content: string): MarkdownBlock[] {
   if (!content) return [{ text: '', severity: null }];
 
-  const blockSplitter = /\n(?=### \[(?:CRITICAL|WARNING|INFO)\])/;
+  const blockSplitter = /\n(?=### )/;
   const blocks = content.split(blockSplitter);
   return blocks.map((block) => ({
     text: block,

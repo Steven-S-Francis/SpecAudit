@@ -34,7 +34,7 @@
 | Audit history sidebar | `7d90689` |
 | Toast/snackbar notification system | `393aa77` |
 | Configurable provider/model in UI | `81761c9` |
-| Expandable findings | `PLACEHOLDER` |
+| Expandable findings | `57fcb4b` |
 
 ---
 
