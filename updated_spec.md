@@ -1,6 +1,6 @@
 # SpecAudit — Complete Project Context for Code Review
 
-> Generated: 2026-06-03 | HEAD: `9f7bd00` | Branch: `main`
+> Generated: 2026-06-06 | HEAD: `bbb0faf` | Branch: `main`
 > Purpose: Self-contained reference for AI-powered code review ("antigravity" or equivalent)
 
 ---
@@ -21,13 +21,13 @@
 | Layer | Technology | Version |
 |-------|-----------|---------|
 | **Backend** | .NET Minimal APIs (ASP.NET Core) | .NET 10.0 |
-| **Backend AI** | OpenAI C# client (provider-agnostic) | 2.10.0 |
+| **Backend AI** | Raw HttpClient + manual SSE parsing (no OpenAI SDK in streaming path) | — |
 | **Frontend** | React + Vite + Tailwind CSS | React 19.2.6 / Vite 8.0 / Tailwind 4.3 |
 | **Language** | TypeScript (strict mode) | ~6.0.2 |
 | **PDF** | pdfmake | 0.3.9 |
 | **Markdown** | react-markdown + remark-gfm | 10.1.0 |
-| **Tests (FE)** | vitest + jsdom + testing-library | vitest 4.1 |
-| **Tests (BE)** | xUnit + FluentAssertions + WebApplicationFactory | xUnit 2.9.2 |
+| **Tests (FE)** | vitest + jsdom + testing-library (~314 tests) | vitest 4.1 |
+| **Tests (BE)** | xUnit + FluentAssertions + WebApplicationFactory (~30 tests) | xUnit 2.9.2 |
 | **CI** | GitHub Actions | dotnet 10.x / Node 22 |
 | **Infra** | Docker multi-stage + Railway | root Dockerfile |
 | **Editor** | OpenCode (VS Code clone with agents) | — |
@@ -48,10 +48,14 @@ User browser                    Frontend (App.tsx)              Backend (.NET 10
      │──────────────────────────────>│                              │                                  │
      │                               │  auditStream(payload)        │                                  │
      │                               │─────────────────────────────>│                                  │
-     │                               │  POST /api/audit (SSE)      │  SpecAuditService.AuditAsync()    │
-     │                               │                              │─────────────────────────────────>│
-     │                               │                              │                                  │
-     │                               │                              │  ◄── streaming Chat API chunks ──│
+│                               │  POST /api/audit (SSE)      │  SpecAuditService.AuditAsync()    │
+│                               │                              │  (raw HttpClient → POST           │
+│                               │                              │   {provider}/chat/completions →   │
+│                               │                              │   StreamReader.ReadLineAsync →    │
+│                               │                              │   JSON.parse per data: line)      │
+│                               │                              │─────────────────────────────────>│
+│                               │                              │                                  │
+│                               │                              │  ◄── streaming Chat API chunks ──│
      │                               │  ◄── SSE: data: "chunk" ────│                                  │
      │  ◄── ReactMarkdown render ────│                              │  (StringBuilder accumulates)     │
      │                               │                              │                                  │
@@ -61,8 +65,12 @@ User browser                    Frontend (App.tsx)              Backend (.NET 10
      │                               │                              │                                  │
      │                               │  ◄── [SPECAUDIT_STRUCTURED]──│                                  │
      │                               │                              │                                  │
-     │                               │  onChunk → state.result      │                                  │
-     │                               │  onStructured → state.findings[] + state.summary                │
+│                               │  onChunk → state.result      │                                  │
+│                               │  onStructured → state.findings[] + state.summary                │
+│                               │                              │                                  │
+│  ◄── GET /api/providers ──────│                              │                                  │
+│  (on startup, populates       │                              │                                  │
+│   provider dropdown)          │                              │                                  │
 ```
 
 ### 2.2 SSE Wire Protocol (Exact Byte Format)
@@ -104,19 +112,18 @@ data: "[SPECAUDIT_STRUCTURED]{\"findings\":[{\"severity\":\"CRITICAL\",\"title\"
 
 ```
 AI provider error (timeout, 429, etc.)
-  → SpecAuditService.AuditAsync() throws
-    → AuditEndpoints catches Exception
-      → Sends SSE: data: "[SPECAUDIT_ERROR] <message>"\n\n"
-        → auditClient.ts parse loop: chunk.startsWith('[SPECAUDIT_ERROR]')
-          → If rate limit: throw new Error(message) with name 'RateLimitError'
-          → Else: throw new Error(message)
-            → useAudit.ts catch:
-              → RateLimitError && retryCount < 3?
-                → Exponential backoff (1s, 2s, 4s) then retry
-              → AbortError?
-                → Set status 'idle'
-              → Otherwise?
-                → Set status 'error', store err.message
+  → SpecAuditService reads error body
+    → Throws HttpRequestException with "{status}: {body}"
+      → AuditEndpoints catches Exception
+        → 45-second server-side CancellationTokenSource.CancelAfter(45s)
+          → OperationCanceledException → sends [SPECAUDIT_ERROR] timeout message
+        → Sentry exception capture on backend errors
+        → Non-success: sends SSE: data: "[SPECAUDIT_ERROR] <message>"\n\n"
+          → auditClient.ts parse loop: chunk.startsWith('[SPECAUDIT_ERROR]')
+            → If 429 rate limit: throw with status + body text
+            → Else: throw with status + body text (no retry)
+              → useAudit.ts catch:
+                → Sets status='error', store err.message
                   → App.tsx renders Card with error message
 ```
 
@@ -165,13 +172,15 @@ AI provider error (timeout, 429, etc.)
 │   ├── Properties/
 │   │   └── launchSettings.json       # Dev launch config
 │   └── src/
-│       ├── Configuration/
-│       │   └── AiOptions.cs          # POCO options class
-│       ├── Endpoints/
-│       │   └── AuditEndpoints.cs     # POST /api/audit + GET /api/config
+│   ├── Configuration/
+│   │   ├── AiOptions.cs          # POCO options class (ApiKey, BaseUrl, ModelId, etc.)
+│   │   ├── AiProviderOptions.cs  # Multi-provider config model (BaseUrl, DefaultModel, Models)
+│   │   └── AiProvidersConfig.cs  # Dictionary<string, AiProviderOptions> wrapper
+│   ├── Endpoints/
+│   │   └── AuditEndpoints.cs     # POST /api/audit, GET /api/config, GET /api/providers, GET /api/diagnose, GET /api/test-error
 │       ├── Models/
 │       │   ├── Requests/
-│       │   │   └── AuditRequest.cs   # { Spec, SpecFormat? }
+│   │   │   └── AuditRequest.cs   # { Spec, SpecFormat?, Provider?, Model? }
 │       └── Services/
 │           └── SpecAuditService.cs   # SystemPrompt, AuditAsync, ExtractStructuredJson
 │
@@ -180,6 +189,7 @@ AI provider error (timeout, 429, etc.)
 │   ├── AiOptionsValidationTests.cs   # Startup validation (missing config)
 │   ├── EndpointValidationTests.cs    # API integration tests (empty spec, oversized, config)
 │   ├── ExtractStructuredJsonTests.cs # 7 regex extraction tests
+│   ├── DiagnoseEndpointTests.cs      # 7 tests for /api/diagnose (raw + SDK modes)
 │   ├── SentryStartupTests.cs         # Sentry DSN gating tests (2 tests)
 │   └── UserMessageBuilderTests.cs    # BuildUserMessage format tests
 │
@@ -204,39 +214,56 @@ AI provider error (timeout, 429, etc.)
 │       │   └── __tests__/
 │       │       └── auditClient.test.ts  # 4 structured sentinel tests + existing
 │       ├── hooks/
-│       │   ├── useAudit.ts           # State machine, retry, abort
+│       │   ├── useAudit.ts           # State machine (idle→loading→streaming→complete|error), abort
 │       │   ├── useAutoScroll.ts      # Scroll-to-bottom with IntersectionObserver
+│       │   ├── useHistory.ts         # localStorage session history with LRU eviction
 │       │   ├── useTheme.ts           # Dark/light toggle + localStorage
+│       │   ├── useToast.ts           # Toast/snackbar context hook
+│       │   ├── useToast.tsx          # ToastProvider component
 │       │   └── __tests__/
 │       │       ├── useAudit.test.tsx
 │       │       ├── useAutoScroll.test.tsx
-│       │       └── useTheme.test.tsx
+│       │       ├── useHistory.test.tsx
+│       │       ├── useTheme.test.tsx
+│       │       └── useToast.test.tsx
 │       ├── components/
 │       │   ├── features/
-│       │   │   ├── InputPanel.tsx     # Spec textarea, format toggle, char counter
-│       │   │   ├── ResultPanel.tsx    # ReactMarkdown render with severity styling
+│       │   │   ├── HistorySidebar.tsx  # Collapsible session history sidebar
+│       │   │   ├── InputPanel.tsx      # Spec textarea, format toggle, char counter, file upload
+│       │   │   ├── ResultPanel.tsx     # ReactMarkdown render with severity styling
 │       │   │   └── __tests__/
 │       │   │       ├── App.test.tsx    # ~22 tests (export buttons)
+│       │   │       ├── HistorySidebar.test.tsx
 │       │   │       ├── InputPanel.test.tsx
 │       │   │       └── ResultPanel.test.tsx
 │       │   └── ui/
-│       │       ├── Button.tsx         # Reusable button with variants
-│       │       ├── Card.tsx           # Error/status card
-│       │       ├── Spinner.tsx        # Loading spinner
-│       │       ├── ThemeToggle.tsx    # Dark/light toggle button
-│       │       ├── ScrollButton.tsx   # Scroll-to-top/bottom button
+│       │       ├── Button.tsx          # Reusable button with variants
+│       │       ├── Card.tsx            # Error/status card
+│       │       ├── ProviderSelector.tsx # Provider/model dropdown (fetches /api/providers)
+│       │       ├── Spinner.tsx         # Loading spinner
+│       │       ├── ThemeToggle.tsx     # Dark/light toggle button
+│       │       ├── ScrollButton.tsx    # Scroll-to-top/bottom button
+│       │       ├── ToastContainer.tsx  # Toast stack display
 │       │       └── __tests__/
 │       │           ├── Button.test.tsx
+│       │           ├── ProviderSelector.test.tsx
 │       │           ├── ScrollButton.test.tsx
-│       │           └── ThemeToggle.test.tsx
+│       │           ├── ThemeToggle.test.tsx
+│       │           └── ToastContainer.test.tsx
 │       ├── utils/
 │       │   ├── exportPdf.ts          # markdown→pdfmake converter
+│       │   ├── filterMarkdown.ts     # Block splitting with /\n(?=### )/ for severity filter
+│       │   ├── highlightText.ts      # Keyword search highlight
 │       │   ├── parseSeverity.ts      # [CRITICAL/WARNING/INFO] string check
 │       │   ├── parseSSEChunks.ts     # SSE buffer line parser
+│       │   ├── splitIntoBlocks.ts    # Block splitting utility
 │       │   └── __tests__/
-│       │       ├── exportPdf.test.ts   # 35 tests
+│       │       ├── exportPdf.test.ts    # 35 tests
+│       │       ├── filterMarkdown.test.ts
+│       │       ├── highlightText.test.ts
 │       │       ├── parseSeverity.test.ts
-│       │       └── parseSSEChunks.test.ts
+│       │       ├── parseSSEChunks.test.ts
+│       │       └── splitIntoBlocks.test.ts
 │       ├── test-fixtures/
 │       │   ├── fraudlabs-swagger.json # Real FraudLabs OpenAPI 3.0.1 spec
 │       │   └── fraudlabs-audit-result.md  # Real AI audit output (14 findings)
@@ -261,6 +288,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // DI
 builder.Services.Configure<AiOptions>(builder.Configuration.GetSection("Ai"));
+builder.Services.Configure<AiProvidersConfig>(builder.Configuration.GetSection("AiProviders"));
 builder.Services.AddSingleton<SpecAuditService>();
 builder.Services.AddCors(options =>
 {
@@ -292,11 +320,11 @@ if (app.Environment.IsDevelopment()) app.UseCors("FrontendPolicy");
 app.UseDefaultFiles();   // Serve static files from wwwroot/
 app.UseStaticFiles();
 app.UseRateLimiter();    // Must be called after UseStaticFiles
-app.MapAuditEndpoints(); // POST /api/audit, GET /api/config
+app.MapAuditEndpoints(); // POST /api/audit, GET /api/config, GET /api/providers, GET /api/diagnose, GET /api/test-error
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 app.MapFallbackToFile("index.html"); // SPA fallback
 
-// Startup validation — all three required
+// Startup validation — all three required + AiProviders config
 var aiOptions = app.Services.GetRequiredService<IOptions<AiOptions>>().Value;
 if (string.IsNullOrWhiteSpace(aiOptions.BaseUrl) || string.IsNullOrWhiteSpace(aiOptions.ModelId) || string.IsNullOrWhiteSpace(aiOptions.ApiKey))
     throw new InvalidOperationException("Ai:BaseUrl, Ai:ModelId, and Ai:ApiKey must be configured in appsettings.json or user-secrets.");
@@ -307,13 +335,14 @@ public partial class Program { }
 ```
 
 **Key points:**
-- `SpecAuditService` is a **singleton** (the `OpenAIClient` inside is thread-safe)
+- `SpecAuditService` is a **singleton** (no OpenAI SDK client — fresh `HttpClient` per request)
 - CORS is only active in development (production is same-origin via SPA fallback)
 - `partial class Program` enables `WebApplicationFactory` integration tests
 - Port is hard-coded to `+:5000` (Railway compatible)
 - Rate limiter uses **fixed window** policy keyed by `RemoteIpAddress`
 - `UseRateLimiter()` must be called after `UseStaticFiles()` but before route mapping
 - Startup validation now also checks `ApiKey` — all three required
+- `AiProvidersConfig` is bound from `AiProviders` section — enables multi-provider UI dropdown
 - No NuGet packages needed: rate limiting is built into .NET 8+ (`System.Threading.RateLimiting`)
 
 ### 4.2 `SpecAuditService.cs` — Core Service
@@ -321,6 +350,10 @@ public partial class Program { }
 **Class signature:** `public sealed class SpecAuditService`
 
 (No `partial` keyword — `[GeneratedRegex]` has been removed in favor of manual string search.)
+
+**Constructor:** `SpecAuditService(IOptions<AiOptions> aiOptions, IOptions<AiProvidersConfig> providersConfig, ILogger<SpecAuditService> logger)`
+- `AiOptions` provides `ApiKey`, `MaxTokens`, `MaxInputLength`
+- `AiProvidersConfig` provides provider-specific `BaseUrl`, `DefaultModel`, `Models` list
 
 #### SystemPrompt (148 lines, lines 16–148)
 
@@ -376,7 +409,7 @@ The full prompt ends with a JSON schema example instructing the AI to append:
 { "findings": [...], "summary": { "totalFindings": N, "critical": N, ... } }
 ```
 
-#### `AuditAsync()` — Streaming Method
+#### `AuditAsync()` — Streaming Method (Raw HttpClient + Manual SSE)
 
 ```csharp
 public async IAsyncEnumerable<string> AuditAsync(
@@ -385,19 +418,25 @@ public async IAsyncEnumerable<string> AuditAsync(
 ```
 
 **Flow:**
-1. Create `ChatMessage` list with `SystemChatMessage(SystemPrompt)` + `UserChatMessage(BuildUserMessage(request))`
-2. Set `ChatCompletionOptions` with `MaxOutputTokenCount`, `Temperature = 0.1f`
-3. Create `StringBuilder fullText`
-4. Iterate `_chatClient.CompleteChatStreamingAsync()`:
-   - Append each `part.Text` to `StringBuilder`
-   - `yield return part.Text` (stream to SSE endpoint)
-5. After loop: call `ExtractStructuredJson(fullText.ToString())`
-6. If JSON extracted: `yield return $"{StructuredSentinel}{json}"`
+1. Resolve provider from `_providersConfig.Providers` dictionary using `request.Provider` (or fallback to Groq)
+2. Build JSON payload: `{ model, messages: [system, user], stream: true }`
+3. Create `HttpClient` per request (fresh instance — no connection pooling issues)
+4. Call `client.SendAsync` with `HttpCompletionOption.ResponseHeadersRead`
+5. If non-success status: read error response body → throw `HttpRequestException` with `"{status}: {body}"`
+6. Read SSE `data:` lines via `StreamReader.ReadLineAsync`:
+   - Each `data:` line contains a chunk JSON: `{ choices: [{ delta: { content: "..." } }] }`
+   - Extract `choices[0].delta.content` from each JSON line
+   - Append to `StringBuilder fullText`
+   - `yield return` the content (stream to SSE endpoint)
+7. Handle `[DONE]` sentinel — signals stream end
+8. After loop: call `ExtractStructuredJson(fullText.ToString())`
+9. If JSON extracted: `yield return $"{StructuredSentinel}{json}"`
 
 **Edge cases handled:**
 - Cancellation propagates via `[EnumeratorCancellation]`
-- Rate limiting is caught by `AuditEndpoints` (not here)
-- Empty/null text parts are skipped
+- Non-success responses include error body in exception message
+- Empty/null content delta parts are skipped
+- `[DONE]` line is silently consumed (not yielded)
 
 #### `ExtractStructuredJson()` — String Search Extraction
 
@@ -517,16 +556,56 @@ app.MapGet("/api/config", (IOptions<AiOptions> options) =>
 
 Returns only `providerName`. **Never exposes the API key.** Verified by test `GetConfig_DoesNotReturnApiKey`.
 
+#### `GET /api/providers` — Available Providers (NEW)
+
+```csharp
+app.MapGet("/api/providers", (IOptions<AiProvidersConfig> config) =>
+    Results.Ok(config.Value.Providers));
+```
+
+Returns the `AiProviders.Providers` dictionary with id, name, models, and defaultModel for each. The frontend fetches this at startup to populate the provider/model dropdown.
+
+#### `GET /api/diagnose` — AI Provider Diagnostics (NEW)
+
+```csharp
+app.MapGet("/api/diagnose", async (SpecAuditService auditService, HttpContext httpContext,
+    [FromQuery] string? mode, IOptions<AiOptions> aiOptions, IOptions<AiProvidersConfig> providerConfig) =>
+{
+    // Tests chat completions connectivity — supports ?mode=raw (default) and ?mode=sdk
+    // Returns latency, model used, and any error details
+});
+```
+
+Used for debugging provider connectivity issues. Tests both raw HTTP and SDK modes.
+
+#### `GET /api/test-error` — Sentry Verification (NEW)
+
+```csharp
+app.MapGet("/api/test-error", () =>
+{
+    throw new InvalidOperationException("Test error for Sentry verification");
+});
+```
+
+Intentional throw — triggers Sentry exception capture to verify DSN is configured correctly.
+
 ### 4.4 Models
 
 #### Request Model
 ```csharp
-public sealed record AuditRequest(string Spec, string? SpecFormat);
+public sealed record AuditRequest(
+    string Spec,
+    string? SpecFormat,
+    string? Provider = null,
+    string? Model = null
+);
 ```
 
 *(No response models — `AuditResponse.cs` was deleted as dead code. The structured JSON is parsed inline in `SpecAuditService.ExtractStructuredJson()` using `System.Text.Json.JsonDocument`. The frontend defines its own `Finding`, `AuditSummary`, and `AuditDimensions` interfaces in `types/audit.ts`.)*
 
-### 4.5 Configuration (`AiOptions`)
+### 4.5 Configuration
+
+#### `AiOptions`
 
 ```csharp
 public sealed class AiOptions
@@ -540,7 +619,23 @@ public sealed class AiOptions
 }
 ```
 
-**appsettings.json defaults (Groq):**
+#### `AiProviderOptions` and `AiProvidersConfig` (NEW — Multi-Provider Support)
+
+```csharp
+public sealed class AiProviderOptions
+{
+    public string BaseUrl { get; init; } = string.Empty;
+    public string DefaultModel { get; init; } = string.Empty;
+    public List<string> Models { get; init; } = new();
+}
+
+public sealed class AiProvidersConfig
+{
+    public Dictionary<string, AiProviderOptions> Providers { get; init; } = new();
+}
+```
+
+**appsettings.json (current):**
 ```json
 {
   "Ai": {
@@ -549,6 +644,25 @@ public sealed class AiOptions
     "ModelId": "llama-3.3-70b-versatile",
     "MaxTokens": 4096,
     "MaxInputLength": 100000
+  },
+  "AiProviders": {
+    "Providers": {
+      "Groq": {
+        "BaseUrl": "https://api.groq.com/openai/v1",
+        "DefaultModel": "llama-3.3-70b-versatile",
+        "Models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"]
+      },
+      "Together": {
+        "BaseUrl": "https://api.together.xyz/v1",
+        "DefaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+        "Models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free", "mistralai/Mixtral-8x22B-Instruct-v0.1"]
+      },
+      "OpenAI": {
+        "BaseUrl": "https://api.openai.com/v1",
+        "DefaultModel": "gpt-4o-mini",
+        "Models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]
+      }
+    }
   }
 }
 ```
@@ -560,7 +674,7 @@ public sealed class AiOptions
 ### 5.1 Types (`types/audit.ts`)
 
 ```typescript
-export interface AuditRequest { spec: string; specFormat?: 'yaml' | 'json'; }
+export interface AuditRequest { spec: string; specFormat?: 'yaml' | 'json'; provider?: string; model?: string; }
 export type AuditStatus = 'idle' | 'loading' | 'streaming' | 'complete' | 'error';
 export type SeverityLevel = 'CRITICAL' | 'WARNING' | 'INFO';
 
@@ -605,7 +719,7 @@ export async function auditStream(
 
 **Flow:**
 1. `fetch('/api/audit', { method: 'POST', body: JSON.stringify(payload), signal })`
-2. Check `response.ok` — if not, throw with status + body text
+2. Check `response.ok` — if not, throw with status + body text (no retry)
 3. Get `response.body.getReader()` for streaming
 4. Loop: `reader.read()` → `decoder.decode(value, { stream: true })` → `parseSSEChunks(buffer, decoded)`
 5. For each extracted chunk:
@@ -660,28 +774,16 @@ Only extracts `data:` lines. All other SSE lines (`event:`, `id:`, etc.) are sil
 **State machine:**
 ```
 idle → loading → streaming → complete
-                        ↘ error
-loading → error (retries exhausted)
-loading → loading (retry)
+                         ↘ error
 ```
 
-**Rate-limit retry logic:**
+**Error handling (no retry):**
 ```typescript
-const retryCount = useRef(0);
-const maxRetries = 3;
-
 // In catch block:
-if ((err as Error).name === 'RateLimitError' && retryCount.current < maxRetries) {
-  retryCount.current++;
-  // Reset state to loading
-  setState({ status: 'loading', result: '', findings: [], summary: null, error: null, specFormat: payload.specFormat ?? null });
-  const delay = 1000 * Math.pow(2, retryCount.current - 1); // 1s, 2s, 4s
-  await new Promise(resolve => setTimeout(resolve, delay));
-  await audit(payload, true); // FIX: was `audit(payload, true)` (fire-and-forget bug)
-}
+setState({ status: 'error', result: '', findings: [], summary: null, error: err.message, specFormat: payload.specFormat ?? null });
 ```
 
-**Key fix:** Added `await` before the recursive `audit(payload, true)` call. Previously it was fire-and-forget, which could cause state conflicts if a retry completed after the hook was unmounted or another audit was started.
+Rate-limit retry with exponential backoff was **removed** in `3ffe8d6`. Errors are now shown immediately without retry — simpler UX and avoids state conflicts.
 
 **Duration/Structured data integration:**
 ```typescript
@@ -821,7 +923,101 @@ const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll(
 | `ThemeToggle` | `theme, onToggle` | Sun/moon icon button |
 | `ScrollButton` | `direction: 'up' | 'down'`, `onClick` | Floating scroll control |
 
-### 5.11 CSS / Dark Mode (`index.css`)
+### 5.11 Session History Hook (`hooks/useHistory.ts`)
+
+```typescript
+export function useHistory() {
+  // Returns: { records, saveRecord, deleteRecord, clearHistory, setActiveRecord, activeRecord }
+}
+```
+
+**Behavior:**
+- Stores `AuditRecord[]` in localStorage under key `specaudit-history`
+- Each record: `{ id, spec, specFormat, result, findings, summary, timestamp, status }`
+- LRU eviction at ~4 MB (serialized length check before each save)
+- `saveRecord` appends new entry (evicts oldest if over limit)
+- `deleteRecord` removes by id
+- `clearHistory` removes all entries
+- `setActiveRecord` loads a past audit into the current state
+- Auto-loads on mount from localStorage
+
+### 5.12 Toast/Snackbar System (`hooks/useToast.ts` + `hooks/useToast.tsx` + `components/ui/ToastContainer.tsx`)
+
+**`useToast.ts`:**
+```typescript
+export function useToast() {
+  // Returns: { toasts, addToast, removeToast }
+  // addToast(message, type?: 'success' | 'error' | 'info', duration?: 3000)
+}
+```
+
+React context-based notification system:
+- `ToastProvider` wraps the app, provides context
+- `useToast()` hook consumes context in any component
+- Toasts auto-dismiss after `duration` ms (default 3000ms)
+- Types get different icon + color: success (green), error (red), info (blue)
+- Stack grows upward, newest at top
+- `removeToast` allows manual dismissal
+
+**`ToastContainer.tsx`:**
+```tsx
+<div className="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2">
+  {toasts.map(toast => (
+    <div key={toast.id} className="...">{toast.message}</div>
+  ))}
+</div>
+```
+Positioned fixed bottom-right, stacked vertically.
+
+### 5.13 Provider Selector (`components/ui/ProviderSelector.tsx`)
+
+```tsx
+export function ProviderSelector({ selectedProvider, selectedModel, onProviderChange, onModelChange }: Props)
+```
+
+- Fetches `GET /api/providers` on mount
+- Dropdown 1: Provider name (Groq, Together, OpenAI)
+- Dropdown 2: Model list (fetched from the selected provider's `Models` array)
+- Falls back to hardcoded defaults if fetch fails
+- Props propagate to `InputPanel` → `AuditRequest`
+
+### 5.14 History Sidebar (`components/features/HistorySidebar.tsx`)
+
+```tsx
+export function HistorySidebar({ isOpen, onToggle, records, onSelect, onDelete, onClear }: Props)
+```
+
+- Collapsible sidebar from the left edge
+- Toggle button (hamburger icon) in the top-left of the header
+- Lists past audits with timestamp, spec preview, status badge
+- `onSelect` loads a record into the audit state
+- `onDelete` removes a single record
+- `onClear` removes all records
+- Shows empty state when no records exist
+
+### 5.15 Filtering and Highlighting Utilities
+
+#### `filterMarkdown.ts`
+```typescript
+export function filterMarkdown(markdown: string, enabledSeverities: SeverityLevel[]): string
+```
+
+- Splits markdown into blocks at `\n(?=### )` boundaries
+- Each block starts with `### [SEVERITY] Title`
+- Filters out blocks whose severity is not in `enabledSeverities`
+- Returns concatenated remaining blocks
+
+#### `highlightText.ts`
+```typescript
+export function highlightText(text: string, query: string): string
+```
+
+- Wraps matching text in `<mark>` tags for CSS highlight styling
+- Case-insensitive matching
+- Returns original text if query is empty
+- Escapes special regex characters in query
+
+### 5.16 CSS / Dark Mode (`index.css`)
 
 ```css
 @import "tailwindcss";
@@ -833,7 +1029,7 @@ const { containerRef, isAtBottom, scrollToBottom, scrollToTop } = useAutoScroll(
 - Components use `light:` prefix for light mode styles
 - Preference persisted in `localStorage` via `useTheme` hook
 
-### 5.12 Build Configuration
+### 5.17 Build Configuration
 
 **`vite.config.ts`:**
 ```typescript
@@ -874,32 +1070,40 @@ export default defineConfig({
 | PDF bold | `exportPdf.ts` line 48 | `/(\*\*[^*]+\*\*)/` | Double-asterisk |
 | PDF h1 | `exportPdf.ts` line 173 | `/^#\s+(.+)$/` | Single hash |
 | PDF h2 | `exportPdf.ts` line 186 | `/^##\s+(.+)$/` | Double hash |
+| Block splitting (severity filter) | `filterMarkdown.ts` | `/\n(?=### )/` | Splits at any `###` heading — updated from severity-only regex to fix Governance Score collapse |
 
 ---
 
 ## 7. Tests (Complete Coverage Map)
 
-### 7.1 Frontend — 205 tests, 15 files, vitest
+### 7.1 Frontend — ~314 tests, 22 files, vitest
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `utils/__tests__/parseSSEChunks.test.ts` | ~6 | SSE buffer boundary, partial lines, `data:` extraction |
 | `utils/__tests__/parseSeverity.test.ts` | ~6 | Severity detection from heading text |
-| `utils/__tests__/filterMarkdown.test.ts` | 14 | Block splitting with regex, severity filtering, real-fixture integration |
+| `utils/__tests__/filterMarkdown.test.ts` | 14 | Block splitting with `/\n(?=### )/`, severity filtering, real-fixture integration |
+| `utils/__tests__/highlightText.test.ts` | ~6 | Keyword search, case-insensitive match, `<mark>` tag wrapping, empty query |
+| `utils/__tests__/splitIntoBlocks.test.ts` | ~4 | Block splitting at heading boundaries, edge cases |
 | `utils/__tests__/exportPdf.test.ts` | 35 | markdownToContent: severity blocks, code fences, headings, inline formatting, HRs, paragraphs, edge cases |
 | `hooks/__tests__/useAudit.test.tsx` | ~10 | State machine transitions, retry logic, abort, reset, structured data callback |
 | `hooks/__tests__/useAutoScroll.test.tsx` | ~4 | Scroll position detection, auto-scroll behavior |
 | `hooks/__tests__/useTheme.test.tsx` | ~3 | Toggle state, localStorage persistence |
+| `hooks/__tests__/useHistory.test.tsx` | ~8 | Session history CRUD, LRU eviction, localStorage persistence |
+| `hooks/__tests__/useToast.test.tsx` | ~6 | Toast add/remove, auto-dismiss, context provider |
 | `components/ui/__tests__/Button.test.tsx` | ~4 | Variant rendering, click handler, disabled state |
 | `components/ui/__tests__/ScrollButton.test.tsx` | ~2 | Direction prop, click event |
 | `components/ui/__tests__/ThemeToggle.test.tsx` | ~2 | Icon rendering, click toggle |
+| `components/ui/__tests__/ProviderSelector.test.tsx` | ~6 | Provider/model dropdown, API fetch, fallback |
+| `components/ui/__tests__/ToastContainer.test.tsx` | ~5 | Toast rendering, dismiss, type styling |
 | `components/features/__tests__/InputPanel.test.tsx` | ~8 | Spec input, format toggle, character count, submit/abort, loading state |
 | `components/features/__tests__/ResultPanel.test.tsx` | ~6 | Skeleton loading, markdown render, severity styling, streaming cursor |
+| `components/features/__tests__/HistorySidebar.test.tsx` | ~6 | Sidebar open/close, record list, select/delete/clear, empty state |
 | `components/features/__tests__/App.test.tsx` | ~22 | Copy, Download, Export PDF, Export JSON buttons; JSON envelope shape; structured data vs fallback; trailing newline |
 | `api/__tests__/auditClient.test.ts` | ~8 | SSE streaming, error sentinel, structured sentinel, invalid JSON, abort signal |
 | `__tests__/integration/feature-pipeline.test.ts` | 32 | End-to-end flow with real FraudLabs fixture: SSE chunks, content structure, export PDF, download, copy, structured sentinel |
 
-### 7.2 Backend — 21 tests, 5 files, xUnit
+### 7.2 Backend — ~30 tests, 6 files, xUnit
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -907,6 +1111,7 @@ export default defineConfig({
 | `EndpointValidationTests.cs` | 6 | Empty spec (400), whitespace-only (400), oversized (413), trimmed spec accepted (200), GET /api/config returns providerName, GET /api/config does not return apiKey |
 | `UserMessageBuilderTests.cs` | 3 | Yaml format hint, auto-detect fallback, spec content after format hint |
 | `AiOptionsValidationTests.cs` | 3 | Missing BaseUrl throws, missing ModelId throws, **missing ApiKey throws** |
+| `DiagnoseEndpointTests.cs` | 7 | Diagnose endpoint: raw mode, SDK mode, invalid key, network error, response shape, latency field, error propagation |
 | `SentryStartupTests.cs` | 2 | Sentry not initialized when DSN missing (no-op); Sentry configured when DSN present |
 
 ### 7.3 Integration Test Fixture
@@ -933,7 +1138,7 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 |---------|--------|-------------|
 | Copy to Clipboard | `0730715` | Copies markdown to clipboard |
 | Export as Markdown (Download) | `76d167e` | Downloads `.md` file |
-| Rate-limit retry | `9c2c58e` | Exponential backoff (1s/2s/4s, max 3) |
+| Rate-limit retry | `9c2c58e` | Exponential backoff (1s/2s/4s, max 3) — **removed in later build** — now shows error immediately |
 | Auto-scroll results | `85c9661` | Scroll-to-bottom during streaming |
 | Dark mode / Light mode toggle | `598fe56` | Persistent theme preference |
 | Input character counter | Step 7 | 100k limit with color transition |
@@ -949,7 +1154,7 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 | JSON block stripped from all exports | `775b729` | Only JSON button has structured data |
 | Ship agent delegation loopholes closed | — | bash locked to git only |
 | Severity filter toggles | `5272c54` | CRITICAL/WARNING/INFO visibility buttons |
-| Severity filter block splitting fix | `227231b` | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` — isolates each finding |
+| Severity filter block splitting fix | `227231b` | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` — isolates each finding (later updated to `/\n(?=### )/` in `bbb0faf`) |
 | Pipeline enforcement (NO SKIPPING STAGES) | `b66d2c9` | Full pipeline mandatory for ALL changes |
 | Sanitized error messages | `ac1d7b5` | Non-429 errors show generic message instead of `ex.Message` |
 | Fire-and-forget fix in retry | `ac1d7b5` | `audit(payload, true)` → `await audit(payload, true)` |
@@ -970,8 +1175,20 @@ Test uses mocked SSE stream with these chunks to verify the full pipeline works.
 | Sentry monitoring (backend) | `d9f6fb0` | `Sentry.AspNetCore` package, Sentry init in `Program.cs` gated by `Sentry:Dsn`, API key scrubbing via `SetBeforeSend` |
 | Sentry monitoring (frontend) | `d9f6fb0` | `@sentry/react` package, `Sentry.init` in `main.tsx` gated by `VITE_SENTRY_DSN`, `ErrorBoundary` wrapping `<App />`, `beforeSend` stripping request headers |
 | Sentry Docker config | `d9f6fb0` | `VITE_SENTRY_DSN` build arg in `docker-compose.yml`, `ARG VITE_SENTRY_DSN` in `Dockerfile` |
-
----
+| Search within results | `679149a` | Inline keyword search with highlight in audit output |
+| Copy individual finding | `10c9d94` | Per-block copy icon in ResultPanel |
+| Keyboard shortcuts | `75fd570` | Ctrl+Enter to run, Escape to abort streaming |
+| Remove NetworkTimeout | `be75242` | Fixes AI streaming hang on slow responses — remove `NetworkTimeout` from OpenAI client |
+| Fix AI streaming token passthrough | `5230ea8` | Don't pass `CancellationToken` to `CompleteChatStreamingAsync` |
+| Diagnostic endpoint (raw + SDK) | `4be9fb5`+`8c6b3f7`+`e1207a3` | `GET /api/diagnose` with `?mode=raw\|sdk` for provider connectivity debugging |
+| Fresh client per request | `7642f2c` | Fresh `OpenAIClient` per request — prevents HTTP/2 connection pool poisoning |
+| Raw HttpClient + manual SSE | `80f5598` | Replace OpenAI SDK streaming with raw `HttpClient` + manual SSE `data:` line parsing |
+| Spec file upload | `a059f4d` | Drag-and-drop + file picker for `.yaml`/`.yml`/`.json` files |
+| Session history + sidebar | `7d90689`+`9ff6d50`+`8457f6f` | localStorage with LRU eviction (4 MB), collapsible sidebar, Failed state on error |
+| Toast/snackbar system | `393aa77` | React context-based notification system with auto-dismiss |
+| Configurable provider/model | `81761c9` | UI dropdown fetches `GET /api/providers` at startup |
+| Expandable findings | `57fcb4b` | Collapse/expand groups by severity with CSS transition animation |
+| Governance Score collapse fix | `bbb0faf` | Block splitter: `/\n(?=### )/` (any heading, not just severity) — fixes Governance Score being swallowed |
 
 ## 9. Commit History (Recent)
 
@@ -1007,6 +1224,45 @@ e7169e6 docs: update ROADMAP with Export as JSON commit hash
 cec4045 fix: replace html2pdf.js with pdfmake for native PDF generation
 5624aab feat: ship agent auto-pick next feature from ROADMAP.md
 d8b337f fix: enforce pipeline delegation via permissions
+bbb0faf fix: Governance Score no longer collapses with INFO findings
+57fcb4b feat: add expandable/collapsible findings grouped by severity
+a950e7a fix: update Groq models list and improve error diagnostics
+c480f45 fix: relax flaky DiagnoseEndpointTests assertion
+81761c9 feat: add configurable AI provider/model dropdown in UI
+393aa77 feat: add toast/snackbar notification system
+3ffe8d6 fix: remove rate limit retry logic — immediate error instead
+8457f6f fix: save history records on audit error, show Failed state
+9ff6d50 fix: 5 UX fixes for session history sidebar
+e7c41e5 docs: update ROADMAP.md with commit hash for session history
+7d90689 feat: add session history with localStorage persistence and sidebar
+1fafb58 docs: add backend file upload to ROADMAP.md (lowest priority)
+c00df3f docs: update ROADMAP.md with commit hash for spec file upload
+a059f4d feat: add spec file upload with drag-and-drop and file picker
+b503589 docs: update ROADMAP.md with commit hash for SSE streaming fix
+80f5598 fix: replace OpenAI SDK streaming with raw HttpClient + SSE parsing
+128eaef docs: record fix in ROADMAP.md
+7642f2c fix: create fresh OpenAI client per request to prevent HTTP/2 connection pool poisoning
+a06744a docs: record commit hash 8c6b3f7 in ROADMAP.md for SDK diagnose mode
+8c6b3f7 fix: add ?mode=sdk to diagnose endpoint for SDK vs raw comparison
+e1207a3 fix: update /api/diagnose to test chat completions endpoint
+1d3eb88 docs: record commit hash for diagnose endpoint in ROADMAP.md
+4be9fb5 fix: add /api/diagnose endpoint to debug Groq connectivity from .NET
+5f1c025 docs: Record commit hash in ROADMAP.md for CancellationToken fix
+5230ea8 fix: Don't pass CancellationToken to CompleteChatStreamingAsync
+2a0bf45 docs: Record commit hash in ROADMAP.md for NetworkTimeout fix
+be75242 fix: Remove NetworkTimeout from OpenAI client to fix AI streaming hang
+db1e0ed fix: enforce SSE streaming timeout (45s) and add Serilog logging
+5ec4743 fix: add title prop to Button component for keyboard shortcut tooltips
+d982be3 Update ROADMAP.md: mark Keyboard shortcuts as completed
+6f68b6b chore: remove stray .pipelinereview.md file
+75fd570 feat: add keyboard shortcuts (Ctrl+Enter to audit, Escape to stop streaming)
+64042b0 Update ROADMAP.md: mark Copy individual finding as completed
+10c9d94 feat: add per-finding copy button to severity blocks
+679149a feat: add search-within-results highlighting for audit output
+e9b4aac docs: update changes.md with Sentry implementation details
+c880987 docs: update updated_spec.md through HEAD 9f7bd00 (Sentry)
+ded1dc9 docs: move Sentry monitoring to Completed in ROADMAP.md
+ca0312f feat: add Sentry error tracking and monitoring
 ```
 
 ---
@@ -1014,6 +1270,8 @@ d8b337f fix: enforce pipeline delegation via permissions
 ## 10. Configuration & Environment
 
 ### API Key Management
+
+`AiProvidersConfig` is bound from `AiProviders` section in `Program.cs` — provider base URLs, models, and defaults are configured in `appsettings.json`. The `Ai:ApiKey` user-secret is shared across all providers.
 
 | Environment | Method | Variable | Protected? |
 |-------------|--------|----------|------------|
@@ -1027,15 +1285,13 @@ d8b337f fix: enforce pipeline delegation via permissions
 
 ### Provider Switching
 
-To switch AI providers, edit 3 values in `appsettings.json` (no code changes):
+Providers are now configured dynamically via the UI dropdown. Available providers are defined in `appsettings.json` under `AiProviders.Providers`. The frontend fetches `GET /api/providers` at startup and populates the dropdown — no `appsettings.json` editing needed to switch.
 
-| Provider | `BaseUrl` | `ModelId` | Key prefix |
-|----------|-----------|-----------|------------|
-| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `gsk_` |
-| **NVIDIA NIM** | `https://integrate.api.nvidia.com/v1` | `qwen/qwen2.5-coder-32b-instruct` | `nvapi-` |
-| **OpenRouter** | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` | `sk-or-` |
-| **Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | `AIza` |
-| **Together AI** | `https://api.together.xyz/v1` | `meta-llama/Llama-3-70b-chat-hf` | `tog-` |
+| Provider | Default Model | Key prefix | Signup |
+|----------|--------------|------------|--------|
+| **Groq** | `llama-3.3-70b-versatile` | `gsk_` | [console.groq.com](https://console.groq.com) |
+| **Together** | `meta-llama/Llama-3.3-70B-Instruct-Turbo-Free` | `tog-` | [api.together.ai](https://api.together.ai) |
+| **OpenAI** | `gpt-4o-mini` | `sk-` | [platform.openai.com](https://platform.openai.com) |
 
 ### CORS
 
@@ -1136,16 +1392,20 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **SSE sentinel format** | String prefix in `data:` line (`[SPECAUDIT_STRUCTURED]`) | `event:` SSE type | Existing `parseSSEChunks` only handles `data:` lines. Adding `event:` would break the parser interface. The sentinel prefix is simpler, consistent with `[SPECAUDIT_ERROR]`. |
 | **JSON extraction location** | Backend-side regex | Frontend-side regex | Backend has the complete text after streaming. No need to modify frontend. Consistent with error handling pattern. |
 | **PDF generation** | pdfmake (native JSON→PDF) | html2pdf.js (screenshot-based) | html2pdf.js produced blank PDFs consistently. pdfmake is reliable, multi-page, no DOM dependency. |
-| **AI provider abstraction** | OpenAI C# client with configurable Endpoint | Multiple provider-specific SDKs | OpenAI C# client supports any OpenAI-compatible API. Zero code changes to switch providers — just edit appsettings.json. |
+| **AI provider abstraction** | Raw HttpClient + manual SSE | OpenAI C# client | OpenAI SDK streaming had HTTP/2 connection-poisoning and timeout issues. Raw HttpClient gives full control over SSE parsing, error handling, and connection lifecycle. Fresh client per request prevents state leaks. |
 | **Dark mode** | `@custom-variant light` with `.light` class | `prefers-color-scheme` media query | User-initiated toggle overrides system preference. `.light` class on `<html>` gives Tailwind v4 access via `light:` prefix. |
-| **Rate-limit retry** | Client-side exponential backoff (1s, 2s, 4s, max 3) | Server-side queue | Simpler to implement, no server state needed. Heuristic 429 detection via message content. Frontend-only means no backend changes for different retry strategies. |
+| **Rate-limit handling** | Show error immediately (no retry) | Exponential backoff retry | Exponential backoff retry was removed because it caused state conflicts and UX confusion. Simpler to show error and let user retry manually. |
 | **String accumulation** | `StringBuilder` (backend) + string concat (frontend) | Various | Backend chunks are small — `StringBuilder` is efficient. Frontend uses `setState` with previous state concatenation — simple and correct for React. |
 | **Stripped result** | `lastIndexOf('```json')` then `slice(0, markerIndex)` | Regex `/```json[\s\S]*?```\s*$/gm` | `lastIndexOf` avoids regex, is easier to read, and correctly handles edge cases where the JSON block is not at the very end of the string. Matches the backend's `ExtractStructuredJson` approach. |
 | **InternalsVisibleTo** | Backend exposes `internal static` methods to test project | Public methods | Public methods would expose implementation details. `InternalsVisibleTo` keeps the API surface clean while enabling test access. |
 | **Temperature** | `0.1f` (low determinism) | Higher temperature | Audit is a deterministic task — the same spec should produce the same findings. Low temperature reduces hallucination. |
 | **Rate limiter** | Backend fixed-window (10 req/min per IP) | Client-side throttling | Server-side enforcement prevents API key abuse. Built into .NET 8+ — no extra packages. Fixed window is simpler than token bucket for this use case. |
-| **Block splitting (severity filter)** | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` | `\n---\n` separator-based | Real AI output uses blank lines between findings, not `---` separators. Lookahead regex splits before each `### [SEVERITY]` header regardless of separator style — more robust. |
+| **Block splitting (severity filter)** | Regex `/\n(?=### )/` | Regex `/\n(?=### \[(?:CRITICAL\|WARNING\|INFO)\])/` | Updated from severity-only regex to match any `###` heading. Fixes Governance Score section being swallowed because it starts with `### Governance Score` (no severity bracket). More robust — catches all top-level headings. |
 | **JSON extraction method** | `LastIndexOf`/`IndexOf` string search | `[GeneratedRegex]` | Removes dependency on `System.Text.RegularExpressions`. No performance difference for this use case. Also allows text after the JSON block (regex `$` anchor rejected it). |
+| **Provider resolution** | Dynamic via `AiProvidersConfig` dictionary | Single `AiOptions` config | Enables multi-provider UI dropdown. Frontend fetches `GET /api/providers` at startup. Users switch providers without editing config files. |
+| **Session history** | localStorage with LRU eviction at 4 MB | Server-side database | No backend needed, survives page refresh. LRU prevents unbounded storage growth. Device-specific — tradeoff for simplicity. |
+| **Toast system** | React context provider | Redux / zustand | Decouples notifications from component tree. Simple context-based API: `addToast`, `removeToast`. No extra dependencies. |
+| **Spec file upload** | Frontend reads file as text, sends via existing POST /api/audit | Multipart upload endpoint | No backend changes needed. Reuses existing SSE streaming pipeline. Drag-and-drop via HTML5 File API. |
 
 ---
 
@@ -1156,8 +1416,9 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | **Empty spec** | Backend input validation | 400 BadRequest: "Spec payload cannot be empty." |
 | **Whitespace-only spec** | Backend `Trim()` then check | Treated as empty → 400 BadRequest |
 | **Oversized spec (>100k)** | Backend length check on trimmed spec | 413 Payload Too Large |
-| **Rate limit (429 from AI)** | Backend catches, sends `[SPECAUDIT_ERROR]` | Frontend detects `RateLimitError`, retries with backoff (1s, 2s, 4s, max 3) |
+| **Rate limit (429 from AI)** | Backend reads error body, sends `[SPECAUDIT_ERROR]` | Frontend detects rate limit → throws with `"{status}: {body}"` → status 'error' (no retry) |
 | **Rate limiter rejection (429)** | Backend `AddRateLimiter` returns 429 before endpoint is reached | Frontend `response.ok` check fails → throws `Audit failed (429): ...` → status 'error' (no retry) |
+| **45-second server timeout** | Backend `CancellationTokenSource.CancelAfter(45s)` | `OperationCanceledException` → sends `[SPECAUDIT_ERROR]` timeout message → frontend displays timeout error |
 | **Stream abortion** | Client-side `AbortController.abort()` | Backend catches `OperationCanceledException`, stream ends silently |
 | **AI omits JSON block** | `ExtractStructuredJson` returns null | No sentinel sent. Findings=[], summary=null. JSON export falls back to `strippedResult` field. |
 | **AI produces invalid JSON** | `JsonDocument.Parse` throws | Caught, returns null. Same fallback as above. |
@@ -1177,28 +1438,27 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 1. **FraudLabs swagger file in root** — `FraudLabs Pro Fraud Detection-swagger.json` at the project root is a leaked test file that should be moved to `test-fixtures/` or `.gitignore`'d.
 2. **`title` tag in index.html** — Shows "frontend-tmp" instead of "SpecAudit".
 3. **No spec validation** — Specs are sent directly to the AI without client-side YAML/JSON validation.
-4. **No persistence** — Results exist only in browser memory. Page refresh loses the audit.
+4. **No server-side persistence** — Results persist via localStorage but are device-specific. No server-side persistence or account-based history.
 5. **PDF inline code styling** — Inline code in PDF exports uses `background` field which pdfmake renders as highlight rather than monospace.
 6. **Sentry DSN is optional** — Without a configured `Sentry:Dsn` (backend) or `VITE_SENTRY_DSN` (frontend), the Sentry SDK initializes in no-op mode. No errors are tracked but the app functions normally.
+7. **History sidebar toast timing** — "Copied!" toast may appear briefly for non-copy actions depending on timing/race conditions in the sidebar.
 
 
 ---
 
 ## 16. Roadmap (Upcoming Features)
 
-### Small (quick wins)
-- **Severity filter** — Toggle CRITICAL/WARNING/INFO visibility
-- **Search within results** — Inline search + highlight
-- **Copy individual finding** — Per-finding copy icon
-- **Keyboard shortcuts** — Ctrl+Enter, Escape
-- **Spec file upload** — Drag-and-drop YAML/JSON
-
-### Medium (more involved)
-- **Session history** — localStorage persistence with LRU eviction
-- **Audit history sidebar** — Collapsible recent audits list
-- **Toast/snackbar system** — Non-blocking notifications
-- **Configurable provider/model in UI** — Dropdown to switch providers
-- **Expandable findings** — Collapse/expand by severity
+✅ **Completed features** (moved from Small/Medium in previous roadmap):
+- Severity filter — Toggle CRITICAL/WARNING/INFO visibility
+- Search within results — Inline search + highlight
+- Copy individual finding — Per-finding copy icon
+- Keyboard shortcuts — Ctrl+Enter, Escape
+- Spec file upload — Drag-and-drop YAML/JSON
+- Session history — localStorage persistence with LRU eviction
+- Audit history sidebar — Collapsible recent audits list
+- Toast/snackbar system — Non-blocking notifications
+- Configurable provider/model in UI — Dropdown to switch providers
+- Expandable findings — Collapse/expand by severity
 
 ### Large (significant build)
 - **Spec comparison** — Side-by-side diff of two audits
@@ -1225,9 +1485,17 @@ The ship agent is intentionally locked down to **prevent bypassing the delegatio
 | Export buttons logic | `frontend/src/App.tsx` |
 | Markdown rendering | `frontend/src/components/features/ResultPanel.tsx` |
 | PDF export logic | `frontend/src/utils/exportPdf.ts` |
+| Session history hook | `frontend/src/hooks/useHistory.ts` |
+| Toast/snackbar provider | `frontend/src/hooks/useToast.ts` / `useToast.tsx` |
+| Toast UI stack | `frontend/src/components/ui/ToastContainer.tsx` |
+| Provider/model dropdown | `frontend/src/components/ui/ProviderSelector.tsx` |
+| Collapsible history sidebar | `frontend/src/components/features/HistorySidebar.tsx` |
+| Block splitting utility | `frontend/src/utils/filterMarkdown.ts` |
+| Search highlight utility | `frontend/src/utils/highlightText.ts` |
 | App config / dependencies | `frontend/package.json` |
 | Build config / proxy | `frontend/vite.config.ts` |
 | CSS / Tailwind setup | `frontend/src/index.css` |
+| Multi-provider config model | `backend/src/Configuration/AiProviderOptions.cs` |
 | Backend config (Groq) | `backend/appsettings.json` |
 | Docker setup | `Dockerfile` + `docker-compose.yml` |
 | CI pipeline | `.github/workflows/ci.yml` |

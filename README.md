@@ -8,23 +8,35 @@ SpecAudit is an AI-powered OpenAPI contract auditor that analyzes your API speci
 
 ## Features
 
-- **AI-powered audit** — Paste any OpenAPI spec (YAML/JSON) and get a structured security + design audit with severity-tagged findings
+- **AI-powered audit** — Paste or upload any OpenAPI/Swagger/Kubernetes spec (YAML/JSON) and get a structured security + design audit with severity-tagged findings
 - **Real-time streaming** — Results appear as the AI generates them, with severity-colored highlighting (CRITICAL / WARNING / INFO)
+- **Spec file upload** — Drag-and-drop or file-picker for `.yaml`/`.yml`/`.json` files
+- **Session history** — Auto-saved to localStorage with LRU eviction (4 MB); collapsible sidebar
+- **Toast/snackbar notifications** — Non-blocking feedback for copy, export, errors
+- **Configurable provider/model** — UI dropdown selects from Groq, Together, OpenAI (fetched from `GET /api/providers`)
+- **Copy full report** — One-click clipboard copy
+- **Copy individual finding** — Per-block copy icon
 - **Multiple exports:**
-  - **Copy** — Plain markdown to clipboard
   - **Download** — `.md` file
   - **Export PDF** — Formatted PDF via pdfmake with severity-colored tables
   - **Export JSON** — Structured JSON with typed `findings[]` and `summary` objects for programmatic consumption
-- **Dark / Light mode** — Toggle with persistent preference via Tailwind v4
-- **Rate-limit handling** — Automatic exponential backoff retry (1s, 2s, 4s, max 3) with zero data loss
-- **Provider-agnostic** — Switch between Groq, NVIDIA NIM, OpenRouter, Gemini, Together AI by editing `appsettings.json` (no code changes)
+- **Severity filter** — Toggle CRITICAL / WARNING / INFO visibility
+- **Search within results** — Inline keyword search with highlight
+- **Auto-scroll** — Scrolls to latest token during streaming
+- **Expandable findings** — Collapse/expand groups by severity (CSS transition animation)
+- **Dark / Light mode** — Toggle with persistent preference; respects `prefers-color-scheme`
+- **Error handling** — Reads AI provider error response body on non-success (no longer uses `EnsureSuccessStatusCode`)
+- **Rate-limit handling** — Shows error immediately (exponential backoff retry removed)
+- **Sentry monitoring** — Error tracking on both frontend and backend (opt-in via DSN)
+- **Keyboard shortcuts** — `Ctrl+Enter` to run audit, `Escape` to abort
+- **Governance Score** — Visual scorecard with per-dimension breakdown
 
 ## Tech Stack
 
 | Backend | Frontend | AI Integration |
 |---|---|---|
-| .NET 10 Minimal APIs | React 19 + Vite + Tailwind CSS v4 | OpenAI-compatible providers (Groq, NVIDIA NIM, OpenRouter, Gemini, Together) |
-| SSE (Server-Sent Events) streaming | react-markdown with severity styling | Provider-agnostic via OpenAI C# client |
+| .NET 10 Minimal APIs | React 19 + Vite + Tailwind CSS v4 | OpenAI-compatible providers (Groq, Together, OpenAI) |
+| SSE (Server-Sent Events) streaming | react-markdown with severity styling | Raw HttpClient + manual SSE parsing |
 
 ## Prerequisites
 
@@ -43,8 +55,9 @@ SpecAudit is an AI-powered OpenAPI contract auditor that analyzes your API speci
 2. **Configure the backend:**
    ```bash
    cd backend
-   dotnet user-secrets set "Ai:ApiKey" "your-key-here"
+   dotnet user-secrets set "Ai:ApiKey" "your-groq-key"
    ```
+   > You can change the provider and model from the UI dropdown after starting the app.
 
 3. **Start the backend:**
    ```bash
@@ -60,23 +73,25 @@ SpecAudit is an AI-powered OpenAPI contract auditor that analyzes your API speci
    ```
    The UI is available at `http://localhost:5173`.
 
-5. **Open `http://localhost:5173`** in your browser, paste an OpenAPI spec, and click **Run Audit**.
+5. **Open `http://localhost:5173`** in your browser, paste an OpenAPI spec or upload a `.yaml`/`.json` file, and click **Run Audit**.
 
 ## Provider Configuration
 
-SpecAudit supports any OpenAI-compatible provider. Change the provider by editing three values in `backend/appsettings.json`:
+Available providers are defined in `backend/appsettings.json` under `AiProviders.Providers`. The UI dropdown fetches `GET /api/providers` at startup — no `appsettings.json` editing needed to switch.
 
-| Provider | `BaseUrl` | `ModelId` | Key prefix | Signup |
-|---|---|---|---|---|
-| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `gsk_` | [console.groq.com](https://console.groq.com) |
-| **NVIDIA NIM** | `https://integrate.api.nvidia.com/v1` | `qwen/qwen2.5-coder-32b-instruct` | `nvapi-` | [build.nvidia.com](https://build.nvidia.com) |
-| **OpenRouter** | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free` | `sk-or-` | [openrouter.ai](https://openrouter.ai) |
-| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | `AIza` | [ai.google.dev](https://ai.google.dev) |
-| **Together AI** | `https://api.together.xyz/v1` | `meta-llama/Llama-3-70b-chat-hf` | `tog-` | [api.together.ai](https://api.together.ai) |
+The `Ai:ApiKey` user-secret (or `Ai__ApiKey` env var) is shared across all providers. Currently configured:
 
-> **Note:** `ProviderName` in `appsettings.json` is for display only and does not affect runtime behavior.
+| Provider | Default Model | Key prefix | Signup |
+|----------|--------------|------------|--------|
+| **Groq** | `llama-3.3-70b-versatile` | `gsk_` | [console.groq.com](https://console.groq.com) |
+| **Together** | `meta-llama/Llama-3.3-70B-Instruct-Turbo-Free` | `tog-` | [api.together.ai](https://api.together.ai) |
+| **OpenAI** | `gpt-4o-mini` | `sk-` | [platform.openai.com](https://platform.openai.com) |
 
-After changing the provider, run `dotnet user-secrets set "Ai:ApiKey" "your-key-here"` with the corresponding key.
+Run the following to set your API key (used by all providers):
+```bash
+cd backend
+dotnet user-secrets set "Ai:ApiKey" "your-groq-key"
+```
 
 ## Deployment
 
@@ -89,6 +104,7 @@ After changing the provider, run `dotnet user-secrets set "Ai:ApiKey" "your-key-
    ```
    AI_API_KEY = your-groq-key
    ```
+   > **Note:** Railway should also set `Ai__ApiKey` env var (double underscore for .NET) instead of `AI_API_KEY` if you're using the standard configuration.
 5. Deploy completes automatically
 
 ### Docker Compose (any provider)
@@ -101,11 +117,11 @@ docker-compose up --build
 ## Running Tests
 
 ```bash
-# Backend tests (requires .NET 10 SDK)
+# Backend tests (~30 tests, requires .NET 10 SDK)
 cd backend.Tests
 dotnet test
 
-# Frontend tests
+# Frontend tests (~314 tests)
 cd frontend
 npm test
 ```
@@ -113,3 +129,12 @@ npm test
 ## Screenshot
 
 ![SpecAudit Screenshot](docs/screenshot.png)
+
+## Monitoring
+
+Sentry error tracking is available on both frontend and backend. It is **opt-in** — without a configured DSN, the Sentry SDK initializes in no-op mode.
+
+| Layer | Env variable | Required? |
+|-------|-------------|-----------|
+| Backend | `Sentry:Dsn` or `Sentry__Dsn` | ❌ (no-op without it) |
+| Frontend | `VITE_SENTRY_DSN` | ❌ (no-op without it) |

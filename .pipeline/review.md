@@ -1,147 +1,89 @@
-# Review: Expandable/Collapsible Findings Grouped by Severity
+# Review: Update Documentation to Match Current Project State
 
 ## VERDICT: SHIP
 
----
-
-## Checklist
-
-| Criteria | Status | Notes |
-|----------|--------|-------|
-| **Spec conformance** | ✅ Pass | All spec requirements implemented; minor non-functional deviations documented below |
-| **Security** | ✅ Pass | No new attack surface; no secrets, injection, or info-disclosure vectors |
-| **Correctness** | ✅ Pass | State management is race-free; async discipline correct; runtime type safety maintained |
-| **Accessibility** | ✅ Pass | `aria-expanded`, `aria-controls`, `role="region"`, `aria-labelledby`, keyboard Space/Enter all present |
-| **Animation** | ✅ Pass | CSS `max-height`/`opacity` transition; no `display: none` |
-| **Grouping logic** | ✅ Pass | Consecutive same-severity blocks grouped; non-finding blocks standalone; groups separated by non-finding blocks |
-| **Tests** | ✅ Pass | 8 new tests + 3 existing tests adapted; all 314 pass |
-| **No regressions** | ✅ Pass | Copy, markdown rendering, severity filter, search all preserved |
-| **Backend tests** | ✅ N/A | No backend changes in this feature |
-
----
-
 ## Findings
 
-### 1. Spec Conformance — ✅
+### 1. Previously Required Fixes — All 5 Resolved ✅
 
-The implementation matches the specification exactly in all critical aspects:
+#### 1.1 Duplicate `9f7bd00` entry — FIXED
+`9f7bd00` appears only once as a commit entry in §9 (line 1196, as the last commit of the original section). The new appended section begins at `bbb0faf` (exclusive). The only other occurrence of `9f7bd00` is within the description text of commit `c880987` ("docs: update updated_spec.md through HEAD 9f7bd00"), which is a reference in the commit message, not a duplicate entry.
 
-- **`SeverityGroupHeader`** component defined as a co-located function before `ResultPanel` — fully accessible with `aria-expanded`, `aria-controls`, `role="region"`, `aria-labelledby`, and keyboard handling for Space/Enter. ✓
-- **`expandedGroups`** state initialized to `new Set(['CRITICAL', 'WARNING', 'INFO'])`. ✓
-- **`toggleGroup`** handler uses `useCallback` with immutable `Set` updates. ✓
-- **`findingCounts`** pre-computed via `useMemo`. ✓
-- **`sections`** approach used (recommended alternative in spec) — groups consecutive same-severity blocks, treats non-finding blocks as standalone. ✓
-- **`renderBlock`** helper extracted. ✓
-- **`useMemo`** added to React imports. ✓
-- **`MarkdownBlock`** type imported from `filterMarkdown`. ✓
-- **8 new tests** covering headers, count, click collapse/expand, Enter/Space keyboard, non-finding unaffected, `aria-expanded` state. ✓
-- **3 existing tests** adapted to `getAllByText` + className filtering for severity badge disambiguation. ✓
+#### 1.2 Test file count — FIXED
+Line 1079 now reads `~314 tests, 22 files, vitest`, matching `test-results.md` (314 tests in 22 files).
 
-**Non-functional deviations (acceptable):**
-| Spec | Actual | Impact |
-|------|--------|--------|
-| `Fragment` in import | Not imported, uses `<>...</>` | None — JSX fragments are equivalent |
-| Chevron `rotate(0deg)` / `rotate(180deg)` | `rotate(0deg)` / `rotate(-90deg)` | Chevron points right when collapsed, down when expanded — arguably more conventional |
-| SVG 16x16 | SVG 12x12 | Trivial visual difference |
-| `maxHeight: count * 500` | `Math.max(count * 500, 300)` | Adds a 300px minimum, strictly better |
-| `transition-all duration-300` | `transition-all duration-300 ease-in-out` | Adds easing function, strictly better |
-| Tests use `not.toBeInTheDocument()` | Tests use `toHaveStyle({ opacity: '0', maxHeight: '0px' })` | Correct for the sections/animations approach — elements stay in DOM |
+#### 1.3 All 39 commits appended — FIXED
+The commit history (§9, lines 1227–1265) now contains all 39 commits from `9f7bd00..bbb0faf`, verified against `git log --oneline 9f7bd00..bbb0faf`. Previously missing commits (Sentry monitoring, SSE streaming timeout, Serilog logging, ROADMAP.md doc entries, etc.) are all present in newest-first order.
 
-### 2. Security — ✅ (No issues)
+#### 1.4 Frontend/README.md entry in changes.md — FIXED
+Lines 20–25 now accurately state: "Replaced the default Vite/React scaffold README (73 lines) with project-specific Option A content (50 lines)."
 
-- No new endpoints, routes, or API handlers.
-- No user input interpolated into HTML, SQL, shell commands, or regex.
-- `SeverityLevel` is a constrained TypeScript type — no unvalidated external input reaching the new code.
-- Error handling in `handleCopyBlock` silently ignores clipboard failures (pre-existing pattern).
-- No secrets, keys, or internal configuration exposed.
+#### 1.5 Spec deviation for `.opencode/opencode.json` — FIXED
+A `## Spec Issues` section (lines 103–115) documents the infrastructure change: adding `git *` permissions to the build agent's bash block (with deny rules for push/merge/commit). Explains why it was necessary and notes it requires an opencode restart.
 
-### 3. Correctness — ✅ (No issues)
+### 2. Spec Conformance ✅
 
-- **State**: `setExpandedGroups` uses a functional updater `(prev) => { ... }` — no stale closure risk.
-- **Async**: `handleCopyBlock` is correctly awaited-to-fire (fire-and-forget via `onCopy` call) — same pre-existing pattern.
-- **Types**: No `as` casts, no `JSON.parse` results in new code. `BlockSection` is a local discriminated union type.
-- **Error handling**: Empty `catch` in clipboard handler is pre-existing and acceptable (clipboard API fails silently if permission denied).
-- **Animation states**: `maxHeight` computed as `Math.max(count * 500, 300)` — reasonable for typical finding lengths.
+| Requirement | Status |
+|-------------|--------|
+| `README.md` — updated features, tech stack, setup, provider config, tests, monitoring | ✅ Correct |
+| `frontend/README.md` — replaced with Option A (project-specific) | ✅ Correct |
+| `updated_spec.md` — updated header, tech stack, architecture, directory map, backend/frontend impl, tests, features table, commit history, config, ADR, edge cases, known issues, roadmap, quick reference | ✅ Correct |
+| `.opencode/opencode.json` — documented as spec deviation | ✅ Documented |
+| No extra files modified beyond the 3 spec-authorized files + 1 documented deviation | ✅ Clean |
 
-**Pre-existing concern (not introduced by this feature):**
-- `blocks` on line 176 is computed every render without `useMemo`, so `findingCounts` and `sections` `useMemo` wrappers are technically no-ops (their `[blocks]` dependency is a new array each render). This is harmless but means the memoization doesn't provide a skip benefit. Fixing this (memoizing `blocks`) is out of scope.
+#### Header Verification
+- `updated_spec.md` line 3: `HEAD: bbb0faf`, `Generated: 2026-06-06`, `Branch: main` — matches spec §3.1 ✅
 
-### 4. Accessibility — ✅
+#### Features Table (§8)
+- 15 new feature rows added (search, copy, keyboard shortcuts, NetworkTimeout, streaming passthrough, diagnose, fresh client, raw HttpClient, file upload, session history, toast, provider dropdown, expandable findings, Governance Score fix) ✅
+- Existing rows updated with removal notes where appropriate ✅
 
-| Attribute | Element | Present |
-|-----------|---------|---------|
-| `aria-expanded` | `<button id="finding-group-header-...">` | ✓ |
-| `aria-controls` | `<button aria-controls="finding-group-{severity}">` | ✓ |
-| `id` | `<button id="finding-group-header-{severity}">` | ✓ |
-| `role="region"` | `<div id="finding-group-{severity}">` | ✓ |
-| `aria-labelledby` | `<div aria-labelledby="finding-group-header-{severity}">` | ✓ |
-| Keyboard Space/Enter | `onKeyDown` handler with `e.preventDefault()` | ✓ |
-| Button semantics | `<button>` elements (implicitly `type="button"` outside form context) | ✓ |
+#### Commit History (§9)
+- Old section ends at `9f7bd00` (line 1196) ✅
+- New section (lines 1227–1265): 39 commits in newest-first order ✅
+- All commits from `git log 9f7bd00..bbb0faf` are present, including all ROADMAP.md doc commits ✅
 
-**Minor recommendation (non-blocking):** Add `type="button"` explicitly to the `<button>` elements. While the component is not rendered inside a `<form>`, explicit `type` prevents unintended form submission if the component is ever nested in a form context.
+#### Provider Configuration
+- Provider Switching section shows 3 providers (Groq, Together, OpenAI) ✅
+- Old 5-provider table (NVIDIA NIM, OpenRouter, Gemini) removed ✅
+- UI dropdown dynamic configuration described ✅
 
-### 5. Animation — ✅
+#### No Stale OpenAI SDK References
+- All current-state descriptions use "Raw HttpClient + manual SSE" ✅
+- Historical references in ADR and commit messages appropriately reference old OpenAI SDK approach as past state ✅
 
-- Uses `overflow-hidden transition-all duration-300 ease-in-out` on the group container.
-- Collapsed state: `maxHeight: 0`, `opacity: 0`.
-- Expanded state: `maxHeight: ${computed}px`, `opacity: 1`.
-- **No `display: none` anywhere** — correct for CSS animation.
-- Chevron icon rotates with `transition-transform duration-200` for smooth indicator animation.
+#### Test Counts
+- Frontend: ~314 tests, 22 files ✅
+- Backend: ~30 tests, 6 files ✅
+- Both match `test-results.md` ✅
 
-### 6. Grouping Logic — ✅
+### 3. Security Review ✅ (No issues)
 
-The `sections` algorithm correctly handles all edge cases per spec:
+- **No source code modified** — documentation and config only.
+- **`.opencode/opencode.json`**: `git *` is broad but necessary for the build agent to run `git log` (as required by the spec). Destructive operations (`git push*`, `git merge*`, `git commit*`) are explicitly denied.
+- **No secrets exposed** in any documentation changes.
+- **No exception message disclosure** — documentation-only changes.
+- **No new endpoints or API surface changes.**
 
-| Scenario | Behavior | Verified |
-|----------|----------|----------|
-| Consecutive same-severity blocks | One group header for the run | ✓ (sections algorithm) |
-| Non-finding block between findings | Resets group, separate headers | ✓ (non-finding block flushes currentGroup, resets to null) |
-| Only non-finding content | No headers rendered | ✓ (no finding-group sections) |
-| Single finding | Header with `(1)` | ✓ |
-| Mixed severities | Each gets its own header | ✓ |
+### 4. Correctness Review ✅ (No issues)
 
-### 7. Tests — ✅
+- All changes are documentation-only; no code paths affected.
+- Both test suites pass: 314 frontend tests (22 files), 30 backend tests (6 files).
+- TypeScript compiles with zero errors.
+- No async, state, or runtime type concerns (not applicable to documentation).
 
-- **8 new tests** covering: headers rendering, count display, click collapse/expand, Enter/Space toggle, non-finding content unaffected, `aria-expanded` state.
-- **3 existing tests** adapted: severity styling tests updated to use `getAllByText` + className filtering to disambiguate finding badges from group header labels.
-- **All 314 tests pass** (306 existing + 8 new).
-- Tests test behavior, not implementation details. They verify `toHaveStyle()` for collapse state (correct for CSS-animated elements) and `aria-expanded` attributes.
-- **Gap noted**: No tests for streaming scenarios with group collapse (e.g., findings arriving while a group is collapsed). However, the spec says "No special handling" for streaming, and the `useMemo`-based sections approach naturally handles it.
+### 5. Code Quality Review ✅ (No blocking issues)
 
-### 8. Code Quality — ✅ (Minor notes only)
+- **changes.md** accurately describes all changes, including the spec deviation.
+- **updated_spec.md** is internally consistent (features table rows match commits, test counts match test results, ADR entries match current implementation).
+- No dead code, cross-platform issues, or performance concerns in documentation.
+- Test coverage is documented with appropriate approximations (~314, ~30).
 
-- **Dead code**: None in the changed files.
-- **Cross-platform**: No path separators, regex anchors, or line-splitting in new code.
-- **Performance**: `findingCounts` and `sections` `useMemo` are technically no-ops due to pre-existing un-memoized `blocks` — minor, pre-existing concern.
-- **Startup validation**: No new config validation needed (feature is purely UI).
-- **Test quality**: Tests are behavior-oriented, cover both happy and failure paths (collapse/expand cycle, keyboard interaction).
+### 6. Backend Test Verification ✅
+- `test-results.md` includes both frontend tests (`npm test` / vitest: 314 tests passing) AND backend tests (`dotnet test`: 30 tests passing). Both suites were executed.
 
----
+## Summary
 
-## Required Actions
+All 5 issues from the previous NEEDS WORK review have been correctly resolved. The documentation changes fully conform to the spec, are internally consistent, accurate against the current codebase state, and properly account for the infrastructure deviation in `.opencode/opencode.json`. All tests pass. No security or correctness concerns.
 
-None. The implementation is correct, secure, accessible, and well-tested.
-
----
-
-## Suggested Commit Message
-
-```
-feat: add expandable/collapsible severity group headers to ResultPanel
-
-- New SeverityGroupHeader component with aria-expanded/aria-controls
-- Findings grouped by severity into collapsible sections
-- CSS transition animation (max-height + opacity, no display:none)
-- Non-finding content remains standalone and always visible
-- Full keyboard accessibility (Space/Enter toggle)
-- 8 new tests, 3 existing tests adapted
-- 314 tests passing, 0 build errors
-```
-
----
-
-## Sign Off
-
-**Reviewer**: Senior Code Review Agent  
-**Date**: 2026-06-05  
-**Verdict**: SHIP — feature is complete, correct, and production-ready.
+**Verdict: SHIP**

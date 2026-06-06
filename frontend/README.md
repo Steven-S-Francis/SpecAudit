@@ -1,73 +1,50 @@
-# React + TypeScript + Vite
+# SpecAudit Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite 8 + Tailwind CSS v4 frontend for the SpecAudit AI-powered API audit tool.
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev        # starts at http://localhost:5173 (proxies /api to http://localhost:5000)
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Key Architecture
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- **SSE streaming**: `api/auditClient.ts` — raw `fetch` + `ReadableStream` reader; manual SSE parsing
+- **State machine**: `hooks/useAudit.ts` — `idle → loading → streaming → complete → error`
+- **Session history**: `hooks/useHistory.ts` — localStorage with LRU eviction at 4 MB
+- **Toast system**: `hooks/useToast.ts` + `ToastContainer.tsx` — React context-based notifications
+- **Provider config**: `components/ui/ProviderSelector.tsx` — dropdown fetched from `GET /api/providers`
+- **Severity filter**: `utils/filterMarkdown.ts` — block splitting at `### ` headings
+- **Export**: `utils/exportPdf.ts` — pdfmake; `App.tsx` for clipboard, download, JSON export
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/types/audit.ts` | All TypeScript interfaces |
+| `src/api/auditClient.ts` | SSE stream client |
+| `src/hooks/useAudit.ts` | Audit state machine |
+| `src/hooks/useHistory.ts` | localStorage history |
+| `src/hooks/useToast.ts` | Toast/snackbar context |
+| `src/hooks/useAutoScroll.ts` | Scroll-to-bottom logic |
+| `src/hooks/useTheme.ts` | Dark/light mode |
+| `src/App.tsx` | Shell, layout, export handlers |
+| `src/components/features/InputPanel.tsx` | Spec input + file upload |
+| `src/components/features/ResultPanel.tsx` | Markdown renderer + severity styling |
+| `src/components/ui/ProviderSelector.tsx` | Provider/model dropdown |
+| `src/components/ui/ToastContainer.tsx` | Toast stack display |
+| `src/components/features/HistorySidebar.tsx` | Collapsible history sidebar |
+
+## Tests
+
+~314 tests using vitest + jsdom + testing-library. Run with `npm test`.
+
+## UI Components
+
+- `Button`: `primary | ghost | danger` variants, `sm | md` sizes
+- `Card`: Content container with border
+- `Spinner`: `sm | md | lg` animated loading indicator
+- `ThemeToggle`: Sun/moon icon button
+- `ScrollButton`: Up/down floating scroll control
